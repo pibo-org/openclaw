@@ -382,6 +382,32 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
       getSession: vi.fn(),
       deleteSession: vi.fn(),
     },
+    managedSessions: {
+      buildWorkflowKey: vi.fn(() => "agent:pibo:pibo:workflow:flow-001:worker:a"),
+      resolve: vi.fn(async () => ({
+        found: false,
+        key: "agent:pibo:pibo:workflow:flow-001:worker:a",
+      })),
+      create: vi.fn(async () => ({ ok: true })),
+      patch: vi.fn(async () => ({ ok: true })),
+      reset: vi.fn(async () => ({ ok: true })),
+      delete: vi.fn(async () => undefined),
+      ensureWorkflowSession: vi.fn(async () => ({
+        key: "agent:pibo:pibo:workflow:flow-001:worker:a",
+        created: true,
+        reset: false,
+        deleteAfterRun: false,
+        policy: "reusable" as const,
+      })),
+      runOnManagedSession: vi.fn(async () => ({ runId: "run-1" })),
+      runFirstManagedWorkflowTurn: vi.fn(async () => ({
+        sessionKey: "agent:pibo:pibo:workflow:flow-001:worker:a",
+        created: true,
+        reset: false,
+        deleteAfterRun: false,
+        runId: "run-1",
+      })),
+    },
   };
 
   return mergeDeep(base, overrides);
