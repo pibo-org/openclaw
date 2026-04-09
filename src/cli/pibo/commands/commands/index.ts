@@ -32,7 +32,7 @@ function ensureCommandDir(dir: string): void {
 }
 
 function readJsonFile<T>(filePath: string): T | null {
-  if (!fs.existsSync(filePath)) return null;
+  if (!fs.existsSync(filePath)) {return null;}
   const raw = fs.readFileSync(filePath, "utf8");
   return JSON.parse(raw) as T;
 }
@@ -66,27 +66,27 @@ export function setCommandDir(dirInput: string): PromptCommandRegistry {
 
 function extractFrontmatter(markdown: string): Record<string, string> {
   const match = markdown.match(/^---\s*\n([\s\S]*?)\n---\s*/);
-  if (!match) return {};
+  if (!match) {return {};}
   const obj: Record<string, string> = {};
   for (const rawLine of match[1].split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
+    if (!line || line.startsWith("#")) {continue;}
     const idx = line.indexOf(":");
-    if (idx === -1) continue;
+    if (idx === -1) {continue;}
     const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim().replace(/^['\"]|['\"]$/g, "");
-    if (key) obj[key] = value;
+    const value = line.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (key) {obj[key] = value;}
   }
   return obj;
 }
 
 function extractDescription(markdown: string): string {
   const fm = extractFrontmatter(markdown);
-  if (fm.description) return fm.description.slice(0, 160);
+  if (fm.description) {return fm.description.slice(0, 160);}
   const body = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*/m, "");
   const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   for (const line of lines) {
-    if (line.startsWith("#")) continue;
+    if (line.startsWith("#")) {continue;}
     return line.slice(0, 160);
   }
   return "Kein Beschreibungstext gefunden.";
@@ -118,7 +118,7 @@ function buildRegistry(commandDir: string): PromptCommandRegistry {
   const files = fs
     .readdirSync(commandDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))
-    .sort((a, b) => a.name.localeCompare(b.name, "de"));
+    .toSorted((a, b) => a.name.localeCompare(b.name, "de"));
 
   const commands: Record<string, PromptCommandEntry> = {};
 
@@ -126,7 +126,7 @@ function buildRegistry(commandDir: string): PromptCommandRegistry {
     const abs = path.join(commandDir, file.name);
     const markdown = fs.readFileSync(abs, "utf8");
     const name = toCommandName(file.name);
-    if (!name) continue;
+    if (!name) {continue;}
     commands[name] = {
       name,
       file: abs,
@@ -157,13 +157,13 @@ export function getCommand(name: string): PromptCommandEntry | null {
 
 export function getCommandPrompt(name: string): { entry: PromptCommandEntry; content: string } | null {
   const entry = getCommand(name);
-  if (!entry) return null;
+  if (!entry) {return null;}
   const content = fs.readFileSync(entry.file, "utf8");
   return { entry, content };
 }
 
 export function formatRegistrySummary(registry: PromptCommandRegistry): string {
-  const names = Object.keys(registry.commands).sort();
+  const names = Object.keys(registry.commands).toSorted();
   const lines: string[] = [];
   lines.push(`Command dir: ${registry.commandDir}`);
   lines.push(`Scan: ${registry.scannedAt}`);
