@@ -15,6 +15,9 @@ interface WorkerCriticInput {
   deliverables: string[];
   workerAgentId: string;
   criticAgentId: string;
+  workerModel?: string;
+  criticModel?: string;
+  criticPromptAddendum?: string;
 }
 
 interface CriticVerdict {
@@ -42,6 +45,10 @@ function normalizeStringArray(value: unknown): string[] {
   return [];
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function normalizeInput(input: unknown): WorkerCriticInput {
   if (!input || typeof input !== "object") {
     throw new Error("langgraph_worker_critic erwartet ein JSON-Objekt als Input.");
@@ -65,14 +72,11 @@ function normalizeInput(input: unknown): WorkerCriticInput {
     successCriteria,
     contextNotes: normalizeStringArray(record.contextNotes),
     deliverables: normalizeStringArray(record.deliverables),
-    workerAgentId:
-      typeof record.workerAgentId === "string" && record.workerAgentId.trim()
-        ? record.workerAgentId.trim()
-        : "langgraph",
-    criticAgentId:
-      typeof record.criticAgentId === "string" && record.criticAgentId.trim()
-        ? record.criticAgentId.trim()
-        : "critic",
+    workerAgentId: normalizeOptionalString(record.workerAgentId) ?? "langgraph",
+    criticAgentId: normalizeOptionalString(record.criticAgentId) ?? "critic",
+    workerModel: normalizeOptionalString(record.workerModel),
+    criticModel: normalizeOptionalString(record.criticModel),
+    criticPromptAddendum: normalizeOptionalString(record.criticPromptAddendum),
   };
 }
 
@@ -185,6 +189,9 @@ function buildCriticPrompt(params: {
     "- If APPROVE, keep REVISION_REQUEST empty or write 'none'.",
     "- If REVISE, provide a concrete revision request for the next worker turn.",
     "- If BLOCK, name a real blocker.",
+    ...(params.input.criticPromptAddendum
+      ? ["", "ADDITIONAL_CRITIC_INSTRUCTIONS:", params.input.criticPromptAddendum]
+      : []),
   ].join("\n");
 }
 
@@ -246,6 +253,7 @@ async function start(
         agentId: input.workerAgentId,
         label: `Workflow ${ctx.runId} Worker`,
         name: "main",
+        model: input.workerModel,
         policy: "reset-on-reuse",
       },
       {
@@ -253,6 +261,7 @@ async function start(
         agentId: input.criticAgentId,
         label: `Workflow ${ctx.runId} Critic`,
         name: "main",
+        model: input.criticModel,
         policy: "reset-on-reuse",
       },
     ],
@@ -448,6 +457,8 @@ export const langgraphWorkerCriticModule: WorkflowModule = {
       "task: string (pflichtig)",
       "successCriteria: string[] (mindestens ein Eintrag)",
       "optional: contextNotes, deliverables, workerAgentId, criticAgentId",
+      "optional: workerModel, criticModel (als provider/model)",
+      "optional: criticPromptAddendum (wird additiv an den Critic-Prompt angehängt)",
     ],
     artifactContract: [
       "input.json",

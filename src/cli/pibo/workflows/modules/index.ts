@@ -1,8 +1,13 @@
 import type { WorkflowModule } from "../types.js";
+import { codexControllerWorkflowModule } from "./codex-controller.js";
 import { langgraphWorkerCriticModule } from "./langgraph-worker-critic.js";
 import { noopWorkflowModule } from "./noop.js";
 
-const modules = [noopWorkflowModule, langgraphWorkerCriticModule] as const;
+const modules = [
+  noopWorkflowModule,
+  langgraphWorkerCriticModule,
+  codexControllerWorkflowModule,
+] as const;
 
 const moduleMap = new Map<string, WorkflowModule>(
   modules.map((entry) => [entry.manifest.moduleId, entry]),

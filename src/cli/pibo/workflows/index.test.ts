@@ -33,7 +33,7 @@ describe("pibo workflows runtime", () => {
 
   it("lists the native workflow modules", () => {
     const moduleIds = listWorkflowModuleManifests().map((entry) => entry.moduleId);
-    expect(moduleIds).toEqual(["langgraph_worker_critic", "noop"]);
+    expect(moduleIds).toEqual(["codex_controller", "langgraph_worker_critic", "noop"]);
   });
 
   it("starts, persists, and reloads the noop workflow natively", async () => {
