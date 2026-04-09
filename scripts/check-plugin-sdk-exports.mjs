@@ -8,8 +8,8 @@
  * aliases before release.
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { resolve, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pluginSdkSubpaths } from "./lib/plugin-sdk-entries.mjs";
 
@@ -24,6 +24,72 @@ const generatedFacadeTypeMapDts = resolve(
   "generated",
   "plugin-sdk-facade-type-map.generated.d.ts",
 );
+const pluginSdkDistRoot = resolve(__dirname, "..", "dist", "plugin-sdk");
+
+function collectFiles(rootDir, predicate) {
+  const results = [];
+  const pending = [rootDir];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const fullPath = join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(fullPath);
+        continue;
+      }
+      if (predicate(fullPath)) {
+        results.push(fullPath);
+      }
+    }
+  }
+  return results;
+}
+
+function candidateDeclarationTargets(specifier, importerPath) {
+  const base = resolve(dirname(importerPath), specifier);
+  const extension = extname(base);
+  if (
+    extension === ".js" ||
+    extension === ".mjs" ||
+    extension === ".cjs" ||
+    extension === ".ts" ||
+    extension === ".mts" ||
+    extension === ".cts"
+  ) {
+    return [`${base.slice(0, -extension.length)}.d.ts`];
+  }
+  if (extension === ".d.ts") {
+    return [base];
+  }
+  return [`${base}.d.ts`, join(base, "index.d.ts")];
+}
+
+function collectMissingRelativeDeclarationTargets() {
+  const declarationFiles = collectFiles(pluginSdkDistRoot, (filePath) =>
+    filePath.endsWith(".d.ts"),
+  );
+  const missing = [];
+  for (const filePath of declarationFiles) {
+    const content = readFileSync(filePath, "utf-8");
+    const matches = content.matchAll(/from\s+"(\.{1,2}\/[^"]+)"|from\s+'(\.{1,2}\/[^']+)'/g);
+    for (const match of matches) {
+      const specifier = match[1] ?? match[2];
+      if (!specifier) {
+        continue;
+      }
+      const candidates = candidateDeclarationTargets(specifier, filePath);
+      if (candidates.some((candidate) => existsSync(candidate))) {
+        continue;
+      }
+      missing.push({
+        importer: filePath,
+        specifier,
+        expected: candidates,
+      });
+    }
+  }
+  return missing;
+}
 
 if (!existsSync(distFile)) {
   console.error("ERROR: dist/plugin-sdk/index.js not found. Run `pnpm build` first.");
@@ -104,6 +170,17 @@ if (!existsSync(generatedFacadeTypeMapDts)) {
     );
     missing += 1;
   }
+}
+
+const missingRelativeDeclarationTargets = collectMissingRelativeDeclarationTargets();
+for (const item of missingRelativeDeclarationTargets) {
+  const importer = item.importer.replace(`${pluginSdkDistRoot}/`, "dist/plugin-sdk/");
+  console.error(
+    `MISSING DECLARATION TARGET: ${importer} -> ${item.specifier} (expected ${item.expected
+      .map((candidate) => candidate.replace(`${pluginSdkDistRoot}/`, "dist/plugin-sdk/"))
+      .join(" or ")})`,
+  );
+  missing += 1;
 }
 
 if (missing > 0) {

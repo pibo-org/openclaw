@@ -11,9 +11,10 @@
     "tsBuildInfoFile": "dist/plugin-sdk/.tsbuildinfo"
   },
   "include": [
-    "src/plugin-sdk/**/*.ts",
+    "src/**/*.ts",
     "src/types/**/*.d.ts",
-    "packages/memory-host-sdk/src/**/*.ts"
+    "packages/memory-host-sdk/src/**/*.ts",
+    "scripts/lib/plugin-sdk-doc-metadata.ts"
   ],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }
