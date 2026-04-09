@@ -1,0 +1,10 @@
+{
+  "id": "pibo",
+  "name": "PIBo",
+  "description": "Bundled PIBO command/runtime integration",
+  "enabledByDefault": false,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

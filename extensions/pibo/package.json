@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/pibo-plugin",
+  "version": "2026.4.3",
+  "private": true,
+  "description": "Bundled PIBO command/runtime integration for OpenClaw",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
