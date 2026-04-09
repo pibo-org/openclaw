@@ -27,6 +27,7 @@ import {
   mcpUnregister,
 } from "./pibo/commands/mcp.js";
 import { sambaShareAdd } from "./pibo/commands/samba.js";
+import { managedSessionSmoke } from "./pibo/commands/managed-session.js";
 
 export function registerPiboCli(program: Command) {
   const pibo = program.command("pibo").description("PIBo CLI modules ported into OpenClaw");
@@ -78,10 +79,13 @@ export function registerPiboCli(program: Command) {
   mcp.command("call [server] [tool]").description("Generischer MCP JSON-Invoker mit Discovery-Help").option("--json <json>", "JSON-Payload inline oder als @datei.json").option("--stdin", "JSON-Payload von stdin lesen").option("--refresh", "Discovery nicht aus Cache lesen").helpOption(false).allowUnknownOption(true).allowExcessArguments(true).action(async (server: string | undefined, tool: string | undefined, opts: { json?: string; stdin?: boolean; refresh?: boolean }) => { if (!server) { console.error("Usage: openclaw pibo mcp call <server> [tool] [--json <json>|--stdin]"); process.exit(1); } const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h"); if (wantsHelp || !tool) { await mcpCallHelp(server, tool, { refresh: opts.refresh }); return; } await mcpCall(server, tool, { json: opts.json, stdin: opts.stdin }); });
 
   const todo = pibo.command("todo").description("Todo.md Verwaltung");
-  todo.command("init").description("TODO.md mit Grundstruktur anlegen").action(() => { todoInit({}); });
-  todo.command("status").description("TODO.md Status zusammenfassen").action(() => { todoStatus({}); });
-  todo.command("check").description("Token-Budget prüfen").option("--max <tokens>", `Maximale Tokenzahl (default: ${DEFAULT_MAX_TOKENS})`, (value) => Number(value)).action((opts: { max?: number }) => { todoCheck({ max: opts.max }); });
-  todo.command("tokens").description("Token-Anzahl von TODO.md anzeigen").option("--max <tokens>", `Maximale Tokenzahl (default: ${DEFAULT_MAX_TOKENS})`, (value) => Number(value)).action((opts: { max?: number }) => { todoTokens({ max: opts.max }); });
+  todo.command("init").description("TODO.md mit Grundstruktur anlegen").action(() => { void todoInit({}); });
+  todo.command("status").description("TODO.md Status zusammenfassen").action(() => { void todoStatus({}); });
+  todo.command("check").description("Token-Budget prüfen").option("--max <tokens>", `Maximale Tokenzahl (default: ${DEFAULT_MAX_TOKENS})`, (value) => Number(value)).action((opts: { max?: number }) => { void todoCheck({ max: opts.max }); });
+  todo.command("tokens").description("Token-Anzahl von TODO.md anzeigen").option("--max <tokens>", `Maximale Tokenzahl (default: ${DEFAULT_MAX_TOKENS})`, (value) => Number(value)).action((opts: { max?: number }) => { void todoTokens({ max: opts.max }); });
+
+  const managed = pibo.command("managed-session").description("PIBo managed session helpers");
+  managed.command("smoke").description("Ersten managed-session smoke test ausführen").action(async () => { await managedSessionSmoke(); });
 
   const samba = pibo.command("samba").description("Samba-Tools");
   samba.command("share-add <linuxUser>").description("Samba-Share für einen Linux-User planen oder anlegen").option("--path <path>", "Pfad für den Share (default: Home des Users)").option("--name <name>", "Share-Name (default: Username)").option("--hosts-allow <list>", "Optionales hosts allow, z.B. 192.168.0. 127.").option("--apply", "Änderung wirklich anwenden").action((linuxUser: string, opts: { path?: string; name?: string; hostsAllow?: string; apply?: boolean }) => { sambaShareAdd(linuxUser, opts); });

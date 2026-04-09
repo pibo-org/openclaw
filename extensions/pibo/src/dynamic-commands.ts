@@ -19,9 +19,11 @@ export function registerDynamicPromptCommands(api: OpenClawPluginApi): void {
     });
   }
 
-  logRegistrationSummary(api, {
-    commandDir: registry.commandDir,
-    accepted,
-    skipped,
-  });
+  if (process.env.PIBO_DYNAMIC_COMMAND_DEBUG === "1") {
+    logRegistrationSummary(api, {
+      commandDir: registry.commandDir,
+      accepted,
+      skipped,
+    });
+  }
 }

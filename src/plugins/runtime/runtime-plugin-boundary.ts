@@ -4,9 +4,8 @@ import { createJiti } from "jiti";
 import { loadConfig } from "../../config/config.js";
 import { loadPluginManifestRegistry } from "../manifest-registry.js";
 import {
+  buildPluginLoaderAliasMap,
   buildPluginLoaderJitiOptions,
-  resolvePluginSdkAliasFile,
-  resolvePluginSdkScopedAliasMap,
   shouldPreferNativeJiti,
 } from "../sdk-alias.js";
 
@@ -81,15 +80,7 @@ export function getPluginBoundaryJiti(
   if (cached) {
     return cached;
   }
-  const pluginSdkAlias = resolvePluginSdkAliasFile({
-    srcFile: "root-alias.cjs",
-    distFile: "root-alias.cjs",
-    modulePath,
-  });
-  const aliasMap = {
-    ...(pluginSdkAlias ? { "openclaw/plugin-sdk": pluginSdkAlias } : {}),
-    ...resolvePluginSdkScopedAliasMap({ modulePath }),
-  };
+  const aliasMap = buildPluginLoaderAliasMap(modulePath, process.argv[1], import.meta.url);
   const loader = createJiti(import.meta.url, {
     ...buildPluginLoaderJitiOptions(aliasMap),
     tryNative,

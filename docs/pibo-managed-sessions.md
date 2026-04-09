@@ -4,10 +4,9 @@ Date: 2026-04-09
 
 ## Summary
 
-A thin PIBo-managed session layer was added on top of the existing OpenClaw plugin runtime.
+A thin PIBo-managed session layer was added on top of the existing OpenClaw plugin runtime and gateway/session primitives.
 
 Goals:
-
 - keep Telegram/Cron/OpenClaw default session behavior unchanged
 - avoid gateway-core session rewrites
 - allow PIBo-owned deterministic workflow sessions
@@ -16,29 +15,27 @@ Goals:
 ## What was added
 
 New runtime module:
-
 - `src/plugins/runtime/runtime-managed-sessions.ts`
 
 Runtime exposure:
-
 - `runtime.managedSessions`
 
 Type definitions:
-
 - `src/plugins/runtime/types.ts`
 
 Runtime wiring:
-
 - `src/plugins/runtime/index.ts`
 
 Tests:
-
 - `src/plugins/runtime/index.test.ts`
+
+CLI smoke path:
+- `src/cli/pibo/commands/managed-session.ts`
+- `openclaw pibo managed-session smoke`
 
 ## Supported capabilities
 
 `runtime.managedSessions` now exposes:
-
 - `buildWorkflowKey(...)`
 - `resolve(...)`
 - `create(...)`
@@ -56,53 +53,57 @@ Managed workflow keys are deterministic and currently follow:
 - `agent:<agentId>:pibo:workflow:<flowId>:<role>:<name>`
 
 Example:
-
 - `agent:pibo:pibo:workflow:flow-001:worker:a`
 
 ## Current implementation note
 
-This is intentionally thin.
+This layer is intentionally thin.
 
-For now, the managed-session runtime uses the existing plugin subagent runtime as its execution path:
+For runtime/plugin use:
+- managed session helpers live on `runtime.managedSessions`
+- actual execution still goes through existing OpenClaw run/session primitives
 
-- actual run dispatch goes through `subagent.run(...)`
-- delete/reset currently use `subagent.deleteSession(...)`
-- create is lazy and materializes on first run
-- resolve is currently best-effort and transcript-backed via session message lookup
+For the CLI smoke path:
+- we use direct gateway handler calls for `sessions.create`, `agent`, `agent.wait`, and `sessions.get`
+- this avoids the earlier mismatch between plain CLI context and gateway-bound subagent context
 
-This is enough for a first managed workflow smoke path without touching the default platform behavior.
+## Important runtime fix
+
+A plugin/dist resolution drift was fixed in:
+- `src/plugins/runtime/runtime-plugin-boundary.ts`
+
+The boundary loader now uses the same alias map construction as the main plugin loader via:
+- `buildPluginLoaderAliasMap(...)`
+
+This fixed the failing extension/plugin-sdk resolution during actual managed-session agent runs.
+
+## Verified smoke result
+
+The managed-session smoke path now successfully:
+- creates a deterministic managed session
+- runs the `main` agent on that session
+- waits for completion
+- reads back transcript messages from the managed session
+
+Verified successful reply in session transcript:
+- `MANAGED_SESSION_SMOKE_OK`
 
 ## Non-goals
 
 This change does **not**:
-
 - replace OpenClaw session persistence
 - alter Cron session logic
 - alter Telegram routing/session ownership
 - introduce a second gateway session architecture
 
-## Smoke path
+## Dynamic command scan logging
 
-Example:
+PIBo dynamic command registration still exists, but noisy startup scan logging is now disabled by default.
 
-```ts
-const runtime = createPluginRuntime({ allowGatewaySubagentBinding: true });
+To re-enable registration diagnostics explicitly:
 
-const result = await runtime.managedSessions.runFirstManagedWorkflowTurn({
-  flowId: "flow-001",
-  role: "worker",
-  name: "a",
-  agentId: "pibo",
-  policy: "reusable",
-  label: "PIBo Worker A",
-  message: "Analyse this task and produce a first draft.",
-  deliver: false,
-});
+```bash
+PIBO_DYNAMIC_COMMAND_DEBUG=1 openclaw ...
 ```
 
-This creates or reuses the managed workflow session key and starts the first run.
-
-## Scan removal note
-
-As requested, scan was not included in the managed-session module design.
-The module only contains deterministic keying, lightweight lifecycle policy, and managed session/run wrappers.
+This keeps normal startup cleaner while preserving the dynamic command feature.
