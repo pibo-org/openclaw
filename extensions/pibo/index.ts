@@ -1,7 +1,14 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginCommandContext } from "openclaw/plugin-sdk/plugin-entry";
 import { registerDynamicPromptCommands } from "./src/dynamic-commands.js";
 import { handlePiboCommand } from "./src/router.js";
+import {
+  createPiboWorkflowAbortTool,
+  createPiboWorkflowDescribeTool,
+  createPiboWorkflowStartTool,
+  createPiboWorkflowStatusTool,
+} from "./src/workflow-tools.js";
 
 export default definePluginEntry({
   id: "pibo",
@@ -16,6 +23,19 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       handler: async (ctx: PluginCommandContext) => ({ text: await handlePiboCommand(api, ctx) }),
+    });
+
+    api.registerTool(createPiboWorkflowStartTool(api) as AnyAgentTool, {
+      names: ["pibo_workflow_start"],
+    });
+    api.registerTool(createPiboWorkflowStatusTool(api) as AnyAgentTool, {
+      names: ["pibo_workflow_status"],
+    });
+    api.registerTool(createPiboWorkflowAbortTool(api) as AnyAgentTool, {
+      names: ["pibo_workflow_abort"],
+    });
+    api.registerTool(createPiboWorkflowDescribeTool(api) as AnyAgentTool, {
+      names: ["pibo_workflow_describe"],
     });
 
     registerDynamicPromptCommands(api);

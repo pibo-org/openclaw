@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk/plugin-entry";
+import type { SessionEntry } from "../../../src/config/sessions/types.js";
 import { loadRegistry, type PromptCommandMeta } from "./prompt-command-registry.js";
 
 type SessionStoreEntry = {
@@ -66,7 +67,9 @@ function deriveTelegramSessionKeyFromRoute(ctx: PluginCommandContext): string | 
   let target = rawTarget.startsWith("telegram:") ? rawTarget.slice("telegram:".length) : rawTarget;
   if (target.startsWith("group:")) {
     const threadId = ctx.messageThreadId;
-    return threadId != null ? `agent:${AGENT_ID}:telegram:${target}:topic:${threadId}` : `agent:${AGENT_ID}:telegram:${target}`;
+    return threadId != null
+      ? `agent:${AGENT_ID}:telegram:${target}:topic:${threadId}`
+      : `agent:${AGENT_ID}:telegram:${target}`;
   }
   if (target.startsWith("direct:") || target.startsWith("user:")) {
     return `agent:${AGENT_ID}:telegram:${target}`;
@@ -76,7 +79,10 @@ function deriveTelegramSessionKeyFromRoute(ctx: PluginCommandContext): string | 
 
 function deriveTargetSessionKey(ctx: PluginCommandContext): string {
   if (ctx.channel === "telegram") {
-    return deriveTelegramSessionKeyFromRoute(ctx) ?? `agent:${AGENT_ID}:telegram:direct:${ctx.senderId ?? "unknown"}`;
+    return (
+      deriveTelegramSessionKeyFromRoute(ctx) ??
+      `agent:${AGENT_ID}:telegram:direct:${ctx.senderId ?? "unknown"}`
+    );
   }
   return `agent:${AGENT_ID}:${ctx.channel}:direct:${ctx.senderId ?? "unknown"}`;
 }
@@ -155,14 +161,23 @@ async function ensureSessionBinding(
   ctx: PluginCommandContext,
   sessionKey: string,
   seedModel?: ModelSelection,
-): Promise<{ sessionId: string; sessionFile: string; sessionEntry: SessionStoreEntry | undefined }> {
+): Promise<{
+  sessionId: string;
+  sessionFile: string;
+  sessionEntry: SessionStoreEntry | undefined;
+}> {
   const storePath = api.runtime.agent.session.resolveStorePath(undefined, { agentId: AGENT_ID });
-  const store = api.runtime.agent.session.loadSessionStore(storePath) as Record<string, SessionStoreEntry>;
+  const store = api.runtime.agent.session.loadSessionStore(storePath) as Record<
+    string,
+    SessionStoreEntry
+  >;
   const existing = store[sessionKey];
   const sessionId = existing?.sessionId ?? ctx.sessionId ?? crypto.randomUUID();
   const sessionFile =
     existing?.sessionFile ??
-    api.runtime.agent.session.resolveSessionFilePath(sessionId, existing as never, { agentId: AGENT_ID });
+    api.runtime.agent.session.resolveSessionFilePath(sessionId, existing as never, {
+      agentId: AGENT_ID,
+    });
   const now = Date.now();
 
   store[sessionKey] = {
@@ -186,11 +201,14 @@ async function ensureSessionBinding(
     },
   };
 
-  api.runtime.agent.session.saveSessionStore(storePath, store);
+  api.runtime.agent.session.saveSessionStore(storePath, store as Record<string, SessionEntry>);
   return { sessionId, sessionFile, sessionEntry: store[sessionKey] };
 }
 
-function createEphemeralSessionFile(baseSessionFile?: string): { sessionId: string; sessionFile: string } {
+function createEphemeralSessionFile(baseSessionFile?: string): {
+  sessionId: string;
+  sessionFile: string;
+} {
   fs.mkdirSync(TEMP_SESSION_DIR, { recursive: true });
   const sessionId = crypto.randomUUID();
   const sessionFile = path.join(TEMP_SESSION_DIR, `${sessionId}.jsonl`);
@@ -253,7 +271,6 @@ export async function runMarkdownCommandByName(
       messageTo: ctx.to,
       agentAccountId: ctx.accountId,
       messageThreadId: ctx.messageThreadId,
-      threadParentId: ctx.threadParentId,
       senderId: ctx.senderId,
       runId: crypto.randomUUID(),
     })) as EmbeddedRunResult;

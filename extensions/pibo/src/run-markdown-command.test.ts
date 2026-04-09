@@ -107,6 +107,10 @@ describe("runMarkdownCommandByName", () => {
         senderId: "6214977845",
       }),
     );
-    expect(runEmbeddedPiAgent.mock.calls[0]?.[0]).not.toHaveProperty("input");
+    const firstCall = (
+      runEmbeddedPiAgent.mock.calls as unknown as Array<Record<string, unknown>[]>
+    )[0];
+    expect(firstCall).toBeDefined();
+    expect(firstCall?.[0]).not.toHaveProperty("input");
   });
 });

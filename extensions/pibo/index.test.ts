@@ -12,6 +12,10 @@ type RegisteredCommand = {
   description?: string;
 };
 
+type RegisteredTool = {
+  name?: string;
+};
+
 const originalHome = process.env.HOME;
 
 function withTempHome(): string {
@@ -54,6 +58,7 @@ describe("bundled pibo extension", () => {
 
     const { default: piboPlugin } = await import("./index.js");
     const commands: RegisteredCommand[] = [];
+    const tools: RegisteredTool[] = [];
     const api = buildPluginApi({
       id: "pibo",
       name: "PIBo",
@@ -71,6 +76,11 @@ describe("bundled pibo extension", () => {
             description: command.description,
           });
         },
+        registerTool(tool) {
+          const resolved =
+            typeof tool === "function" ? tool({ config: {}, sessionKey: "test" } as never) : tool;
+          tools.push({ name: (resolved as { name?: string }).name });
+        },
       },
     });
 
@@ -82,5 +92,13 @@ describe("bundled pibo extension", () => {
     expect(commands.find((command) => command.name === "autonomy-high")?.nativeNames).toEqual({
       default: "autonomy_high",
     });
+    expect(tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "pibo_workflow_start",
+        "pibo_workflow_status",
+        "pibo_workflow_abort",
+        "pibo_workflow_describe",
+      ]),
+    );
   });
 });

@@ -3,13 +3,18 @@ import { promisify } from "node:util";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginCommandContext } from "openclaw/plugin-sdk/plugin-entry";
 import { parseCommandArgs } from "./parser.js";
+import { runPiboWorkflows } from "./workflow-runtime.js";
 
 const execFileAsync = promisify(execFile);
 
 interface ModuleCommand {
   description: string;
   usage: string;
-  handler: (ctx: PluginCommandContext, argument?: string, flags?: Record<string, string>) => Promise<string>;
+  handler: (
+    ctx: PluginCommandContext,
+    argument?: string,
+    flags?: Record<string, string>,
+  ) => Promise<string>;
 }
 
 interface CommandModule {
@@ -61,6 +66,32 @@ async function handleCommandsSubcommand(args: string[]): Promise<string> {
   }
 }
 
+async function handleWorkflowsSubcommand(args: string[]): Promise<string> {
+  try {
+    const text = await runPiboWorkflows(args);
+    return text.length > 3900 ? `${text.slice(0, 3900)}\n\n… gekürzt` : text;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `❌ workflows fehlgeschlagen:\n\n\`\`\`\n${message}\n\`\`\``;
+  }
+}
+
+function parseWorkflowStartArgument(argument: string | undefined): {
+  moduleId?: string;
+  inputJson?: string;
+} {
+  const trimmed = argument?.trim();
+  if (!trimmed) return {};
+  const firstSpace = trimmed.indexOf(" ");
+  if (firstSpace === -1) {
+    return { moduleId: trimmed };
+  }
+  return {
+    moduleId: trimmed.slice(0, firstSpace).trim() || undefined,
+    inputJson: trimmed.slice(firstSpace + 1).trim() || undefined,
+  };
+}
+
 const helpAgents = (): string =>
   `Agents — Task-Verwaltung\n\n` +
   `Befehle:\n` +
@@ -76,6 +107,21 @@ const helpCommands = (): string =>
   `  list             Registrierte Commands anzeigen\n` +
   `  get-dir          Aktuellen Command-Pfad anzeigen\n` +
   `  show <name>      Markdown-Inhalt eines Commands anzeigen`;
+
+const helpWorkflows = (): string =>
+  `Workflows — generische PIBO Workflow-Module\n\n` +
+  `Befehle:\n` +
+  `  list                        Registrierte Workflow-Module anzeigen\n` +
+  `  describe <moduleId>         Manifest eines Moduls anzeigen\n` +
+  `  start <moduleId> [json]     Workflow-Run starten\n` +
+  `  status <runId>              Status eines Runs anzeigen\n` +
+  `  abort <runId>               Run abbrechen, falls unterstützt\n` +
+  `  runs                        Letzte Runs anzeigen\n\n` +
+  `Beispiele:\n` +
+  `  /pibo workflows list\n` +
+  `  /pibo workflows describe langgraph_worker_critic\n` +
+  `  /pibo workflows start langgraph_worker_critic {"task":"...","successCriteria":["..."]}\n` +
+  `  /pibo workflows status <runId>`;
 
 const commandRegistry: Record<string, CommandModule> = {
   agents: {
@@ -128,6 +174,71 @@ const commandRegistry: Record<string, CommandModule> = {
     },
     help: helpCommands,
   },
+  workflows: {
+    name: "workflows",
+    description: "Generische PIBO Workflow-Module starten und verwalten",
+    commands: {
+      list: {
+        description: "Registrierte Workflow-Module anzeigen",
+        usage: "list",
+        handler: async () => handleWorkflowsSubcommand(["list"]),
+      },
+      describe: {
+        description: "Manifest eines Workflow-Moduls anzeigen",
+        usage: "describe <moduleId>",
+        handler: async (_ctx, argument) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand(["describe", argument.trim()])
+            : "❌ Bitte gib eine moduleId an.\n\nVerwendung: `/pibo workflows describe <moduleId>`",
+      },
+      start: {
+        description: "Workflow-Run starten",
+        usage: "start <moduleId> [json] [--max-rounds <n>]",
+        handler: async (_ctx, argument, flags) => {
+          const parsed = parseWorkflowStartArgument(argument);
+          if (!parsed.moduleId) {
+            return "❌ Bitte gib eine moduleId an.\n\nVerwendung: `/pibo workflows start <moduleId> [json] [--max-rounds <n>]`";
+          }
+          const args = ["start", parsed.moduleId];
+          if (parsed.inputJson) {
+            args.push("--json", parsed.inputJson);
+          }
+          if (flags?.["max-rounds"]) {
+            args.push("--max-rounds", flags["max-rounds"]);
+          }
+          return handleWorkflowsSubcommand(args);
+        },
+      },
+      status: {
+        description: "Status eines Workflow-Runs anzeigen",
+        usage: "status <runId>",
+        handler: async (_ctx, argument) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand(["status", argument.trim()])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows status <runId>`",
+      },
+      abort: {
+        description: "Workflow-Run abbrechen",
+        usage: "abort <runId>",
+        handler: async (_ctx, argument) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand(["abort", argument.trim()])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows abort <runId>`",
+      },
+      runs: {
+        description: "Zuletzt gespeicherte Workflow-Runs anzeigen",
+        usage: "runs [--limit <n>]",
+        handler: async (_ctx, _argument, flags) => {
+          const args = ["runs"];
+          if (flags?.limit) {
+            args.push("--limit", flags.limit);
+          }
+          return handleWorkflowsSubcommand(args);
+        },
+      },
+    },
+    help: helpWorkflows,
+  },
 };
 
 function buildKnownPaths(): string[] {
@@ -143,7 +254,10 @@ function buildKnownPaths(): string[] {
 const knownPaths = buildKnownPaths();
 
 function generateHelpMessage(): string {
-  const lines = ["🤖 **PIBo Command**\n", "Verwendung: `/pibo <module> <command> [argument] [--flags]`\n"];
+  const lines = [
+    "🤖 **PIBo Command**\n",
+    "Verwendung: `/pibo <module> <command> [argument] [--flags]`\n",
+  ];
   lines.push("**Module:**\n");
   for (const module of Object.values(commandRegistry)) {
     lines.push(
@@ -154,6 +268,7 @@ function generateHelpMessage(): string {
   lines.push("  `/pibo agents task Suche nach KI-News heute`");
   lines.push("  `/pibo commands set-dir ~/.config/pibo/commands`");
   lines.push("  `/pibo commands scan`");
+  lines.push("  `/pibo workflows list`");
   return lines.join("\n");
 }
 
