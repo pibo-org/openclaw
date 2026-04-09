@@ -63,7 +63,7 @@ export function buildRegistrationCandidates(commands: Record<string, PromptComma
   const skipped: Array<{ name: string; reason: string }> = [];
   const seen = new Map<string, string>();
 
-  for (const name of Object.keys(commands).sort()) {
+  for (const name of Object.keys(commands).toSorted()) {
     const entry = commands[name];
     const aliases = listCommandAliases(entry.name, entry.meta);
     const invalidAlias = aliases.find((alias) => validateCommandName(alias));

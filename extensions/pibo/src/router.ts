@@ -85,7 +85,9 @@ function parseWorkflowStartArgument(argument: string | undefined): {
   inputJson?: string;
 } {
   const trimmed = argument?.trim();
-  if (!trimmed) return {};
+  if (!trimmed) {
+    return {};
+  }
   const firstSpace = trimmed.indexOf(" ");
   if (firstSpace === -1) {
     return { moduleId: trimmed };

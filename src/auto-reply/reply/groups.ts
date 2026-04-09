@@ -2,9 +2,13 @@ import type { ChannelId } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resolveChannelGroupRequireMention } from "../../config/group-policy.js";
 import type { GroupKeyResolution, SessionEntry } from "../../config/sessions.js";
-import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { isTruthyEnvValue } from "../../infra/env.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import {
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+} from "../../shared/string-coerce.js";
+import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { normalizeGroupActivation } from "../group-activation.js";
 import type { TemplateContext } from "../templating.js";
 import { extractExplicitGroupId } from "./group-id.js";
@@ -38,12 +42,12 @@ function loadGroupsRuntime() {
 }
 
 function resolveGroupId(raw: string | undefined | null): string | undefined {
-  const trimmed = (raw ?? "").trim();
+  const trimmed = normalizeOptionalString(raw);
   return extractExplicitGroupId(trimmed) ?? (trimmed || undefined);
 }
 
 function resolveLooseChannelId(raw?: string | null): ChannelId | null {
-  const normalized = raw?.trim().toLowerCase();
+  const normalized = normalizeOptionalLowercaseString(raw);
   if (!normalized) {
     return null;
   }
@@ -70,39 +74,21 @@ async function resolveRuntimeChannelId(raw?: string | null): Promise<ChannelId |
   }
 }
 
-async function resolveBuiltInRequireMentionFromConfig(params: {
-  cfg: OpenClawConfig;
-  channel: ChannelId;
-  groupChannel?: string;
-  groupId?: string;
-  groupSpace?: string;
-  accountId?: string | null;
-}): Promise<boolean | undefined> {
-  const runtime = await loadGroupsRuntime();
-  switch (params.channel) {
-    case "discord":
-      return runtime.resolveDiscordGroupRequireMention(params);
-    case "slack":
-      return runtime.resolveSlackGroupRequireMention(params);
-    default:
-      return undefined;
-  }
-}
-
 export async function resolveGroupRequireMention(params: {
   cfg: OpenClawConfig;
   ctx: TemplateContext;
   groupResolution?: GroupKeyResolution;
 }): Promise<boolean> {
   const { cfg, ctx, groupResolution } = params;
-  const rawChannel = groupResolution?.channel ?? ctx.Provider?.trim();
+  const rawChannel = groupResolution?.channel ?? normalizeOptionalString(ctx.Provider);
   const channel = await resolveRuntimeChannelId(rawChannel);
   if (!channel) {
     return true;
   }
   const groupId = groupResolution?.id ?? resolveGroupId(ctx.From);
-  const groupChannel = ctx.GroupChannel?.trim() ?? ctx.GroupSubject?.trim();
-  const groupSpace = ctx.GroupSpace?.trim();
+  const groupChannel =
+    normalizeOptionalString(ctx.GroupChannel) ?? normalizeOptionalString(ctx.GroupSubject);
+  const groupSpace = normalizeOptionalString(ctx.GroupSpace);
   let requireMention: boolean | undefined;
   const runtime = await loadGroupsRuntime();
   try {
@@ -129,27 +115,6 @@ export async function resolveGroupRequireMention(params: {
     }
     return requireMention;
   }
-  const builtInRequireMention = await resolveBuiltInRequireMentionFromConfig({
-    cfg,
-    channel,
-    groupChannel,
-    groupId,
-    groupSpace,
-    accountId: ctx.AccountId,
-  });
-  if (typeof builtInRequireMention === "boolean") {
-    if (isTelegramRoutingDebugEnabled()) {
-      groupDebugLog.info("resolveGroupRequireMention(builtin)", {
-        provider: ctx.Provider ?? null,
-        accountId: ctx.AccountId ?? null,
-        groupId: groupId ?? null,
-        groupChannel: groupChannel ?? null,
-        groupSpace: groupSpace ?? null,
-        requireMention: builtInRequireMention,
-      });
-    }
-    return builtInRequireMention;
-  }
   const fallbackRequireMention = resolveChannelGroupRequireMention({
     cfg,
     channel,
@@ -174,14 +139,14 @@ export function defaultGroupActivation(requireMention: boolean): "always" | "men
 }
 
 function resolveProviderLabel(rawProvider: string | undefined): string {
-  const providerKey = rawProvider?.trim().toLowerCase() ?? "";
+  const providerKey = normalizeOptionalLowercaseString(rawProvider) ?? "";
   if (!providerKey) {
     return "chat";
   }
   if (isInternalMessageChannel(providerKey)) {
     return "WebChat";
   }
-  const providerId = resolveLooseChannelId(rawProvider?.trim());
+  const providerId = resolveLooseChannelId(rawProvider);
   if (providerId) {
     return CHANNEL_LABELS[providerId] ?? providerId;
   }
@@ -189,8 +154,8 @@ function resolveProviderLabel(rawProvider: string | undefined): string {
 }
 
 export function buildGroupChatContext(params: { sessionCtx: TemplateContext }): string {
-  const subject = params.sessionCtx.GroupSubject?.trim();
-  const members = params.sessionCtx.GroupMembers?.trim();
+  const subject = normalizeOptionalString(params.sessionCtx.GroupSubject);
+  const members = normalizeOptionalString(params.sessionCtx.GroupMembers);
   const providerLabel = resolveProviderLabel(params.sessionCtx.Provider);
 
   const lines: string[] = [];
@@ -203,7 +168,7 @@ export function buildGroupChatContext(params: { sessionCtx: TemplateContext }): 
     lines.push(`Participants: ${members}.`);
   }
   lines.push(
-    "Your replies are automatically sent to this group chat. Do not use the message tool to send to this same group — just reply normally.",
+    "Your replies are automatically sent to this group chat. Do not use the message tool to send to this same group - just reply normally.",
   );
   return lines.join(" ");
 }
@@ -217,7 +182,7 @@ export function buildGroupIntro(params: {
 }): string {
   const activation =
     normalizeGroupActivation(params.sessionEntry?.groupActivation) ?? params.defaultActivation;
-  const providerId = resolveLooseChannelId(params.sessionCtx.Provider?.trim());
+  const providerId = resolveLooseChannelId(params.sessionCtx.Provider);
   const activationLine =
     activation === "always"
       ? "Activation: always-on (you receive every group message)."
@@ -234,7 +199,7 @@ export function buildGroupIntro(params: {
   const lurkLine =
     "Be a good group participant: mostly lurk and follow the conversation; reply only when directly addressed or you can add clear value. Emoji reactions are welcome when available.";
   const styleLine =
-    "Write like a human. Avoid Markdown tables. Don't type literal \\n sequences; use real line breaks sparingly.";
+    "Write like a human. Avoid Markdown tables. Minimize empty lines and use normal chat conventions, not document-style spacing. Don't type literal \\n sequences; use real line breaks sparingly.";
   return [activationLine, providerIdsLine, silenceLine, cautionLine, lurkLine, styleLine]
     .filter(Boolean)
     .join(" ")

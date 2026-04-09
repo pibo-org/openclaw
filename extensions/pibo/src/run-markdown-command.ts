@@ -201,7 +201,7 @@ async function ensureSessionBinding(
     },
   };
 
-  api.runtime.agent.session.saveSessionStore(storePath, store as Record<string, SessionEntry>);
+  void api.runtime.agent.session.saveSessionStore(storePath, store as Record<string, SessionEntry>);
   return { sessionId, sessionFile, sessionEntry: store[sessionKey] };
 }
 

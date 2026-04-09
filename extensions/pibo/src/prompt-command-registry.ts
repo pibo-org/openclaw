@@ -60,7 +60,10 @@ function extractFrontmatter(markdown: string): Record<string, string> {
       continue;
     }
     const key = line.slice(0, separatorIndex).trim();
-    const value = line.slice(separatorIndex + 1).trim().replace(/^['"]|['"]$/g, "");
+    const value = line
+      .slice(separatorIndex + 1)
+      .trim()
+      .replace(/^['"]|['"]$/g, "");
     if (key) {
       result[key] = value;
     }
@@ -135,7 +138,7 @@ export function buildRegistry(commandDir: string): PromptCommandRegistry {
   const files = fs
     .readdirSync(commandDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))
-    .sort((a, b) => a.name.localeCompare(b.name, "de"));
+    .toSorted((a, b) => a.name.localeCompare(b.name, "de"));
 
   for (const file of files) {
     const filePath = path.join(commandDir, file.name);
@@ -187,6 +190,8 @@ export function buildNativeNames(
   name: string,
   meta: PromptCommandMeta,
 ): { default?: string } | undefined {
-  const alias = listCommandAliases(name, meta).find((candidate) => candidate !== normalizeAlias(name));
+  const alias = listCommandAliases(name, meta).find(
+    (candidate) => candidate !== normalizeAlias(name),
+  );
   return alias ? { default: alias } : undefined;
 }

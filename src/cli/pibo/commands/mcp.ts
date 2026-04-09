@@ -86,7 +86,7 @@ function writeJsonFile(filePath: string, value: unknown) {
 
 function readRegistry(): Registry {
   ensurePiboConfigDir();
-  return readJsonFile<Registry>(REGISTRY_PATH, { servers: {} });
+  return readJsonFile(REGISTRY_PATH, { servers: {} });
 }
 
 function writeRegistry(registry: Registry) {

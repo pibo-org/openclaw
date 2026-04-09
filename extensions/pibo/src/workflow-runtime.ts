@@ -67,7 +67,9 @@ function formatManifestText(manifest: WorkflowManifest) {
 
 function formatStatusText(record: WorkflowRunRecord) {
   const sessionLines = Object.entries(record.sessions)
-    .filter(([, value]) => typeof value === "string" && value)
+    .filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0,
+    )
     .map(([key, value]) => `- ${key}: ${value}`);
   return [
     `Run: ${record.runId}`,

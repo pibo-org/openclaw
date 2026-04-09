@@ -4,6 +4,7 @@
     "declaration": true,
     "declarationMap": false,
     "emitDeclarationOnly": true,
+    "incremental": true,
     "noEmit": false,
     "noEmitOnError": false,
     "outDir": "dist/plugin-sdk",
@@ -11,10 +12,12 @@
     "tsBuildInfoFile": "dist/plugin-sdk/.tsbuildinfo"
   },
   "include": [
-    "src/**/*.ts",
-    "src/types/**/*.d.ts",
+    "src/plugin-sdk/**/*.ts",
+    "src/video-generation/dashscope-compatible.ts",
+    "src/video-generation/types.ts",
     "packages/memory-host-sdk/src/**/*.ts",
-    "scripts/lib/plugin-sdk-doc-metadata.ts"
+    "scripts/lib/plugin-sdk-doc-metadata.ts",
+    "src/types/**/*.d.ts"
   ],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

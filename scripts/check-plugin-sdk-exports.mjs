@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Verifies that the root plugin-sdk runtime surface and generated facade types
- * are present in the compiled dist output.
+ * Verifies that the root plugin-sdk runtime surface is present in the compiled
+ * dist output.
  *
  * Run after `pnpm build` to catch missing root exports or leaked repo-only type
  * aliases before release.
@@ -90,7 +90,6 @@ function collectMissingRelativeDeclarationTargets() {
   }
   return missing;
 }
-
 if (!existsSync(distFile)) {
   console.error("ERROR: dist/plugin-sdk/index.js not found. Run `pnpm build` first.");
   process.exit(1);
@@ -182,7 +181,6 @@ for (const item of missingRelativeDeclarationTargets) {
   );
   missing += 1;
 }
-
 if (missing > 0) {
   console.error(
     `\nERROR: ${missing} required plugin-sdk artifact(s) missing (named exports or subpath files).`,
