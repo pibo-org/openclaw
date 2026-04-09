@@ -7,7 +7,6 @@ import {
   getCommandDir,
   getCommandPrompt,
   listCommands,
-  scanCommands,
   setCommandDir,
 } from "./pibo/commands/commands/index.js";
 import { docsSync } from "./pibo/docs-sync/index.js";
@@ -58,7 +57,6 @@ export function registerPiboCli(program: Command) {
 
   const commands = pibo.command("commands").description("Markdown-basierte PIBo Slash Commands verwalten");
   commands.command("set-dir <dir>").description("Verzeichnis für Markdown-Commands setzen").action(async (dir: string) => { const registry = setCommandDir(dir); console.log(`✅ Command-Verzeichnis gesetzt: ${registry.commandDir}`); });
-  commands.command("scan").description("Markdown-Commands im gesetzten Verzeichnis scannen und registrieren").action(async () => { const registry = scanCommands(); console.log(formatRegistrySummary(registry)); });
   commands.command("list").description("Aktuell registrierte Commands anzeigen").action(async () => { const registry = listCommands(); console.log(formatRegistrySummary(registry)); });
   commands.command("get-dir").description("Aktuell gesetztes Command-Verzeichnis anzeigen").action(async () => { console.log(getCommandDir()); });
   commands.command("show <name>").description("Markdown-Inhalt eines Commands anzeigen").action(async (name: string) => { const result = getCommandPrompt(name); if (!result) { console.error(`Command nicht gefunden: ${name}`); process.exit(1); } console.log(result.content); });

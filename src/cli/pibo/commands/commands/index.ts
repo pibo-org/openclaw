@@ -57,10 +57,6 @@ export function loadRegistry(): PromptCommandRegistry {
   return buildRegistry(config.commandDir);
 }
 
-export function saveRegistry(registry: PromptCommandRegistry): void {
-  saveConfig({ commandDir: registry.commandDir });
-}
-
 export function setCommandDir(dirInput: string): PromptCommandRegistry {
   const dir = path.resolve(dirInput.replace(/^~(?=$|\/)/, os.homedir()));
   ensureCommandDir(dir);
@@ -144,12 +140,6 @@ function buildRegistry(commandDir: string): PromptCommandRegistry {
     commands,
     scannedAt: new Date().toISOString(),
   };
-}
-
-export function scanCommands(): PromptCommandRegistry {
-  const registry = loadRegistry();
-  saveConfig({ commandDir: registry.commandDir });
-  return registry;
 }
 
 export function listCommands(): PromptCommandRegistry {

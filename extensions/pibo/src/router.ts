@@ -267,7 +267,7 @@ function generateHelpMessage(): string {
   lines.push("\n**Beispiele:**");
   lines.push("  `/pibo agents task Suche nach KI-News heute`");
   lines.push("  `/pibo commands set-dir ~/.config/pibo/commands`");
-  lines.push("  `/pibo commands scan`");
+  lines.push("  `/pibo commands list`");
   lines.push("  `/pibo workflows list`");
   return lines.join("\n");
 }

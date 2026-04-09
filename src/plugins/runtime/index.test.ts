@@ -66,6 +66,8 @@ function expectRuntimeSubagentRun(
 
 function createGatewaySubagentRunFixture(params?: { allowGatewaySubagentBinding?: boolean }) {
   const run = vi.fn().mockResolvedValue({ runId: "run-1" });
+  const getSessionMessages = vi.fn().mockResolvedValue({ messages: [] });
+  const deleteSession = vi.fn().mockResolvedValue(undefined);
   const runtime = params?.allowGatewaySubagentBinding
     ? createPluginRuntime({ allowGatewaySubagentBinding: true })
     : createPluginRuntime();
@@ -73,9 +75,11 @@ function createGatewaySubagentRunFixture(params?: { allowGatewaySubagentBinding?
   setGatewaySubagentRuntime({
     ...createGatewaySubagentRuntime(),
     run,
+    getSessionMessages,
+    deleteSession,
   });
 
-  return { run, runtime };
+  return { run, getSessionMessages, deleteSession, runtime };
 }
 
 function expectFunctionKeys(value: Record<string, unknown>, keys: readonly string[]) {
@@ -233,23 +237,34 @@ describe("plugin runtime command execution", () => {
         ]);
       },
     },
+    {
+      name: "exposes managedSessions helpers",
+      assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
+        expectFunctionKeys(runtime.managedSessions as Record<string, unknown>, [
+          "buildWorkflowKey",
+          "resolve",
+          "create",
+          "patch",
+          "reset",
+          "delete",
+          "ensureWorkflowSession",
+          "runOnManagedSession",
+          "runFirstManagedWorkflowTurn",
+        ]);
+      },
+    },
   ] as const)("$name", ({ assert }) => {
     expectRuntimeShape(assert);
   });
 
   it("modelAuth wrappers strip agentDir and store to prevent credential steering", async () => {
-    // The wrappers should not forward agentDir or store from plugin callers.
-    // We verify this by checking the wrapper functions exist and are not the
-    // raw implementations (they are wrapped, not direct references).
     const { getApiKeyForModel: rawGetApiKey } = await import("../../agents/model-auth.js");
     const runtime = createPluginRuntime();
-    // Wrappers should NOT be the same reference as the raw functions
     expect(runtime.modelAuth.getApiKeyForModel).not.toBe(rawGetApiKey);
   });
 
   it("keeps subagent unavailable by default even after gateway initialization", async () => {
     const { runtime } = createGatewaySubagentRunFixture();
-
     expectGatewaySubagentRunFailure(runtime, { sessionKey: "s-1", message: "hello" });
   });
 
@@ -264,5 +279,33 @@ describe("plugin runtime command execution", () => {
       runId: "run-1",
     });
     expect(run).toHaveBeenCalledWith({ sessionKey: "s-2", message: "hello" });
+  });
+
+  it("can run a first managed workflow turn through the gateway-bound runtime", async () => {
+    const { run, runtime } = createGatewaySubagentRunFixture({
+      allowGatewaySubagentBinding: true,
+    });
+
+    const result = await runtime.managedSessions.runFirstManagedWorkflowTurn({
+      flowId: "flow-001",
+      role: "worker",
+      name: "a",
+      agentId: "pibo",
+      policy: "reusable",
+      label: "PIBo Worker A",
+      message: "Analyse this task and produce a first draft.",
+      deliver: false,
+    });
+
+    expect(result.sessionKey).toBe("agent:pibo:pibo:workflow:flow-001:worker:a");
+    expect(result.created).toBe(true);
+    expect(result.runId).toBe("run-1");
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:pibo:pibo:workflow:flow-001:worker:a",
+        message: "Analyse this task and produce a first draft.",
+        deliver: false,
+      }),
+    );
   });
 });

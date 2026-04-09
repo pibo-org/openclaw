@@ -14,6 +14,7 @@ import { createRuntimeChannel } from "./runtime-channel.js";
 import { createRuntimeConfig } from "./runtime-config.js";
 import { createRuntimeEvents } from "./runtime-events.js";
 import { createRuntimeLogging } from "./runtime-logging.js";
+import { createRuntimeManagedSessions } from "./runtime-managed-sessions.js";
 import { createRuntimeMedia } from "./runtime-media.js";
 import { createRuntimeSystem } from "./runtime-system.js";
 import { createRuntimeTaskFlow } from "./runtime-taskflow.js";
@@ -111,13 +112,6 @@ function createUnavailableSubagentRuntime(): PluginRuntime["subagent"] {
   };
 }
 
-// ── Process-global gateway subagent runtime ─────────────────────────
-// The gateway creates a real subagent runtime during startup, but gateway-owned
-// plugin registries may be loaded (and cached) before the gateway path runs.
-// A process-global holder lets explicitly gateway-bindable runtimes resolve the
-// active gateway subagent dynamically without changing the default behavior for
-// ordinary plugin runtimes.
-
 const GATEWAY_SUBAGENT_SYMBOL: unique symbol = Symbol.for(
   "openclaw.plugin.gatewaySubagentRuntime",
 ) as unknown as typeof GATEWAY_SUBAGENT_SYMBOL;
@@ -133,30 +127,14 @@ const gatewaySubagentState = resolveGlobalSingleton<GatewaySubagentState>(
   }),
 );
 
-/**
- * Set the process-global gateway subagent runtime.
- * Called during gateway startup so that gateway-bindable plugin runtimes can
- * resolve subagent methods dynamically even when their registry was cached
- * before the gateway finished loading plugins.
- */
 export function setGatewaySubagentRuntime(subagent: PluginRuntime["subagent"]): void {
   gatewaySubagentState.subagent = subagent;
 }
 
-/**
- * Reset the process-global gateway subagent runtime.
- * Used by tests to avoid leaking gateway state across module reloads.
- */
 export function clearGatewaySubagentRuntime(): void {
   gatewaySubagentState.subagent = undefined;
 }
 
-/**
- * Create a late-binding subagent that resolves to:
- * 1. An explicitly provided subagent (from runtimeOptions), OR
- * 2. The process-global gateway subagent when the caller explicitly opts in, OR
- * 3. The unavailable fallback (throws with a clear error message).
- */
 function createLateBindingSubagent(
   explicit?: PluginRuntime["subagent"],
   allowGatewaySubagentBinding = false,
@@ -189,16 +167,16 @@ export function createPluginRuntime(_options: CreatePluginRuntimeOptions = {}): 
   const tasks = createRuntimeTasks({
     legacyTaskFlow: taskFlow,
   });
+  const subagent = createLateBindingSubagent(
+    _options.subagent,
+    _options.allowGatewaySubagentBinding === true,
+  );
   const runtime = {
-    // Sourced from the shared OpenClaw version resolver (#52899) so plugins
-    // always see the same version the CLI reports, avoiding API-version drift.
     version: VERSION,
     config: createRuntimeConfig(),
     agent: createRuntimeAgent(),
-    subagent: createLateBindingSubagent(
-      _options.subagent,
-      _options.allowGatewaySubagentBinding === true,
-    ),
+    subagent,
+    managedSessions: createRuntimeManagedSessions(subagent),
     system: createRuntimeSystem(),
     media: createRuntimeMedia(),
     webSearch: {
