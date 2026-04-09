@@ -942,6 +942,9 @@ export const registerTelegramNativeCommands = ({
     }
 
     for (const pluginCommand of pluginCatalog.commands) {
+      const initialPluginMatchPromise = loadTelegramNativeCommandRuntime().then((runtimeModule) =>
+        runtimeModule.matchPluginCommand(`/${pluginCommand.command}`),
+      );
       bot.command(pluginCommand.command, async (ctx: TelegramNativeCommandContext) => {
         const msg = ctx.message;
         if (!msg) {
@@ -956,7 +959,15 @@ export const registerTelegramNativeCommands = ({
         const rawText = ctx.match?.trim() ?? "";
         const commandBody = `/${pluginCommand.command}${rawText ? ` ${rawText}` : ""}`;
         const nativeCommandRuntime = await loadTelegramNativeCommandRuntime();
-        const match = nativeCommandRuntime.matchPluginCommand(commandBody);
+        const initialPluginMatch = await initialPluginMatchPromise;
+        const match =
+          nativeCommandRuntime.matchPluginCommand(commandBody) ??
+          (initialPluginMatch && (!rawText || initialPluginMatch.command.acceptsArgs)
+            ? {
+                command: initialPluginMatch.command,
+                args: rawText || undefined,
+              }
+            : null);
         if (!match) {
           await withTelegramApiErrorLogging({
             operation: "sendMessage",
