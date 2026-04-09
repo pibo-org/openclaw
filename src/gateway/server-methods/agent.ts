@@ -305,6 +305,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       idempotencyKey: string;
       timeout?: number;
       bestEffortDeliver?: boolean;
+      suppressRuntimeOutput?: boolean;
       label?: string;
       inputProvenance?: InputProvenance;
     };
@@ -832,6 +833,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         spawnedBy: spawnedByValue,
         timeout: request.timeout?.toString(),
         bestEffortDeliver,
+        suppressRuntimeOutput: request.suppressRuntimeOutput === true,
         messageChannel: originMessageChannel,
         runId,
         lane: request.lane,

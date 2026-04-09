@@ -53,7 +53,7 @@ export function createPiboWorkflowStartTool(_api: OpenClawPluginApi): AnyAgentTo
         args.push("--max-rounds", String(params.maxRounds));
       }
       try {
-        const result = await runPiboWorkflowsJson(args);
+        const result = await runPiboWorkflowsJson(_api, args);
         return json({ ok: true, result });
       } catch (error) {
         return json({ ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -74,7 +74,7 @@ export function createPiboWorkflowStatusTool(_api: OpenClawPluginApi): AnyAgentT
         return json({ ok: false, error: "runId required" });
       }
       try {
-        const result = await runPiboWorkflowsJson(["status", runId, "--json"]);
+        const result = await runPiboWorkflowsJson(_api, ["status", runId, "--json"]);
         return json({ ok: true, result });
       } catch (error) {
         return json({ ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -95,7 +95,7 @@ export function createPiboWorkflowAbortTool(_api: OpenClawPluginApi): AnyAgentTo
         return json({ ok: false, error: "runId required" });
       }
       try {
-        const result = await runPiboWorkflowsJson(["abort", runId, "--json"]);
+        const result = await runPiboWorkflowsJson(_api, ["abort", runId, "--json"]);
         return json({ ok: true, result });
       } catch (error) {
         return json({ ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -113,10 +113,14 @@ export function createPiboWorkflowDescribeTool(_api: OpenClawPluginApi): AnyAgen
     async execute(_toolCallId, params) {
       try {
         if (typeof params.moduleId === "string" && params.moduleId.trim()) {
-          const result = await runPiboWorkflowsJson(["describe", params.moduleId.trim(), "--json"]);
+          const result = await runPiboWorkflowsJson(_api, [
+            "describe",
+            params.moduleId.trim(),
+            "--json",
+          ]);
           return json({ ok: true, result });
         }
-        const result = await runPiboWorkflowsJson(["list", "--json"]);
+        const result = await runPiboWorkflowsJson(_api, ["list", "--json"]);
         return json({ ok: true, result });
       } catch (error) {
         return json({ ok: false, error: error instanceof Error ? error.message : String(error) });

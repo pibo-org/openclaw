@@ -30,7 +30,9 @@ export function showInfo() {
   console.log("  2. Key auf Server kopieren:");
   console.log("     ssh-copy-id root@<SERVER-IP>");
   console.log("  3. Deploy Key auf Server erzeugen:");
-  console.log('     ssh root@<SERVER-IP> "ssh-keygen -t ed25519 -C docs-sync -f /root/.ssh/id_ed25519 -N \"\""');
+  console.log(
+    '     ssh root@<SERVER-IP> "ssh-keygen -t ed25519 -C docs-sync -f /root/.ssh/id_ed25519 -N """',
+  );
   console.log("  4. Public Key in GitHub eintragen:");
   console.log("     Repo → Settings → Deploy Keys → Add deploy key");
   console.log("     → 'Allow write access' aktivieren");
@@ -63,8 +65,14 @@ export function showInfo() {
   console.log("  • Die CLI kann GitHub-Repos nicht magisch erstellen");
   console.log("  • Die CLI kann keine kaputte SSH-Verbindung für dich 'wegzaubern'");
   console.log("  • Die CLI setzt voraus, dass die WebApp bzw. der Storage-Pfad existiert");
-  console.log("  • Externe Voraussetzungen werden erklärt und geprüft, aber nicht vollständig automatisiert");
+  console.log(
+    "  • Externe Voraussetzungen werden erklärt und geprüft, aber nicht vollständig automatisiert",
+  );
 
   console.log("\n" + ok("Wenn du neu startest: erst 'info', dann 'prereqs', dann Setup."));
-  console.log(info("Das Ziel ist: kein Insider-Wissen nötig, nur die Vorbereitungsschritte sauber abarbeiten."));
+  console.log(
+    info(
+      "Das Ziel ist: kein Insider-Wissen nötig, nur die Vorbereitungsschritte sauber abarbeiten.",
+    ),
+  );
 }

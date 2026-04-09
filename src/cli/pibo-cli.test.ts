@@ -7,10 +7,21 @@ import { withTempHome } from "../config/home-env.test-harness.js";
 import { registerPiboCli } from "./pibo-cli.js";
 
 const tempDirs: string[] = [];
-async function mktemp(prefix: string) { const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix)); tempDirs.push(dir); return dir; }
-afterEach(async () => { await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true }))); });
+async function mktemp(prefix: string) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+});
 
-function createProgram() { const program = new Command(); program.exitOverride(); registerPiboCli(program); return program; }
+function createProgram() {
+  const program = new Command();
+  program.exitOverride();
+  registerPiboCli(program);
+  return program;
+}
 
 describe("pibo cli", () => {
   it("registers representative subcommands", () => {
@@ -20,13 +31,21 @@ describe("pibo cli", () => {
     expect(pibo?.commands.some((command) => command.name() === "find")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "todo")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "mcp")).toBe(true);
+    expect(pibo?.commands.some((command) => command.name() === "managed-session")).toBe(true);
+    expect(pibo?.commands.some((command) => command.name() === "workflows")).toBe(true);
   });
 
   it("initializes bundled find prompts into the workspace", async () => {
     await withTempHome("openclaw-pibo-find-home-", async (home) => {
       await createProgram().parseAsync(["pibo", "find", "init"], { from: "user" });
-      const docsPrompt = await fs.readFile(path.join(home, ".openclaw/workspace/prompts/find/docs.md"), "utf8");
-      const codePrompt = await fs.readFile(path.join(home, ".openclaw/workspace/prompts/find/code.md"), "utf8");
+      const docsPrompt = await fs.readFile(
+        path.join(home, ".openclaw/workspace/prompts/find/docs.md"),
+        "utf8",
+      );
+      const codePrompt = await fs.readFile(
+        path.join(home, ".openclaw/workspace/prompts/find/code.md"),
+        "utf8",
+      );
       expect(docsPrompt).toContain("Finder-Agent für das Dokumentenwesen");
       expect(codePrompt).toContain("Finder-Agent für das Code-Verzeichnis");
     });
@@ -36,7 +55,7 @@ describe("pibo cli", () => {
     await withTempHome("openclaw-pibo-todo-home-", async () => {
       const workspace = await mktemp("openclaw-pibo-workspace-");
       const cwdSpy = Object.getOwnPropertyDescriptor(process, "cwd");
-      const originalCwd = process.cwd;
+      const originalCwd = process.cwd.bind(process);
       process.cwd = () => workspace;
       try {
         await createProgram().parseAsync(["pibo", "todo", "init"], { from: "user" });
@@ -47,7 +66,9 @@ describe("pibo cli", () => {
       } finally {
         process.cwd = originalCwd;
       }
-      if (cwdSpy) Object.defineProperty(process, "cwd", cwdSpy);
+      if (cwdSpy) {
+        Object.defineProperty(process, "cwd", cwdSpy);
+      }
     });
   });
 });

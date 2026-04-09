@@ -55,12 +55,16 @@ function writeUtf8(filePath: string, content: string) {
 }
 
 function countTokens(text: string) {
-  if (!text.trim()) return 0;
+  if (!text.trim()) {
+    return 0;
+  }
   return encoding.encode(text).length;
 }
 
 function percent(value: number, max: number) {
-  if (max <= 0) return "0%";
+  if (max <= 0) {
+    return "0%";
+  }
   return `${Math.round((value / max) * 100)}%`;
 }
 
@@ -74,13 +78,19 @@ function parseTasks(content: string) {
 
   for (const line of lines) {
     const match = line.match(/^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$/);
-    if (!match) continue;
+    if (!match) {
+      continue;
+    }
 
     const status = normalizeStatus(match[1]);
     const task = match[2].trim();
 
-    if (status === "status" || status === "---") continue;
-    if (!task) continue;
+    if (status === "status" || status === "---") {
+      continue;
+    }
+    if (!task) {
+      continue;
+    }
 
     tasks.push({ status, task });
   }
@@ -153,7 +163,9 @@ export function todoCheck(opts: { workspace?: string; max?: number }) {
     process.exit(1);
   }
   if (!state.withinBudget) {
-    console.error(`TODO.md exceeds token budget: ${state.tokens} > ${state.max}. Compact or rewrite the list before continuing.`);
+    console.error(
+      `TODO.md exceeds token budget: ${state.tokens} > ${state.max}. Compact or rewrite the list before continuing.`,
+    );
     process.exit(1);
   }
   console.log(`OK: TODO.md is within token budget (${state.tokens}/${state.max}).`);
@@ -169,7 +181,9 @@ export function todoStatus(opts: { workspace?: string; max?: number }) {
   console.log(`Limit: ${state.max}`);
   console.log(`Within budget: ${state.withinBudget ? "yes" : "no"}`);
 
-  if (!state.exists) return;
+  if (!state.exists) {
+    return;
+  }
 
   console.log(`Tasks: ${state.tasks.length}`);
   if (state.statusCounts.size === 0) {
@@ -178,7 +192,9 @@ export function todoStatus(opts: { workspace?: string; max?: number }) {
   }
 
   console.log("Status counts:");
-  for (const [status, count] of [...state.statusCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [status, count] of [...state.statusCounts.entries()].toSorted((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
     console.log(`- ${status}: ${count}`);
   }
 }

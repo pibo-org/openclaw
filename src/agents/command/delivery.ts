@@ -141,6 +141,7 @@ export async function deliverAgentCommandResult(params: {
   const { cfg, deps, runtime, opts, outboundSession, sessionEntry, payloads, result } = params;
   const effectiveSessionKey = outboundSession?.key ?? opts.sessionKey;
   const deliver = opts.deliver === true;
+  const suppressRuntimeOutput = opts.suppressRuntimeOutput === true;
   const bestEffortDeliver = opts.bestEffortDeliver === true;
   const turnSourceChannel = opts.runContext?.messageChannel ?? opts.messageChannel;
   const turnSourceTo = opts.runContext?.currentChannelId ?? opts.to;
@@ -251,23 +252,27 @@ export async function deliverAgentCommandResult(params: {
   });
   const normalizedPayloads = normalizeOutboundPayloadsForJson(normalizedReplyPayloads);
   if (opts.json) {
-    runtime.log(
-      JSON.stringify(
-        buildOutboundResultEnvelope({
-          payloads: normalizedPayloads,
-          meta: result.meta,
-        }),
-        null,
-        2,
-      ),
-    );
+    if (!suppressRuntimeOutput) {
+      runtime.log(
+        JSON.stringify(
+          buildOutboundResultEnvelope({
+            payloads: normalizedPayloads,
+            meta: result.meta,
+          }),
+          null,
+          2,
+        ),
+      );
+    }
     if (!deliver) {
       return { payloads: normalizedPayloads, meta: result.meta };
     }
   }
 
   if (!payloads || payloads.length === 0) {
-    runtime.log("No reply from agent.");
+    if (!suppressRuntimeOutput) {
+      runtime.log("No reply from agent.");
+    }
     return { payloads: [], meta: result.meta };
   }
 
@@ -288,6 +293,9 @@ export async function deliverAgentCommandResult(params: {
   };
   if (!deliver) {
     for (const payload of deliveryPayloads) {
+      if (suppressRuntimeOutput) {
+        continue;
+      }
       logPayload(payload);
     }
   }

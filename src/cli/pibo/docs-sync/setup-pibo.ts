@@ -1,24 +1,44 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from "fs";
+import { execSync } from "child_process";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { execSync } from "child_process";
-import { bold, ok, fail, warn, info, run, commandExists, nodeBin, generateToken } from "./utils.js";
 import { readConfig, writeConfig, defaultConfig, DocsSyncConfig } from "./config.js";
+import { bold, ok, fail, warn, info, run, commandExists, nodeBin, generateToken } from "./utils.js";
 
 // ESM path resolution
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ASSETS_DIR = fileURLToPath(new URL("../../../../docs/pibo-cli/assets/", import.meta.url));
 
+function readExecErrorStderr(error: unknown): string {
+  if (!error || typeof error !== "object" || !("stderr" in error)) {
+    return "unknown error";
+  }
+  const stderr = error.stderr;
+  if (typeof stderr === "string") {
+    return stderr.trim() || "unknown error";
+  }
+  if (stderr instanceof Uint8Array) {
+    return Buffer.from(stderr).toString("utf8").trim() || "unknown error";
+  }
+  return "unknown error";
+}
+
 /** SCP a file with proper error handling and feedback */
-async function scpFile(keyPath: string, user: string, host: string, localPath: string, remotePath: string): Promise<boolean> {
+async function scpFile(
+  keyPath: string,
+  user: string,
+  host: string,
+  localPath: string,
+  remotePath: string,
+): Promise<boolean> {
   const cmd = `scp -i ${keyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=15 ${localPath} ${user}@${host}:${remotePath}`;
   try {
     execSync(cmd, { stdio: ["pipe", "pipe", "pipe"] });
     return true;
-  } catch (e: any) {
-    const stderr = e.stderr?.toString()?.trim() || "unknown error";
+  } catch (error) {
+    const stderr = readExecErrorStderr(error);
     console.log(fail(`SCP fehlgeschlagen: ${localPath} → ${host}:${remotePath}`));
     console.log(warn(`Error: ${stderr}`));
     return false;
@@ -26,13 +46,19 @@ async function scpFile(keyPath: string, user: string, host: string, localPath: s
 }
 
 /** Execute SSH command with proper error handling */
-function sshExec(keyPath: string, user: string, host: string, remoteCmd: string, label: string): boolean {
+function sshExec(
+  keyPath: string,
+  user: string,
+  host: string,
+  remoteCmd: string,
+  label: string,
+): boolean {
   const cmd = `ssh -i ${keyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes ${user}@${host} ${JSON.stringify(remoteCmd)}`;
   try {
     execSync(cmd, { stdio: ["pipe", "pipe", "pipe"] });
     return true;
-  } catch (e: any) {
-    const stderr = e.stderr?.toString()?.trim() || "unknown error";
+  } catch (error) {
+    const stderr = readExecErrorStderr(error);
     console.log(fail(`${label} fehlgeschlagen`));
     console.log(warn(`Error: ${stderr}`));
     return false;
@@ -55,7 +81,10 @@ export async function setupPibo(interactive: boolean) {
   // Pre-flight checks
   console.log("\n" + bold("Prüfe Voraussetzungen..."));
 
-  if (!commandExists("node")) { console.log(fail("Node.js fehlt")); return; }
+  if (!commandExists("node")) {
+    console.log(fail("Node.js fehlt"));
+    return;
+  }
   const nodePath = nodeBin();
   console.log(ok(`Node.js: ${nodePath}`));
 
@@ -80,7 +109,7 @@ export async function setupPibo(interactive: boolean) {
     console.log(fail(`SSH-Key nicht gefunden: ${sshKeyPath}`));
     if (interactive) {
       console.log(info("Möchtest du jetzt einen SSH-Key generieren?"));
-      console.log(info("  ssh-keygen -t ed25519 -C \"pibo@$(hostname)\""));
+      console.log(info('  ssh-keygen -t ed25519 -C "pibo@$(hostname)"'));
       console.log(info("Dann erneut 'pibo docs-sync setup pibo' ausführen."));
     }
     return;
@@ -97,7 +126,7 @@ export async function setupPibo(interactive: boolean) {
     }
     if (attempt < 3) {
       console.log(info(`Versuch ${attempt} fehlgeschlagen, retry in 3s...`));
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 3000));
     }
   }
 
@@ -105,8 +134,16 @@ export async function setupPibo(interactive: boolean) {
     console.log(fail("SSH-Verbindung zum Server fehlgeschlagen nach 3 Versuchen"));
     console.log(info("Prüfe:"));
     console.log(info(`  1. Server erreichbar? (ping ${cfg.server.ip})`));
-    console.log(info(`  2. SSH-Key auf Server installiert? (ssh-copy-id ${cfg.server.user}@${cfg.server.ip})`));
-    console.log(info(`  3. SSH-Key ohne Passphrase? (ssh -i ${sshKeyPath} ${cfg.server.user}@${cfg.server.ip})`));
+    console.log(
+      info(
+        `  2. SSH-Key auf Server installiert? (ssh-copy-id ${cfg.server.user}@${cfg.server.ip})`,
+      ),
+    );
+    console.log(
+      info(
+        `  3. SSH-Key ohne Passphrase? (ssh -i ${sshKeyPath} ${cfg.server.user}@${cfg.server.ip})`,
+      ),
+    );
     return;
   }
   console.log(ok(`SSH → Server: OK (${cfg.server.user}@${cfg.server.ip})`));
@@ -131,7 +168,11 @@ export async function setupPibo(interactive: boolean) {
   // Add bare repo as remote if not already configured
   const remotes = run(`cd ${docsPath} && git remote get-url origin 2>/dev/null`) || "";
   if (!remotes) {
-    console.log(info("Bare Repo 'origin' wird nicht automatisch gesetzt — wird beim ersten Pull vom Server eingerichtet."));
+    console.log(
+      info(
+        "Bare Repo 'origin' wird nicht automatisch gesetzt — wird beim ersten Pull vom Server eingerichtet.",
+      ),
+    );
   } else {
     console.log(ok(`Remote origin: ${remotes.trim()}`));
   }
@@ -152,10 +193,20 @@ export async function setupPibo(interactive: boolean) {
 
   // Copy token to server with proper error handling
   console.log(info("Kopiere Token auf Server..."));
-  const scpResult = await scpFile(sshKeyPath, cfg.server.user, cfg.server.ip, tokenPath, "/root/.pibo-docs-notify-token");
+  const scpResult = await scpFile(
+    sshKeyPath,
+    cfg.server.user,
+    cfg.server.ip,
+    tokenPath,
+    "/root/.pibo-docs-notify-token",
+  );
   if (!scpResult) {
     console.log(fail("Token konnte nicht auf Server kopiert werden. Setup abgebrochen."));
-    console.log(info(`Manuell: scp -i ${sshKeyPath} ${tokenPath} ${cfg.server.user}@${cfg.server.ip}:/root/.pibo-docs-notify-token`));
+    console.log(
+      info(
+        `Manuell: scp -i ${sshKeyPath} ${tokenPath} ${cfg.server.user}@${cfg.server.ip}:/root/.pibo-docs-notify-token`,
+      ),
+    );
     return;
   }
   console.log(ok("Notify-Token auf Server verteilt"));
@@ -170,25 +221,32 @@ export async function setupPibo(interactive: boolean) {
   // Read watcher.js to dynamically determine push script name
   const watcherSrc = readFileSync(join(ASSETS_DIR, "scripts", "pibo-watcher.js"), "utf8");
   const pushScriptMatch = watcherSrc.match(/PUSH_SCRIPT.*?['"]([^'"]+)['"]/);
-  const pushScriptName = pushScriptMatch && pushScriptMatch[1] ? pushScriptMatch[1].split("/").pop() || "pibo-push.sh" : "pibo-push.sh";
+  const pushScriptName =
+    pushScriptMatch && pushScriptMatch[1]
+      ? pushScriptMatch[1].split("/").pop() || "pibo-push.sh"
+      : "pibo-push.sh";
 
   const scripts = [
     "pibo-notifier.js",
     "pibo-watcher.js",
     "pibo-pull.sh",
     "tunnel-monitor.js",
-    pushScriptName // Include pibo-push.sh if it exists
+    pushScriptName, // Include pibo-push.sh if it exists
   ];
 
   let scriptsCopied = 0;
   for (const script of scripts) {
     const src = join(ASSETS_DIR, "scripts", script);
-    if (!existsSync(src)) continue;
+    if (!existsSync(src)) {
+      continue;
+    }
 
     const content = readFileSync(src, "utf8").replace(/\/home\/pibo/g, home);
     const dst = join(scriptsTarget, script);
     writeFileSync(dst, content);
-    if (script && script.endsWith(".sh")) chmodSync(dst, 0o755);
+    if (script && script.endsWith(".sh")) {
+      chmodSync(dst, 0o755);
+    }
     scriptsCopied++;
   }
   console.log(ok(`${scriptsCopied} Scripts installiert in ${scriptsTarget}/`));
@@ -210,7 +268,7 @@ export async function setupPibo(interactive: boolean) {
       .replace(/{{HOME}}/g, home)
       .replace(/{{NODE_BIN_DIR}}/g, nodeDir)
       .replace(/{{PATH}}/g, process.env.PATH || "/usr/local/bin:/usr/bin:/bin")
-      .replace(/{{DOCS_PATH}}/g, docsPath)
+      .replace(/{{DOCS_PATH}}/g, docsPath),
   );
 
   // tunnel.service
@@ -221,7 +279,7 @@ export async function setupPibo(interactive: boolean) {
       .replace(/{{NOTIFY_PORT}}/g, String(cfg.pibo.notifyPort))
       .replace(/{{SERVER_IP}}/g, cfg.server.ip)
       .replace(/{{SERVER_USER}}/g, cfg.server.user)
-      .replace(/{{SSH_KEY_PATH}}/g, sshKeyPath)
+      .replace(/{{SSH_KEY_PATH}}/g, sshKeyPath),
   );
 
   // watcher.service
@@ -234,7 +292,7 @@ export async function setupPibo(interactive: boolean) {
       .replace(/{{HOME}}/g, home)
       .replace(/{{NODE_BIN_DIR}}/g, nodeDir)
       .replace(/{{PATH}}/g, process.env.PATH || "/usr/local/bin:/usr/bin:/bin")
-      .replace(/{{DOCS_PATH}}/g, docsPath)
+      .replace(/{{DOCS_PATH}}/g, docsPath),
   );
   console.log(ok("3 Service-Files geschrieben"));
 
@@ -244,11 +302,15 @@ export async function setupPibo(interactive: boolean) {
   run(`systemctl --user daemon-reload`);
 
   // Start services and verify
-  const services = ["pibo-docs-tunnel.service", "pibo-docs-notifier.service", "pibo-docs-watcher.service"];
+  const services = [
+    "pibo-docs-tunnel.service",
+    "pibo-docs-notifier.service",
+    "pibo-docs-watcher.service",
+  ];
   let servicesOk = true;
   for (const svc of services) {
-    const result = run(`systemctl --user enable --now ${svc}`);
-    await new Promise(r => setTimeout(r, 1500)); // Give service time to start
+    run(`systemctl --user enable --now ${svc}`);
+    await new Promise((r) => setTimeout(r, 1500)); // Give service time to start
     const active = run(`systemctl --user is-active ${svc}`);
     if (active === "active") {
       console.log(ok(`${svc}: aktiv`));
@@ -261,8 +323,14 @@ export async function setupPibo(interactive: boolean) {
   }
 
   if (!servicesOk) {
-    console.log(fail("Einige Services sind nicht gestartet. Prüfe die Logs mit: journalctl --user -u pibo-docs-*.service"));
-    console.log(info("Trotzdem Config gespeichert — du kannst die Services später manuell starten."));
+    console.log(
+      fail(
+        "Einige Services sind nicht gestartet. Prüfe die Logs mit: journalctl --user -u pibo-docs-*.service",
+      ),
+    );
+    console.log(
+      info("Trotzdem Config gespeichert — du kannst die Services später manuell starten."),
+    );
   }
 
   // Save config

@@ -94,6 +94,8 @@ export const AgentParamsSchema = Type.Object(
     groupSpace: Type.Optional(Type.String()),
     timeout: Type.Optional(Type.Integer({ minimum: 0 })),
     bestEffortDeliver: Type.Optional(Type.Boolean()),
+    /** Internal-only: skip local runtime stdout/stderr logging for this run. */
+    suppressRuntimeOutput: Type.Optional(Type.Boolean()),
     lane: Type.Optional(Type.String()),
     extraSystemPrompt: Type.Optional(Type.String()),
     internalEvents: Type.Optional(Type.Array(AgentInternalEventSchema)),

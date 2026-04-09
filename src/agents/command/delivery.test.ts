@@ -174,4 +174,27 @@ describe("normalizeAgentCommandReplyPayloads", () => {
       },
     ]);
   });
+
+  it("suppresses local preview logging when runtime output is explicitly disabled", async () => {
+    const runtime = {
+      log: vi.fn(),
+    };
+
+    const delivered = await deliverAgentCommandResult({
+      cfg: {} as OpenClawConfig,
+      deps: {} as CliDeps,
+      runtime: runtime as never,
+      opts: {
+        message: "test",
+        suppressRuntimeOutput: true,
+      } as AgentCommandOpts,
+      outboundSession: undefined,
+      sessionEntry: undefined,
+      payloads: [{ text: "VERDICT: APPROVE" }],
+      result: createResult(),
+    });
+
+    expect(runtime.log).not.toHaveBeenCalled();
+    expect(delivered.payloads).toMatchObject([{ text: "VERDICT: APPROVE" }]);
+  });
 });

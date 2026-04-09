@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-const runPiboWorkflows = vi.fn(async (_args: string[]) => "");
-const runPiboWorkflowsJson = vi.fn(async (_args: string[]) => ({}));
+const runPiboWorkflows = vi.fn(async (_api: unknown, _args: string[]) => "");
+const runPiboWorkflowsJson = vi.fn(async (_api: unknown, _args: string[]) => ({}));
 
 vi.mock("./workflow-runtime.js", () => ({
   runPiboWorkflows,
@@ -25,7 +25,7 @@ describe("pibo workflow bridge", () => {
     );
 
     expect(text).toBe("workflow list output");
-    expect(runPiboWorkflows).toHaveBeenCalledWith(["list"]);
+    expect(runPiboWorkflows).toHaveBeenCalledWith(expect.anything(), ["list"]);
   });
 
   it("exposes pibo_workflow_start as a generic tool bridge", async () => {
@@ -41,7 +41,7 @@ describe("pibo workflow bridge", () => {
       details: { ok: boolean; result?: { runId?: string } };
     };
 
-    expect(runPiboWorkflowsJson).toHaveBeenCalledWith([
+    expect(runPiboWorkflowsJson).toHaveBeenCalledWith(expect.anything(), [
       "start",
       "langgraph_worker_critic",
       "--output-json",

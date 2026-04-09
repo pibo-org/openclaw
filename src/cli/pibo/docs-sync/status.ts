@@ -1,12 +1,11 @@
-import { readFileSync, existsSync } from "fs";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { bold, ok, fail, warn, info, run, commandExists, serviceRunning, sshCheck } from "./utils.js";
 import { readConfig } from "./config.js";
+import { bold, ok, fail, warn, run, serviceRunning, sshCheck } from "./utils.js";
 
 export function showStatus() {
   const piboCfg = readConfig("pibo");
-  const serverCfg = readConfig("server");
 
   console.log(bold("\n📚 Docs Sync Status"));
   console.log("═".repeat(50));
@@ -45,19 +44,33 @@ export function showStatus() {
     const sshOk = sshCheck(serverIp, piboCfg.server.user, piboCfg.server.sshKeyPath);
     if (sshOk) {
       // Server Watcher
-      const watcherOutput = run(`ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "systemctl is-active pibo-docs-server-watcher.service 2>/dev/null || echo inactive"`);
-      console.log(watcherOutput === "active" ? ok("Server Watcher: running") : fail("Server Watcher: NOT running"));
+      const watcherOutput = run(
+        `ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "systemctl is-active pibo-docs-server-watcher.service 2>/dev/null || echo inactive"`,
+      );
+      console.log(
+        watcherOutput === "active"
+          ? ok("Server Watcher: running")
+          : fail("Server Watcher: NOT running"),
+      );
 
       // Cron
-      const cronOutput = run(`ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "crontab -l 2>/dev/null | grep pibo-docs-sync"`);
+      const cronOutput = run(
+        `ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "crontab -l 2>/dev/null | grep pibo-docs-sync"`,
+      );
       console.log(cronOutput ? ok("Cron: registered") : warn("Cron: NOT found"));
 
       // Bare Repo
-      const bareOk = run(`ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "git -C /var/docs-remote rev-parse HEAD 2>/dev/null"`);
-      console.log(bareOk ? ok(`Bare Repo: OK (${bareOk.slice(0, 7)})`) : fail("Bare Repo: not found"));
+      const bareOk = run(
+        `ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "git -C /var/docs-remote rev-parse HEAD 2>/dev/null"`,
+      );
+      console.log(
+        bareOk ? ok(`Bare Repo: OK (${bareOk.slice(0, 7)})`) : fail("Bare Repo: not found"),
+      );
 
       // GitHub Backup
-      const githubOk = run(`ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "git -C /var/lib/pibo-webapp/storage/docs log --oneline -1 2>/dev/null | head -c 7"`);
+      const githubOk = run(
+        `ssh -i ${piboCfg.server.sshKeyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${serverIp} "git -C /var/lib/pibo-webapp/storage/docs log --oneline -1 2>/dev/null | head -c 7"`,
+      );
       console.log(githubOk ? ok("GitHub Backup: reachable") : warn("GitHub Backup: unknown"));
     } else {
       console.log(fail("SSH to Server: FAILED"));

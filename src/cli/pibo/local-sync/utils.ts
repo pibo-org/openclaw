@@ -1,10 +1,34 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, rmSync } from "fs";
-import { dirname, join } from "path";
 import { homedir } from "os";
-import { bold, commandExists, fail, info, ok, run, runFull, serviceRunning, warn, writeSafe, nodeBin } from "../docs-sync/utils.js";
+import { dirname, join } from "path";
+import {
+  bold,
+  commandExists,
+  fail,
+  info,
+  ok,
+  run,
+  runFull,
+  serviceRunning,
+  warn,
+  writeSafe,
+  nodeBin,
+} from "../docs-sync/utils.js";
 import type { LocalSyncTarget } from "./config.js";
 
-export { bold, commandExists, fail, info, ok, run, runFull, serviceRunning, warn, writeSafe, nodeBin };
+export {
+  bold,
+  commandExists,
+  fail,
+  info,
+  ok,
+  run,
+  runFull,
+  serviceRunning,
+  warn,
+  writeSafe,
+  nodeBin,
+};
 
 export function targetScriptsDir(): string {
   return join(homedir(), "local-sync");
@@ -52,8 +76,12 @@ export function slugifyName(input: string): string {
 }
 
 export function validateName(name: string): string | null {
-  if (!name) return "Name darf nicht leer sein";
-  if (!/^[a-z][a-z0-9_-]*$/.test(name)) return "Name muss mit Buchstaben starten und darf nur a-z, 0-9, _ und - enthalten";
+  if (!name) {
+    return "Name darf nicht leer sein";
+  }
+  if (!/^[a-z][a-z0-9_-]*$/.test(name)) {
+    return "Name muss mit Buchstaben starten und darf nur a-z, 0-9, _ und - enthalten";
+  }
   return null;
 }
 
@@ -64,9 +92,16 @@ export function writeTargetMeta(target: LocalSyncTarget) {
 }
 
 export function removeTargetFiles(target: LocalSyncTarget) {
-  for (const p of [watcherScriptPath(target.name), pushScriptPath(target.name), targetMetaPath(target.name), serviceFilePath(target.serviceName)]) {
+  for (const p of [
+    watcherScriptPath(target.name),
+    pushScriptPath(target.name),
+    targetMetaPath(target.name),
+    serviceFilePath(target.serviceName),
+  ]) {
     try {
-      if (existsSync(p)) rmSync(p, { force: true });
+      if (existsSync(p)) {
+        rmSync(p, { force: true });
+      }
     } catch {}
   }
 }
@@ -84,7 +119,9 @@ export function writeUtf8(path: string, content: string) {
 
 export function readTargetMeta(name: string): LocalSyncTarget | null {
   const p = targetMetaPath(name);
-  if (!existsSync(p)) return null;
+  if (!existsSync(p)) {
+    return null;
+  }
   try {
     return JSON.parse(readFileSync(p, "utf8")) as LocalSyncTarget;
   } catch {

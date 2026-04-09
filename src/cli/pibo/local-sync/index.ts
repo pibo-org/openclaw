@@ -1,8 +1,15 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, rmSync } from "fs";
+import { existsSync, mkdirSync, chmodSync } from "fs";
 import { homedir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { Command } from "commander";
-import { getConfigPath, getTarget, readRegistry, removeTarget, type LocalSyncTarget, upsertTarget } from "./config.js";
+import {
+  getConfigPath,
+  getTarget,
+  readRegistry,
+  removeTarget,
+  type LocalSyncTarget,
+  upsertTarget,
+} from "./config.js";
 import {
   bold,
   commandExists,
@@ -10,7 +17,6 @@ import {
   info,
   nodeBin,
   ok,
-  readTargetMeta,
   removeTargetFiles,
   run,
   runFull,
@@ -29,8 +35,12 @@ import {
 } from "./utils.js";
 
 function expandPath(input: string): string {
-  if (input.startsWith("~/")) return join(homedir(), input.slice(2));
-  if (input === "~") return homedir();
+  if (input.startsWith("~/")) {
+    return join(homedir(), input.slice(2));
+  }
+  if (input === "~") {
+    return homedir();
+  }
   return resolve(input);
 }
 
@@ -68,8 +78,12 @@ function buildTarget(name: string, pathArg: string, repo: string, branch: string
 }
 
 function ensureGitRepo(target: LocalSyncTarget): string | null {
-  if (!existsSync(target.path)) return `Pfad existiert nicht: ${target.path}`;
-  if (!existsSync(join(target.path, ".git"))) return `Kein Git-Repo: ${target.path}`;
+  if (!existsSync(target.path)) {
+    return `Pfad existiert nicht: ${target.path}`;
+  }
+  if (!existsSync(join(target.path, ".git"))) {
+    return `Kein Git-Repo: ${target.path}`;
+  }
   return null;
 }
 
@@ -77,12 +91,18 @@ function ensureRemoteConfigured(target: LocalSyncTarget): string | null {
   const current = run(`git -C ${target.path} remote get-url origin 2>/dev/null`) || "";
   if (!current) {
     const add = runFull(`git -C ${target.path} remote add origin ${JSON.stringify(target.repo)}`);
-    if (!add.ok) return add.stderr || "origin konnte nicht gesetzt werden";
+    if (!add.ok) {
+      return add.stderr || "origin konnte nicht gesetzt werden";
+    }
     return null;
   }
   if (current.trim() !== target.repo.trim()) {
-    const set = runFull(`git -C ${target.path} remote set-url origin ${JSON.stringify(target.repo)}`);
-    if (!set.ok) return set.stderr || "origin konnte nicht aktualisiert werden";
+    const set = runFull(
+      `git -C ${target.path} remote set-url origin ${JSON.stringify(target.repo)}`,
+    );
+    if (!set.ok) {
+      return set.stderr || "origin konnte nicht aktualisiert werden";
+    }
   }
   return null;
 }
@@ -95,7 +115,9 @@ function generateWatcherScript(target: LocalSyncTarget): string {
         const ext = g.slice(1);
         return `if (filepath.endsWith(${JSON.stringify(ext)})) return false;`;
       }
-      if (g.includes("*")) return `if (filepath.includes(${JSON.stringify(g.replace(/\*/g, ""))})) return false;`;
+      if (g.includes("*")) {
+        return `if (filepath.includes(${JSON.stringify(g.replace(/\*/g, ""))})) return false;`;
+      }
       return `if (filepath === ${JSON.stringify(g)} || filepath.startsWith(${JSON.stringify(g + "/")}) || filepath.includes(${JSON.stringify("/" + g + "/")})) return false;`;
     }),
     `return true;`,
@@ -120,40 +142,40 @@ function shouldProcessFile(filepath) {
 }
 
 function debouncePush(changedFile) {
-  const dedupKey = \`${"${changedFile}"}-${"${Date.now() - (Date.now() % 500)}"}\`;
+  const dedupKey = \`\${changedFile}-\${Date.now() - (Date.now() % 500)}\`;
   if (seenEvents.has(dedupKey)) return;
   seenEvents.clear();
   seenEvents.add(dedupKey);
 
   changeCount++;
   if (debounceTimer) clearTimeout(debounceTimer);
-  console.log(\`[${"${new Date().toISOString()}"}] Change: ${"${changedFile}"} (batch: ${"${changeCount}"})\`);
+  console.log(\`[\${new Date().toISOString()}] Change: \${changedFile} (batch: \${changeCount})\`);
 
   debounceTimer = setTimeout(async () => {
-    console.log(\`[${"${new Date().toISOString()}"}] Debounce done — syncing ${"${changeCount}"} change(s)\`);
+    console.log(\`[\${new Date().toISOString()}] Debounce done — syncing \${changeCount} change(s)\`);
     changeCount = 0;
     try {
       const { stdout } = await execFileAsync('bash', [PUSH_SCRIPT], { timeout: 30000 });
-      if (stdout.trim()) console.log(\`[${"${new Date().toISOString()}"}] ${"${stdout.trim()}"}\`);
+      if (stdout.trim()) console.log(\`[\${new Date().toISOString()}] \${stdout.trim()}\`);
     } catch (err) {
-      if (err.stdout) console.log(\`  ${"${err.stdout.trim()}"}\`);
-      if (err.stderr) console.error(\`  Error: ${"${err.stderr?.trim()}"}\`);
+      if (err.stdout) console.log(\`  \${err.stdout.trim()}\`);
+      if (err.stderr) console.error(\`  Error: \${err.stderr?.trim()}\`);
     }
   }, DEBOUNCE_MS);
 }
 
-console.log(\`[${"${new Date().toISOString()}"}] Starting local sync watcher: ${"${TARGET_DIR}"}\`);
+console.log(\`[\${new Date().toISOString()}] Starting local sync watcher: \${TARGET_DIR}\`);
 const watcher = watch(TARGET_DIR, { recursive: true }, (eventType, filename) => {
   if (!filename) return;
   if (!shouldProcessFile(filename)) return;
-  debouncePush(\`${"${eventType}"} ${"${filename}"}\`);
+  debouncePush(\`\${eventType} \${filename}\`);
 });
 
 watcher.on('error', (err) => {
-  console.error(\`[${"${new Date().toISOString()}"}] Watcher error: ${"${err.message}"}\`);
+  console.error(\`[\${new Date().toISOString()}] Watcher error: \${err.message}\`);
 });
 
-console.log(\`[${"${new Date().toISOString()}"}] Watching for changes...\`);
+console.log(\`[\${new Date().toISOString()}] Watching for changes...\`);
 process.on('SIGINT', () => { watcher.close(); process.exit(0); });
 process.on('SIGTERM', () => { watcher.close(); process.exit(0); });
 `;
@@ -202,7 +224,7 @@ do_push() {
   git reset --hard FETCH_HEAD 2>/dev/null || true
 
   find "$SAVE_DIR" -type f | while read -r saved; do
-    rel="${"${saved#$SAVE_DIR/}"}"
+    rel="\${saved#$SAVE_DIR/}"
     mkdir -p "$(dirname "$rel")"
     cp "$saved" "$rel"
     git add "$rel"
@@ -263,7 +285,9 @@ function installTarget(target: LocalSyncTarget): string[] {
 
 function printTarget(target: LocalSyncTarget) {
   const active = run(`systemctl --user is-active ${target.serviceName}.service`) || "inactive";
-  console.log(`${target.name}\n  path: ${target.path}\n  repo: ${target.repo}\n  branch: ${target.branch}\n  enabled: ${target.enabled ? "yes" : "no"}\n  service: ${target.serviceName}.service (${active})`);
+  console.log(
+    `${target.name}\n  path: ${target.path}\n  repo: ${target.repo}\n  branch: ${target.branch}\n  enabled: ${target.enabled ? "yes" : "no"}\n  service: ${target.serviceName}.service (${active})`,
+  );
 }
 
 function addTarget(nameArg: string, opts: { path?: string; repo?: string; branch?: string }) {
@@ -329,7 +353,7 @@ function statusTarget(name?: string) {
     const origin = run(`git -C ${target.path} remote get-url origin 2>/dev/null`) || "-";
     const branch = run(`git -C ${target.path} branch --show-current 2>/dev/null`) || "-";
     const last = run(`git -C ${target.path} log -1 --format="%s (%cr)" 2>/dev/null`) || "-";
-    console.log(`${target.name}`);
+    console.log(target.name);
     console.log(`  service: ${service}`);
     console.log(`  branch: ${branch}`);
     console.log(`  origin: ${origin}`);
@@ -350,11 +374,29 @@ function doctorTarget(name?: string) {
   console.log(commandExists("systemctl") ? ok("systemctl vorhanden") : fail("systemctl fehlt"));
   for (const target of targets) {
     console.log(`\n${target.name}:`);
-    console.log(existsSync(target.path) ? ok(`Pfad vorhanden: ${target.path}`) : fail(`Pfad fehlt: ${target.path}`));
-    console.log(existsSync(join(target.path, ".git")) ? ok("Git-Repo erkannt") : fail("Kein Git-Repo"));
-    console.log(existsSync(watcherScriptPath(target.name)) ? ok("Watcher-Script vorhanden") : fail("Watcher-Script fehlt"));
-    console.log(existsSync(pushScriptPath(target.name)) ? ok("Push-Script vorhanden") : fail("Push-Script fehlt"));
-    console.log(existsSync(serviceFilePath(target.serviceName)) ? ok("Service-File vorhanden") : fail("Service-File fehlt"));
+    console.log(
+      existsSync(target.path)
+        ? ok(`Pfad vorhanden: ${target.path}`)
+        : fail(`Pfad fehlt: ${target.path}`),
+    );
+    console.log(
+      existsSync(join(target.path, ".git")) ? ok("Git-Repo erkannt") : fail("Kein Git-Repo"),
+    );
+    console.log(
+      existsSync(watcherScriptPath(target.name))
+        ? ok("Watcher-Script vorhanden")
+        : fail("Watcher-Script fehlt"),
+    );
+    console.log(
+      existsSync(pushScriptPath(target.name))
+        ? ok("Push-Script vorhanden")
+        : fail("Push-Script fehlt"),
+    );
+    console.log(
+      existsSync(serviceFilePath(target.serviceName))
+        ? ok("Service-File vorhanden")
+        : fail("Service-File fehlt"),
+    );
     const remote = run(`git -C ${target.path} remote get-url origin 2>/dev/null`) || "";
     console.log(remote ? ok(`origin gesetzt: ${remote}`) : fail("origin fehlt"));
   }
@@ -408,7 +450,9 @@ function runTarget(name: string) {
     process.exit(1);
   }
   console.log(ok(`Sync-Lauf fertig: ${name}`));
-  if (result.stdout) console.log(result.stdout);
+  if (result.stdout) {
+    console.log(result.stdout);
+  }
 }
 
 function removeTargetCommand(name: string) {
@@ -425,7 +469,9 @@ function removeTargetCommand(name: string) {
 }
 
 export function localSync() {
-  const cmd = new Command("local-sync").description("Generischer lokaler Repo-Sync per Watcher + Auto-Push");
+  const cmd = new Command("local-sync").description(
+    "Generischer lokaler Repo-Sync per Watcher + Auto-Push",
+  );
 
   cmd
     .command("add <name>")
@@ -435,10 +481,7 @@ export function localSync() {
     .option("--branch <name>", "Branch", "main")
     .action((name, opts) => addTarget(name, opts));
 
-  cmd
-    .command("list")
-    .description("Registrierte Targets anzeigen")
-    .action(listTargets);
+  cmd.command("list").description("Registrierte Targets anzeigen").action(listTargets);
 
   cmd
     .command("status [name]")

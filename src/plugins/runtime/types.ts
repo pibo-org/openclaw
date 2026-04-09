@@ -1,3 +1,15 @@
+import type {
+  WorkflowModuleManifest,
+  WorkflowRunRecord,
+  WorkflowStartRequest,
+} from "../../cli/pibo/workflows/types.js";
+import type { SessionEntry } from "../../config/sessions.js";
+import type { SessionsListParams, SessionsResolveParams } from "../../gateway/protocol/index.js";
+import type {
+  GatewaySessionRow,
+  SessionsListResult,
+  SessionsPatchResult,
+} from "../../gateway/session-utils.js";
 import type { PluginRuntimeChannel } from "./types-channel.js";
 import type { PluginRuntimeCore, RuntimeLogger } from "./types-core.js";
 
@@ -72,17 +84,49 @@ export type PluginRuntime = PluginRuntimeCore & {
     deleteSession: (params: SubagentDeleteSessionParams) => Promise<void>;
   };
   managedSessions: {
+    buildKey: (input: {
+      owner: string;
+      scope: string;
+      role?: string;
+      name?: string;
+      agentId?: string;
+    }) => string;
     buildWorkflowKey: (input: {
       flowId: string;
       role: string;
       name?: string;
       agentId?: string;
     }) => string;
+    list: (input?: SessionsListParams) => Promise<SessionsListResult>;
+    get: (input: { key: string; limit?: number }) => Promise<{
+      found: boolean;
+      key: string;
+      row?: GatewaySessionRow;
+      entry?: SessionEntry;
+      messages: unknown[];
+      messageCount: number;
+    }>;
+    status: (input: { key: string; limit?: number }) => Promise<{
+      found: boolean;
+      key: string;
+      row?: GatewaySessionRow;
+      entry?: SessionEntry;
+      messages: unknown[];
+      messageCount: number;
+    }>;
+    resolveSelector: (
+      input: SessionsResolveParams,
+    ) => Promise<
+      { ok: true; key: string } | { ok: false; error: { code?: string | number; message: string } }
+    >;
     resolve: (key: string) => Promise<{
       found: boolean;
       key: string;
       entry?: unknown;
       payload?: unknown;
+      row?: GatewaySessionRow;
+      messageCount?: number;
+      sessionId?: string;
     }>;
     create: (input: {
       key: string;
@@ -90,19 +134,84 @@ export type PluginRuntime = PluginRuntimeCore & {
       label?: string;
       model?: string;
       parentSessionKey?: string;
-    }) => Promise<unknown>;
+      task?: string;
+      message?: string;
+    }) => Promise<{
+      ok: true;
+      key: string;
+      sessionId: string;
+      entry: SessionEntry;
+      created: boolean;
+    }>;
+    add: (input: {
+      key: string;
+      agentId: string;
+      label?: string;
+      model?: string;
+      parentSessionKey?: string;
+      task?: string;
+      message?: string;
+    }) => Promise<{
+      ok: true;
+      key: string;
+      sessionId: string;
+      entry: SessionEntry;
+      created: boolean;
+    }>;
     patch: (input: {
       key: string;
       label?: string | null;
+      thinkingLevel?: string | null;
+      fastMode?: boolean | null;
+      verboseLevel?: string | null;
+      reasoningLevel?: string | null;
+      responseUsage?: "off" | "tokens" | "full" | "on" | null;
+      elevatedLevel?: string | null;
+      execHost?: string | null;
+      execSecurity?: string | null;
+      execAsk?: string | null;
+      execNode?: string | null;
       model?: string | null;
       spawnedBy?: string | null;
       spawnedWorkspaceDir?: string | null;
       spawnDepth?: number | null;
       subagentRole?: "orchestrator" | "leaf" | null;
       subagentControlScope?: "children" | "none" | null;
-    }) => Promise<unknown>;
+      sendPolicy?: "allow" | "deny" | null;
+      groupActivation?: "mention" | "always" | null;
+    }) => Promise<SessionsPatchResult>;
+    edit: (input: {
+      key: string;
+      label?: string | null;
+      thinkingLevel?: string | null;
+      fastMode?: boolean | null;
+      verboseLevel?: string | null;
+      reasoningLevel?: string | null;
+      responseUsage?: "off" | "tokens" | "full" | "on" | null;
+      elevatedLevel?: string | null;
+      execHost?: string | null;
+      execSecurity?: string | null;
+      execAsk?: string | null;
+      execNode?: string | null;
+      model?: string | null;
+      spawnedBy?: string | null;
+      spawnedWorkspaceDir?: string | null;
+      spawnDepth?: number | null;
+      subagentRole?: "orchestrator" | "leaf" | null;
+      subagentControlScope?: "children" | "none" | null;
+      sendPolicy?: "allow" | "deny" | null;
+      groupActivation?: "mention" | "always" | null;
+    }) => Promise<SessionsPatchResult>;
     reset: (key: string, reason?: "new" | "reset") => Promise<unknown>;
     delete: (key: string, deleteTranscript?: boolean) => Promise<void>;
+    compact: (input: { key: string; maxLines?: number }) => Promise<{
+      ok: true;
+      key: string;
+      compacted: boolean;
+      archived?: string;
+      kept?: number;
+      reason?: string;
+    }>;
     ensureWorkflowSession: (input: {
       flowId: string;
       role: string;
@@ -149,6 +258,14 @@ export type PluginRuntime = PluginRuntimeCore & {
       deleteAfterRun: boolean;
       runId?: string;
     }>;
+  };
+  piboWorkflows: {
+    list: () => Promise<WorkflowModuleManifest[]>;
+    describe: (moduleId: string) => Promise<WorkflowModuleManifest>;
+    start: (moduleId: string, request: WorkflowStartRequest) => Promise<WorkflowRunRecord>;
+    status: (runId: string) => Promise<WorkflowRunRecord>;
+    abort: (runId: string) => Promise<WorkflowRunRecord>;
+    runs: (limit?: number) => Promise<WorkflowRunRecord[]>;
   };
   channel: PluginRuntimeChannel;
 };

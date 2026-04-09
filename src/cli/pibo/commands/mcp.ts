@@ -1,6 +1,6 @@
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { execFileSync } from "child_process";
 import type { Readable } from "stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -73,7 +73,9 @@ function ensureCacheDir() {
 }
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
-  if (!fs.existsSync(filePath)) return fallback;
+  if (!fs.existsSync(filePath)) {
+    return fallback;
+  }
   return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
 }
 
@@ -98,18 +100,39 @@ function readActiveServers(): Record<string, McpServer> {
   return parsed ?? {};
 }
 
-function inferTransport(input: any): McpTransport {
-  if (typeof input.transport === "string") {
-    return input.transport;
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
   }
-  if (typeof input.url === "string" && input.url.trim() !== "") {
+  return value as Record<string, unknown>;
+}
+
+function parseTransport(value: unknown): McpTransport | undefined {
+  if (value === "stdio" || value === "http" || value === "streamable-http") {
+    return value;
+  }
+  return undefined;
+}
+
+function inferTransport(input: unknown): McpTransport {
+  const record = asRecord(input);
+  const transport = parseTransport(record?.transport);
+  if (transport) {
+    return transport;
+  }
+  if (typeof record?.url === "string" && record.url.trim() !== "") {
     return "streamable-http";
   }
   return "stdio";
 }
 
-function validateStringRecord(value: unknown, fieldName: string): Record<string, string> | undefined {
-  if (value === undefined) return undefined;
+function validateStringRecord(
+  value: unknown,
+  fieldName: string,
+): Record<string, string> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`'${fieldName}' muss ein Objekt sein.`);
   }
@@ -124,14 +147,15 @@ function validateStringRecord(value: unknown, fieldName: string): Record<string,
   return Object.fromEntries(entries);
 }
 
-function validateServerShape(input: any): McpServer {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+function validateServerShape(input: unknown): McpServer {
+  const record = asRecord(input);
+  if (!record) {
     throw new Error("Server-Definition muss ein JSON-Objekt sein.");
   }
 
-  const hasCommand = typeof input.command === "string" && input.command.trim() !== "";
-  const hasUrl = typeof input.url === "string" && input.url.trim() !== "";
-  const transport = inferTransport(input);
+  const hasCommand = typeof record.command === "string" && record.command.trim() !== "";
+  const hasUrl = typeof record.url === "string" && record.url.trim() !== "";
+  const transport = inferTransport(record);
 
   if (transport === "stdio" && !hasCommand) {
     throw new Error("Stdio-Server braucht 'command'.");
@@ -141,21 +165,21 @@ function validateServerShape(input: any): McpServer {
     throw new Error("HTTP-Server braucht 'url'.");
   }
 
-  if (input.args !== undefined && !Array.isArray(input.args)) {
+  if (record.args !== undefined && !Array.isArray(record.args)) {
     throw new Error("'args' muss ein Array sein.");
   }
 
   return {
     transport,
-    command: hasCommand ? input.command : undefined,
-    args: Array.isArray(input.args) ? input.args.map(String) : undefined,
-    url: hasUrl ? input.url : undefined,
-    env: validateStringRecord(input.env, "env"),
-    headers: validateStringRecord(input.headers, "headers"),
-    cwd: typeof input.cwd === "string" ? input.cwd : undefined,
-    runtime: input.runtime,
-    cache: input.cache,
-    meta: input.meta,
+    command: typeof record.command === "string" ? record.command : undefined,
+    args: Array.isArray(record.args) ? record.args.map(String) : undefined,
+    url: typeof record.url === "string" ? record.url : undefined,
+    env: validateStringRecord(record.env, "env"),
+    headers: validateStringRecord(record.headers, "headers"),
+    cwd: typeof record.cwd === "string" ? record.cwd : undefined,
+    runtime: asRecord(record.runtime) as McpServer["runtime"],
+    cache: asRecord(record.cache) as McpServer["cache"],
+    meta: asRecord(record.meta) as McpServer["meta"],
   };
 }
 
@@ -165,7 +189,9 @@ function getCachePath(name: string) {
 
 function readCache(name: string): DiscoveryCacheEntry | null {
   const filePath = getCachePath(name);
-  if (!fs.existsSync(filePath)) return null;
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
   return readJsonFile<DiscoveryCacheEntry | null>(filePath, null);
 }
 
@@ -175,11 +201,17 @@ function writeCache(name: string, entry: DiscoveryCacheEntry) {
 }
 
 function isCacheFresh(server: McpServer, cache: DiscoveryCacheEntry | null): boolean {
-  if (!cache) return false;
-  if (server.cache?.enabled === false) return false;
+  if (!cache) {
+    return false;
+  }
+  if (server.cache?.enabled === false) {
+    return false;
+  }
   const ttlSeconds = server.cache?.ttlSeconds ?? DEFAULT_CACHE_TTL_SECONDS;
   const generatedAt = Date.parse(cache.generatedAt);
-  if (Number.isNaN(generatedAt)) return false;
+  if (Number.isNaN(generatedAt)) {
+    return false;
+  }
   return Date.now() - generatedAt <= ttlSeconds * 1000;
 }
 
@@ -207,41 +239,50 @@ function formatJson(value: unknown): string {
 }
 
 function toDescription(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
+  if (typeof value !== "string") {
+    return undefined;
+  }
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
 }
 
 function toInputSchema(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
   return value as Record<string, unknown>;
 }
 
-function normalizeTool(tool: any): NormalizedTool {
+function normalizeTool(tool: unknown): NormalizedTool {
+  const record = asRecord(tool);
   return {
-    name: String(tool?.name ?? "unknown"),
-    description: toDescription(tool?.description),
-    inputSchema: toInputSchema(tool?.inputSchema),
+    name: typeof record?.name === "string" ? record.name : "unknown",
+    description: toDescription(record?.description),
+    inputSchema: toInputSchema(record?.inputSchema),
   };
 }
 
 function isIgnorableMcpStderrLine(line: string): boolean {
   const normalized = line.trim();
-  if (!normalized) return true;
+  if (!normalized) {
+    return true;
+  }
 
   const prefixes = [
-    'chrome-devtools-mcp exposes content of the browser instance',
-    'debug, and modify any data in the browser or DevTools.',
-    'Avoid sharing sensitive or personal information that you do not want to share with MCP clients.',
-    'Performance tools may send trace URLs to the Google CrUX API to fetch real-user experience data.',
-    'so returned values have to be JSON-serializable.',
+    "chrome-devtools-mcp exposes content of the browser instance",
+    "debug, and modify any data in the browser or DevTools.",
+    "Avoid sharing sensitive or personal information that you do not want to share with MCP clients.",
+    "Performance tools may send trace URLs to the Google CrUX API to fetch real-user experience data.",
+    "so returned values have to be JSON-serializable.",
   ];
 
   return prefixes.some((prefix) => normalized.startsWith(prefix));
 }
 
 function attachFilteredStderr(stream: Readable | null) {
-  if (!stream) return;
+  if (!stream) {
+    return;
+  }
 
   let buffer = "";
   stream.on("data", (chunk) => {
@@ -264,7 +305,9 @@ function attachFilteredStderr(stream: Readable | null) {
   });
 }
 
-async function connectToServer(server: McpServer): Promise<{ client: Client; close: () => Promise<void> }> {
+async function connectToServer(
+  server: McpServer,
+): Promise<{ client: Client; close: () => Promise<void> }> {
   const client = new Client({ name: "pibo-cli", version: "0.1.0" });
 
   if (server.transport === "stdio") {
@@ -303,7 +346,10 @@ async function connectToServer(server: McpServer): Promise<{ client: Client; clo
   };
 }
 
-async function discoverTools(name: string, opts?: { refresh?: boolean }): Promise<DiscoveryCacheEntry> {
+async function discoverTools(
+  name: string,
+  opts?: { refresh?: boolean },
+): Promise<DiscoveryCacheEntry> {
   const server = getRegisteredServer(name);
   const cache = readCache(name);
 
@@ -318,7 +364,9 @@ async function discoverTools(name: string, opts?: { refresh?: boolean }): Promis
       server: name,
       transport: getServerTransportLabel(server),
       generatedAt: new Date().toISOString(),
-      tools: (result.tools ?? []).map(normalizeTool).sort((a, b) => a.name.localeCompare(b.name)),
+      tools: (result.tools ?? [])
+        .map(normalizeTool)
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
     };
     writeCache(name, entry);
     return entry;
@@ -336,11 +384,15 @@ function getToolOrThrow(entry: DiscoveryCacheEntry, toolName: string): Normalize
   return tool;
 }
 
-function summarizeSchema(schema?: Record<string, unknown>): { required: string[]; optional: string[] } {
+function summarizeSchema(schema?: Record<string, unknown>): {
+  required: string[];
+  optional: string[];
+} {
   const propertiesRaw = schema?.properties;
-  const properties = propertiesRaw && typeof propertiesRaw === "object" && !Array.isArray(propertiesRaw)
-    ? (propertiesRaw as Record<string, unknown>)
-    : {};
+  const properties =
+    propertiesRaw && typeof propertiesRaw === "object" && !Array.isArray(propertiesRaw)
+      ? (propertiesRaw as Record<string, unknown>)
+      : {};
   const requiredRaw = schema?.required;
   const required = Array.isArray(requiredRaw) ? requiredRaw.map(String) : [];
   const requiredSet = new Set(required);
@@ -389,18 +441,23 @@ function renderToolHelp(name: string, tool: NormalizedTool) {
   console.log(formatJson(tool.inputSchema ?? { type: "object", properties: {} }));
   console.log("");
   console.log("Invoke examples:");
-  console.log(`  pibo mcp call ${name} ${tool.name} --json '${JSON.stringify(buildExamplePayload(tool))}'`);
+  console.log(
+    `  pibo mcp call ${name} ${tool.name} --json '${JSON.stringify(buildExamplePayload(tool))}'`,
+  );
   console.log(`  pibo mcp call ${name} ${tool.name} --json @payload.json`);
-  console.log(`  echo '${JSON.stringify(buildExamplePayload(tool))}' | pibo mcp call ${name} ${tool.name} --stdin`);
+  console.log(
+    `  echo '${JSON.stringify(buildExamplePayload(tool))}' | pibo mcp call ${name} ${tool.name} --stdin`,
+  );
 }
 
 function buildExamplePayload(tool: NormalizedTool): Record<string, unknown> {
   const schema = tool.inputSchema ?? {};
-  const propertiesRaw = (schema as any).properties;
-  const properties = propertiesRaw && typeof propertiesRaw === "object" && !Array.isArray(propertiesRaw)
-    ? (propertiesRaw as Record<string, any>)
-    : {};
-  const requiredRaw = (schema as any).required;
+  const propertiesRaw = asRecord(schema.properties);
+  const properties =
+    propertiesRaw && typeof propertiesRaw === "object" && !Array.isArray(propertiesRaw)
+      ? propertiesRaw
+      : {};
+  const requiredRaw = schema.required;
   const required = Array.isArray(requiredRaw) ? requiredRaw.map(String) : [];
 
   const payload: Record<string, unknown> = {};
@@ -410,11 +467,18 @@ function buildExamplePayload(tool: NormalizedTool): Record<string, unknown> {
   return payload;
 }
 
-function buildExampleValue(schema: any): unknown {
-  if (!schema || typeof schema !== "object") return "value";
-  if (schema.default !== undefined) return schema.default;
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
-  switch (schema.type) {
+function buildExampleValue(schema: unknown): unknown {
+  const record = asRecord(schema);
+  if (!record) {
+    return "value";
+  }
+  if (record.default !== undefined) {
+    return record.default;
+  }
+  if (Array.isArray(record.enum) && record.enum.length > 0) {
+    return record.enum[0];
+  }
+  switch (record.type) {
     case "string":
       return "value";
     case "integer":
@@ -453,21 +517,31 @@ function readPayloadSource(opts: { json?: string; stdin?: boolean }): Record<str
     }
     return parsed as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`Ungültiges JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Ungültiges JSON: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
 }
 
 function formatAge(timestamp: string): string {
   const value = Date.parse(timestamp);
-  if (Number.isNaN(value)) return "unknown";
+  if (Number.isNaN(value)) {
+    return "unknown";
+  }
 
   const diffMs = Date.now() - value;
   const diffSeconds = Math.max(0, Math.floor(diffMs / 1000));
-  if (diffSeconds < 60) return `${diffSeconds}s ago`;
+  if (diffSeconds < 60) {
+    return `${diffSeconds}s ago`;
+  }
   const diffMinutes = Math.floor(diffSeconds / 60);
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
   const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays}d ago`;
 }
@@ -477,7 +551,9 @@ function renderDoctorLine(label: string, status: "ok" | "warn" | "fail", detail:
   console.log(`${icon} ${label}: ${detail}`);
 }
 
-async function runDiscoveryProbe(server: McpServer): Promise<{ ok: boolean; toolCount?: number; error?: string }> {
+async function runDiscoveryProbe(
+  server: McpServer,
+): Promise<{ ok: boolean; toolCount?: number; error?: string }> {
   try {
     const { client, close } = await connectToServer(server);
     try {
@@ -496,12 +572,21 @@ function renderMcpCallResult(result: McpCallResult) {
   console.log(`${prefix} MCP call result`);
 
   const content = Array.isArray(result.content) ? result.content : [];
-  const textItems = content.filter((item) => item?.type === "text" && typeof item.text === "string");
-  const nonTextItems = content.filter((item) => !(item?.type === "text" && typeof item.text === "string"));
+  const textItems = content.filter(
+    (item) => item?.type === "text" && typeof item.text === "string",
+  );
+  const nonTextItems = content.filter(
+    (item) => !(item?.type === "text" && typeof item.text === "string"),
+  );
 
   if (textItems.length > 0) {
     console.log("");
-    console.log(textItems.map((item) => item.text?.trimEnd()).filter(Boolean).join("\n\n---\n\n"));
+    console.log(
+      textItems
+        .map((item) => item.text?.trimEnd())
+        .filter(Boolean)
+        .join("\n\n---\n\n"),
+    );
   }
 
   if (result.structuredContent !== undefined) {
@@ -516,7 +601,9 @@ function renderMcpCallResult(result: McpCallResult) {
     console.log(formatJson(nonTextItems));
   }
 
-  const extraEntries = Object.entries(result).filter(([key]) => !["content", "structuredContent", "isError"].includes(key));
+  const extraEntries = Object.entries(result).filter(
+    ([key]) => !["content", "structuredContent", "isError"].includes(key),
+  );
   if (extraEntries.length > 0) {
     console.log("");
     console.log("Meta:");
@@ -535,7 +622,9 @@ export function mcpRegister(name: string, json: string) {
 export function mcpList() {
   const registry = readRegistry();
   const active = readActiveServers();
-  const names = Array.from(new Set([...Object.keys(registry.servers), ...Object.keys(active)])).sort();
+  const names = Array.from(
+    new Set([...Object.keys(registry.servers), ...Object.keys(active)]),
+  ).toSorted();
 
   if (names.length === 0) {
     console.log("Keine MCP-Server registriert.");
@@ -547,7 +636,9 @@ export function mcpList() {
     const isActive = !!active[name];
     const source = validateServerShape(active[name] ?? stored);
     const mode = source.url ? `url=${source.url}` : `command=${source.command ?? "?"}`;
-    console.log(`${isActive ? "🟢" : "⚪"} ${name} — ${isActive ? "aktiv" : "inaktiv"} — ${source.transport} — ${mode}`);
+    console.log(
+      `${isActive ? "🟢" : "⚪"} ${name} — ${isActive ? "aktiv" : "inaktiv"} — ${source.transport} — ${mode}`,
+    );
   }
 }
 
@@ -560,12 +651,18 @@ export function mcpShow(name: string) {
     throw new Error(`MCP-Server nicht gefunden: ${name}`);
   }
 
-  console.log(JSON.stringify({
-    name,
-    active: !!active[name],
-    registered: !!registry.servers[name],
-    server: validateServerShape(server),
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        name,
+        active: !!active[name],
+        registered: !!registry.servers[name],
+        server: validateServerShape(server),
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 export function mcpEnable(name: string) {
@@ -647,7 +744,11 @@ export async function mcpCallHelp(name: string, toolName?: string, opts?: { refr
   renderToolHelp(name, getToolOrThrow(entry, toolName));
 }
 
-export async function mcpCall(name: string, toolName: string, opts: { json?: string; stdin?: boolean }) {
+export async function mcpCall(
+  name: string,
+  toolName: string,
+  opts: { json?: string; stdin?: boolean },
+) {
   const payload = readPayloadSource(opts);
   const server = getRegisteredServer(name);
   const { client, close } = await connectToServer(server);
@@ -673,7 +774,11 @@ export async function mcpDoctor(name: string, opts?: { refresh?: boolean }) {
   console.log("");
 
   if (!effectiveRaw) {
-    renderDoctorLine("registry", "fail", "server not found in PIBo registry or active OpenClaw state");
+    renderDoctorLine(
+      "registry",
+      "fail",
+      "server not found in PIBo registry or active OpenClaw state",
+    );
     return;
   }
 
@@ -686,8 +791,16 @@ export async function mcpDoctor(name: string, opts?: { refresh?: boolean }) {
     return;
   }
 
-  renderDoctorLine("registry", registeredRaw ? "ok" : "warn", registeredRaw ? "registered in PIBo config" : "not registered in PIBo config");
-  renderDoctorLine("active", activeRaw ? "ok" : "warn", activeRaw ? "active in OpenClaw" : "not active in OpenClaw");
+  renderDoctorLine(
+    "registry",
+    registeredRaw ? "ok" : "warn",
+    registeredRaw ? "registered in PIBo config" : "not registered in PIBo config",
+  );
+  renderDoctorLine(
+    "active",
+    activeRaw ? "ok" : "warn",
+    activeRaw ? "active in OpenClaw" : "not active in OpenClaw",
+  );
 
   if (server.transport === "stdio") {
     renderDoctorLine("transport", "ok", `stdio via command=${server.command ?? "?"}`);
@@ -713,7 +826,11 @@ export async function mcpDoctor(name: string, opts?: { refresh?: boolean }) {
     return;
   }
 
-  renderDoctorLine("runtime", "ok", `connected successfully, ${probe.toolCount ?? 0} tools visible`);
+  renderDoctorLine(
+    "runtime",
+    "ok",
+    `connected successfully, ${probe.toolCount ?? 0} tools visible`,
+  );
 
   if (opts?.refresh) {
     const refreshed = await discoverTools(name, { refresh: true });

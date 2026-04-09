@@ -1,19 +1,19 @@
-import { chromium } from "playwright-core";
-import * as fs from "fs";
-import * as path from "path";
 import { execSync } from "child_process";
 import { exec } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 import { promisify } from "util";
+import { chromium, type Page } from "playwright-core";
 
 const execAsync = promisify(exec);
 const CDP_URL = "http://127.0.0.1:18800";
 const STATE_PATH = path.join(
   process.env.HOME || "",
-  ".openclaw/workspace/state/twitter/last_check_heartbeat.json"
+  ".openclaw/workspace/state/twitter/last_check_heartbeat.json",
 );
 const BROWSER_USER_DATA_DIR = path.join(
   process.env.HOME || "",
-  ".openclaw/browser/openclaw/user-data/Default"
+  ".openclaw/browser/openclaw/user-data/Default",
 );
 
 // ── Konstanten ─────────────────────────────────────────────────
@@ -24,17 +24,26 @@ const MAX_TWEETS_SCANNED = 50;
 /** Nach diesem Limit wird abgebrochen (genug neue Tweets gefunden) */
 const NEW_TWEETS_LIMIT = 20;
 
-/** Scroll-Schritte zwischen Status-Checks */
-const SCROLL_PASSES = 25;
-
 // ── Kategorie & TL;DR ──────────────────────────────────────────
 
 const CATEGORY_KEYWORDS: [RegExp, string][] = [
-  [/ai\b|llm|gpt|claude|gemini|openai|anthropic|hugging ?face|gemma|o\d|grok|mistral|deepseek|chatbot|artificial intelligence/i, "AI"],
-  [/code|dev|api|sdk|npm|github|repo|library|framework|typescript|javascript|python|react\b|node\.?js|docker|k8s|kubernetes/i, "Dev"],
-  [/launch|release|launch|introducing|announc|new version|v\d+\.\d+|update.*mode|upgrade/i, "Release"],
+  [
+    /ai\b|llm|gpt|claude|gemini|openai|anthropic|hugging ?face|gemma|o\d|grok|mistral|deepseek|chatbot|artificial intelligence/i,
+    "AI",
+  ],
+  [
+    /code|dev|api|sdk|npm|github|repo|library|framework|typescript|javascript|python|react\b|node\.?js|docker|k8s|kubernetes/i,
+    "Dev",
+  ],
+  [
+    /launch|release|launch|introducing|announc|new version|v\d+\.\d+|update.*mode|upgrade/i,
+    "Release",
+  ],
   [/meme|joke|funny|hot people|slop|lmao|😂|💀|cartoon|comedy/i, "Humor"],
-  [/money|funding|ipo|revenue|acquisition|valuation|stock|earnings|billion|trillion|market cap|acquired|buy/i, "Business"],
+  [
+    /money|funding|ipo|revenue|acquisition|valuation|stock|earnings|billion|trillion|market cap|acquired|buy/i,
+    "Business",
+  ],
   [/research|study|paper|find|experiment|benchmark|eval|science|data set|dataset/i, "Research"],
   [/image|photo|picture|video|generate|prompt|creative\b|art\b|design|visual/i, "Media"],
   [/elon|tesla|spacex|starship|mars|rocket|boring|hyperloop|neuralink|x\b/i, "Elon"],
@@ -44,17 +53,25 @@ const CATEGORY_KEYWORDS: [RegExp, string][] = [
 
 function classifyTweet(text: string): string {
   for (const [re, cat] of CATEGORY_KEYWORDS) {
-    if (re.test(text)) return cat;
+    if (re.test(text)) {
+      return cat;
+    }
   }
-  if (text.length < 20) return "Short";
+  if (text.length < 20) {
+    return "Short";
+  }
   return "General";
 }
 
 function generateTldr(text: string): string {
-  if (text.length <= 100) return text.replace(/\n+/g, " · ");
+  if (text.length <= 100) {
+    return text.replace(/\n+/g, " · ");
+  }
   const sentences = text.split(/(?<=[.!?:])\s+/);
   const first = sentences[0] || text;
-  if (sentences.length > 3) return first.replace(/\n+/g, " · ") + " …";
+  if (sentences.length > 3) {
+    return first.replace(/\n+/g, " · ") + " …";
+  }
   return first.replace(/\n+/g, " · ");
 }
 
@@ -66,8 +83,6 @@ interface Tweet {
   statusId: string;
   url: string;
   repostedFrom: string | null;
-  tldr: string;
-  category: string;
 }
 
 interface State {
@@ -80,11 +95,22 @@ interface State {
   notes: string;
 }
 
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ── State I/O ──────────────────────────────────────────────────
 
 function readState(): State {
   if (!fs.existsSync(STATE_PATH)) {
-    return { lastCheck: null, seen: [], lastTweetCount: 0, lastNewTweetCount: 0, status: "initialized", notes: "" };
+    return {
+      lastCheck: null,
+      seen: [],
+      lastTweetCount: 0,
+      lastNewTweetCount: 0,
+      status: "initialized",
+      notes: "",
+    };
   }
   const raw = JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
   // Migration: Alte State-Dateien haben maxStatusId/recentBuffer statt seen
@@ -142,7 +168,7 @@ async function recoverBrowser(): Promise<boolean> {
     console.log("✅ Recovery abgeschlossen.");
     return true;
   } catch (err) {
-    console.error(`⚠️ Recovery fehlgeschlagen: ${err}`);
+    console.error(`⚠️ Recovery fehlgeschlagen: ${formatUnknownError(err)}`);
     return false;
   }
 }
@@ -153,7 +179,7 @@ async function recoverBrowser(): Promise<boolean> {
 async function ensureBrowserRunning(): Promise<boolean> {
   try {
     const browser = await chromium.connectOverCDP(CDP_URL);
-    browser.close();
+    void browser.close();
     console.log("✅ Browser läuft bereits.");
     return true;
   } catch {
@@ -166,13 +192,13 @@ async function ensureBrowserRunning(): Promise<boolean> {
       await new Promise((r) => setTimeout(r, 2000));
 
       execSync("openclaw browser start", { stdio: "pipe", timeout: 30000 });
-      
+
       // Kurz warten, bis CDP-Port bereit ist
       let attempts = 0;
       while (attempts < 15) {
         try {
           const browser = await chromium.connectOverCDP(CDP_URL);
-          browser.close();
+          void browser.close();
           console.log("✅ Browser gestartet.");
           return true;
         } catch {
@@ -182,8 +208,10 @@ async function ensureBrowserRunning(): Promise<boolean> {
       }
       throw new Error("Browser startete nicht innerhalb von 30s");
     } catch (err) {
-      console.error(`❌ Browser konnte nicht gestartet werden: ${err}`);
-      console.error("\n💡 Tipp: Führe 'openclaw browser restart' aus oder starte Chrome manuell neu.");
+      console.error(`❌ Browser konnte nicht gestartet werden: ${formatUnknownError(err)}`);
+      console.error(
+        "\n💡 Tipp: Führe 'openclaw browser restart' aus oder starte Chrome manuell neu.",
+      );
       return false;
     }
   }
@@ -191,15 +219,13 @@ async function ensureBrowserRunning(): Promise<boolean> {
 
 async function connectBrowser() {
   const browser = await chromium.connectOverCDP(CDP_URL);
-  const ctx = browser.contexts()[0]!;
-  const page = ctx.pages().find((p) => p.url().includes("x.com")) ?? ctx.pages()[0]!;
+  const ctx = browser.contexts()[0];
+  const page = ctx.pages().find((p) => p.url().includes("x.com")) ?? ctx.pages()[0];
   return { browser, page };
 }
 
-async function feedReadyCheck(page: any): Promise<boolean> {
-  return page.evaluate(
-    () => document.querySelectorAll("article[data-testid=tweet]").length > 0
-  );
+async function feedReadyCheck(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.querySelectorAll("article[data-testid=tweet]").length > 0);
 }
 
 // ── Hash-basierte Extraktion ───────────────────────────────────
@@ -213,11 +239,19 @@ async function feedReadyCheck(page: any): Promise<boolean> {
 // 4. Nur NEUE Tweets werden über die Bridge zurückgegeben
 
 async function extractTweetsHash(
-  page: any,
-  knownHashes: string[]
+  page: Page,
+  knownHashes: string[],
 ): Promise<{ tweets: Tweet[]; totalScanned: number; newHashes: string[]; allIds: string[] }> {
   const result = await page.evaluate(
-    async ({ knownSet, maxScanned, newLimit }: { knownSet: string[]; maxScanned: number; newLimit: number }) => {
+    async ({
+      knownSet,
+      maxScanned,
+      newLimit,
+    }: {
+      knownSet: string[];
+      maxScanned: number;
+      newLimit: number;
+    }) => {
       const known = new Set(knownSet);
       const tweets: Array<{
         author: string;
@@ -232,19 +266,31 @@ async function extractTweetsHash(
       let totalScanned = 0;
       let newCount = 0;
 
-      const blockedWords = [
-        "compose","explore","notifications","home","i","settings","profile",
-        "bookmarks","lists","communities","premium","jobs","connect_people",
-        "chat","grok","jf","creators"
-      ];
+      const blockedWords = new Set([
+        "compose",
+        "explore",
+        "notifications",
+        "home",
+        "i",
+        "settings",
+        "profile",
+        "bookmarks",
+        "lists",
+        "communities",
+        "premium",
+        "jobs",
+        "connect_people",
+        "chat",
+        "grok",
+        "jf",
+        "creators",
+      ]);
 
-      for (let pass = 0; pass < maxScanned; pass++) {
+      for (let pass = 0; pass < Math.min(maxScanned, 25); pass++) {
         window.scrollBy(0, 1000);
         await new Promise((r) => setTimeout(r, 1500));
 
-        const articles = document.querySelectorAll(
-          "article[data-testid=tweet]"
-        );
+        const articles = document.querySelectorAll("article[data-testid=tweet]");
 
         for (const a of articles) {
           // ── PHASE 1: NUR statusId lesen (minimaler DOM-Zugriff) ──
@@ -252,7 +298,9 @@ async function extractTweetsHash(
           const href = statusLink?.getAttribute("href") || "";
           const statusMatch = href.match(/\/status\/(\d+)/);
           const statusId = statusMatch ? statusMatch[1] : "";
-          if (!statusId) continue;
+          if (!statusId) {
+            continue;
+          }
 
           totalScanned++;
 
@@ -264,32 +312,36 @@ async function extractTweetsHash(
           allIds.push(statusId);
 
           // ── PHASE 2: Hash-Check — bekannt? SOFORT überspringen! ──
-          if (known.has(statusId)) continue;
+          if (known.has(statusId)) {
+            continue;
+          }
 
           // ── PHASE 3: NEUER Tweet — JETZT erst vollen Content parsen ──
           const tt = a.querySelector("[data-testid=tweetText]");
-          if (!tt) continue;
-          const text = tt.textContent!.trim();
+          if (!tt) {
+            continue;
+          }
+          const text = tt.textContent.trim();
 
           // Text-Duplikat-Check
-          if (allSeenText.has(text)) continue;
+          if (allSeenText.has(text)) {
+            continue;
+          }
           allSeenText.add(text);
 
           // Repost erkennen
-          const hasRepost = Array.from(a.querySelectorAll("span")).some(
-            (el: Element) => {
-              const t = (el as HTMLElement).textContent || "";
-              return t.match(/reposted$/);
-            }
-          );
+          const hasRepost = Array.from(a.querySelectorAll("span")).some((el: Element) => {
+            const t = (el as HTMLElement).textContent || "";
+            return t.match(/reposted$/);
+          });
 
           // Links/Handles sammeln
           const links = a.querySelectorAll("a[role=link]");
           const hrefs: string[] = [];
           for (const l of links) {
             const h = (l as HTMLAnchorElement).getAttribute("href") || "";
-            const m = h.match(/^\/([^\/]{1,30})$/);
-            if (m && !blockedWords.includes(m[1].toLowerCase()) && !m[1].startsWith("status")) {
+            const m = h.match(/^\/([^/]{1,30})$/);
+            if (m && !blockedWords.has(m[1].toLowerCase()) && !m[1].startsWith("status")) {
               hrefs.push("@" + m[1]);
             }
           }
@@ -309,7 +361,13 @@ async function extractTweetsHash(
             ? `https://x.com/${urlHandle.replace("@", "")}/status/${statusId}`
             : "";
 
-          tweets.push({ author: handle, text: text.substring(0, 200), statusId, url, repostedFrom });
+          tweets.push({
+            author: handle,
+            text: text.substring(0, 200),
+            statusId,
+            url,
+            repostedFrom,
+          });
           newHashes.push(statusId);
           newCount++;
 
@@ -327,7 +385,7 @@ async function extractTweetsHash(
 
       return { tweets, totalScanned, newHashes, allIds };
     },
-    { knownSet: knownHashes, maxScanned: MAX_TWEETS_SCANNED, newLimit: NEW_TWEETS_LIMIT }
+    { knownSet: knownHashes, maxScanned: MAX_TWEETS_SCANNED, newLimit: NEW_TWEETS_LIMIT },
   );
 
   return result;
@@ -370,9 +428,15 @@ export async function twitterCheck(opts: { coldStart?: boolean; verbose?: boolea
       await page.waitForTimeout(3000);
       const ready2 = await feedReadyCheck(page);
       if (!ready2) {
-        console.error("❌ Feed nicht bereit nach 6s — Browser-Verbindung steht, aber X zeigt keinen Feed.");
-        console.error("💡 Mögliche Ursachen: X-Session abgelaufen, Login erforderlich, oder Chrome-Crash.");
-        console.error("💡 Versuche 'openclaw browser restart' oder Known-Issues: browser-cdp-failure.md");
+        console.error(
+          "❌ Feed nicht bereit nach 6s — Browser-Verbindung steht, aber X zeigt keinen Feed.",
+        );
+        console.error(
+          "💡 Mögliche Ursachen: X-Session abgelaufen, Login erforderlich, oder Chrome-Crash.",
+        );
+        console.error(
+          "💡 Versuche 'openclaw browser restart' oder Known-Issues: browser-cdp-failure.md",
+        );
         state.status = "browser-error";
         state.notes = "Feed not ready after 6s — possible session expired or Chrome crash";
         state.lastCheck = new Date().toISOString();
@@ -383,10 +447,7 @@ export async function twitterCheck(opts: { coldStart?: boolean; verbose?: boolea
 
     console.log("✅ Feed ready — Hash-Scan startet...\n");
 
-    const { tweets, totalScanned, newHashes, allIds } = await extractTweetsHash(
-      page,
-      knownHashes
-    );
+    const { tweets, totalScanned, allIds } = await extractTweetsHash(page, knownHashes);
 
     // Neue Hashes zum Set hinzufügen
     const updatedSeen = [...new Set([...knownHashes, ...allIds])];
@@ -417,7 +478,7 @@ export async function twitterCheck(opts: { coldStart?: boolean; verbose?: boolea
     console.log("\n─── Neue Tweets ───\n");
     const limit = opts.verbose ? tweets.length : Math.min(tweets.length, 10);
     for (let i = 0; i < limit; i++) {
-      const t = tweets[i]!;
+      const t = tweets[i];
       const category = classifyTweet(t.text);
       const tldr = generateTldr(t.text);
 
@@ -443,7 +504,7 @@ export async function twitterStatus() {
   console.log(JSON.stringify(state, null, 2));
 }
 
-export async function twitterReset(noConfirm: boolean) {
+export async function twitterReset(_noConfirm: boolean) {
   const state: State = {
     lastCheck: null,
     seen: [],

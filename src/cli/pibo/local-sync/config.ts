@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
 import { homedir } from "os";
+import { join } from "path";
 
 export interface LocalSyncTarget {
   name: string;
@@ -38,7 +38,9 @@ export function getConfigPath(): string {
 }
 
 export function readRegistry(): LocalSyncRegistry {
-  if (!existsSync(CONFIG_PATH)) return defaultRegistry();
+  if (!existsSync(CONFIG_PATH)) {
+    return defaultRegistry();
+  }
   try {
     const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as LocalSyncRegistry;
     return {
@@ -65,15 +67,20 @@ export function getTarget(name: string): LocalSyncTarget | undefined {
 export function upsertTarget(target: LocalSyncTarget) {
   const registry = readRegistry();
   const idx = registry.targets.findIndex((t) => t.name === target.name);
-  if (idx >= 0) registry.targets[idx] = target;
-  else registry.targets.push(target);
+  if (idx >= 0) {
+    registry.targets[idx] = target;
+  } else {
+    registry.targets.push(target);
+  }
   writeRegistry(registry);
 }
 
 export function removeTarget(name: string): LocalSyncTarget | null {
   const registry = readRegistry();
   const idx = registry.targets.findIndex((t) => t.name === name);
-  if (idx < 0) return null;
+  if (idx < 0) {
+    return null;
+  }
   const [removed] = registry.targets.splice(idx, 1);
   writeRegistry(registry);
   return removed;

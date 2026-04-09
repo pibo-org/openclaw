@@ -1,6 +1,6 @@
 # PIBO CLI integration into OpenClaw
 
-The former standalone `pibo-cli` has been ported into the OpenClaw fork as the native subcommand tree:
+Most of the former standalone `pibo-cli` has been ported into the OpenClaw fork as the native subcommand tree:
 
 - `openclaw pibo twitter ...`
 - `openclaw pibo agents ...`
@@ -11,6 +11,20 @@ The former standalone `pibo-cli` has been ported into the OpenClaw fork as the n
 - `openclaw pibo mcp ...`
 - `openclaw pibo todo ...`
 - `openclaw pibo samba ...`
+- `openclaw pibo workflows ...`
+
+## Workflow cutover status
+
+The workflow runtime is now native to the OpenClaw fork.
+
+Current reality:
+
+- workflow code lives under `src/cli/pibo/workflows/`
+- `openclaw pibo workflows ...` is the native source of truth
+- `extensions/pibo` now uses OpenClaw's in-process runtime surface instead of shelling out to the external `pibo-cli` repo
+- `langgraph_worker_critic` runs through OpenClaw-managed workflow sessions with persisted session keys in the run record
+
+The former standalone `pibo-cli` repo remains a historical migration source, not an active workflow runtime dependency.
 
 ## Integration shape
 
@@ -21,4 +35,4 @@ The former standalone `pibo-cli` has been ported into the OpenClaw fork as the n
 
 ## Runtime migration
 
-The old active runtime path was the globally linked `pibo-cli` package and its `pibo` binary. After validating the OpenClaw fork build, remove/disable that global package so the PIBO command surface lives only under OpenClaw.
+The old active runtime path was the globally linked `pibo-cli` package and its `pibo` binary. After the native workflow cutover, that external workflow path is no longer needed for normal PIBO operation inside OpenClaw.

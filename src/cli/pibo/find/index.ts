@@ -100,7 +100,9 @@ export async function findRun(prompt: string, options: FindOptions): Promise<voi
   let successCount = 0;
 
   for (const result of results) {
-    if (result.success) successCount++;
+    if (result.success) {
+      successCount++;
+    }
 
     console.log(`=== ${result.target.label} ===`);
 
@@ -138,9 +140,15 @@ function getSelectedTargets(options: FindOptions): FindTarget[] {
   const explicitDocs = !!options.docs;
   const explicitCode = !!options.code;
 
-  if (explicitDocs && explicitCode) return [DOCS_TARGET, CODE_TARGET];
-  if (explicitDocs) return [DOCS_TARGET];
-  if (explicitCode) return [CODE_TARGET];
+  if (explicitDocs && explicitCode) {
+    return [DOCS_TARGET, CODE_TARGET];
+  }
+  if (explicitDocs) {
+    return [DOCS_TARGET];
+  }
+  if (explicitCode) {
+    return [CODE_TARGET];
+  }
   return [DOCS_TARGET, CODE_TARGET];
 }
 

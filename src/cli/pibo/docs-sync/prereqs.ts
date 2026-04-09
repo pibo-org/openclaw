@@ -1,8 +1,8 @@
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { bold, ok, fail, warn, info, commandExists, run, sshCheck } from "./utils.js";
 import { readConfig } from "./config.js";
+import { bold, ok, fail, warn, info, commandExists, sshCheck } from "./utils.js";
 
 export function runPrereqs() {
   const home = homedir();
@@ -14,10 +14,13 @@ export function runPrereqs() {
   let problems = 0;
 
   const requireCmd = (name: string, installHint?: string) => {
-    if (commandExists(name)) console.log(ok(`${name} vorhanden`));
-    else {
+    if (commandExists(name)) {
+      console.log(ok(`${name} vorhanden`));
+    } else {
       console.log(fail(`${name} fehlt`));
-      if (installHint) console.log(info(installHint));
+      if (installHint) {
+        console.log(info(installHint));
+      }
       problems++;
     }
   };
@@ -31,8 +34,9 @@ export function runPrereqs() {
 
   const defaultKey = join(home, ".ssh", "id_ed25519");
   const sshKey = cfg?.server.sshKeyPath || defaultKey;
-  if (existsSync(sshKey)) console.log(ok(`SSH-Key gefunden: ${sshKey}`));
-  else {
+  if (existsSync(sshKey)) {
+    console.log(ok(`SSH-Key gefunden: ${sshKey}`));
+  } else {
     console.log(fail(`SSH-Key fehlt: ${sshKey}`));
     console.log(info('Erzeuge einen Key mit: ssh-keygen -t ed25519 -C "pibo@hostname"'));
     problems++;
@@ -41,8 +45,9 @@ export function runPrereqs() {
   if (cfg?.server.ip) {
     console.log(bold("\nServer-Verbindung:"));
     const sshOk = sshCheck(cfg.server.ip, cfg.server.user || "root", sshKey);
-    if (sshOk) console.log(ok(`SSH erreichbar: ${cfg.server.user}@${cfg.server.ip}`));
-    else {
+    if (sshOk) {
+      console.log(ok(`SSH erreichbar: ${cfg.server.user}@${cfg.server.ip}`));
+    } else {
       console.log(fail(`SSH nicht erreichbar: ${cfg.server.user}@${cfg.server.ip}`));
       console.log(info(`Teste manuell: ssh -i ${sshKey} ${cfg.server.user}@${cfg.server.ip}`));
       console.log(info(`Oder Key kopieren: ssh-copy-id ${cfg.server.user}@${cfg.server.ip}`));
@@ -60,19 +65,25 @@ export function runPrereqs() {
     problems++;
   } else {
     console.log(ok(`Config gefunden (${cfg.role})`));
-    if (cfg.github.backupRepo) console.log(ok(`Backup Repo gesetzt: ${cfg.github.backupRepo}`));
-    else {
+    if (cfg.github.backupRepo) {
+      console.log(ok(`Backup Repo gesetzt: ${cfg.github.backupRepo}`));
+    } else {
       console.log(warn("GitHub Backup Repo ist leer"));
       problems++;
     }
-    if (cfg.server.remoteDocsPath) console.log(ok(`Server Docs Path: ${cfg.server.remoteDocsPath}`));
+    if (cfg.server.remoteDocsPath) {
+      console.log(ok(`Server Docs Path: ${cfg.server.remoteDocsPath}`));
+    }
   }
 
   if (cfg?.role !== "server") {
     console.log(bold("\nPIBo-seitig:"));
     const docsPath = cfg?.pibo.docsPath || join(home, "docs");
-    if (existsSync(docsPath)) console.log(ok(`Docs-Pfad existiert: ${docsPath}`));
-    else console.log(warn(`Docs-Pfad existiert noch nicht: ${docsPath} (wird beim Setup erstellt)`));
+    if (existsSync(docsPath)) {
+      console.log(ok(`Docs-Pfad existiert: ${docsPath}`));
+    } else {
+      console.log(warn(`Docs-Pfad existiert noch nicht: ${docsPath} (wird beim Setup erstellt)`));
+    }
   }
 
   console.log("\n" + "═".repeat(50));

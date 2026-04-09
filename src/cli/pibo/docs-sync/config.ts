@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, resolve } from "path";
 import { homedir } from "os";
+import { join, resolve } from "path";
 
 export interface DocsSyncConfig {
   role: "pibo" | "server";
@@ -29,11 +29,10 @@ export interface DocsSyncConfig {
 const CONFIG_FILE_NAME = ".pibo-docs-sync-config.json";
 
 function configCandidates(role: "pibo" | "server"): string[] {
-  if (role === "server") return [join("/root", CONFIG_FILE_NAME)];
-  return [
-    join(homedir(), CONFIG_FILE_NAME),
-    join(homedir(), ".config", CONFIG_FILE_NAME),
-  ];
+  if (role === "server") {
+    return [join("/root", CONFIG_FILE_NAME)];
+  }
+  return [join(homedir(), CONFIG_FILE_NAME), join(homedir(), ".config", CONFIG_FILE_NAME)];
 }
 
 function configPath(role: "pibo" | "server"): string {
@@ -46,7 +45,9 @@ export function configExists(role: "pibo" | "server"): boolean {
 
 export function readConfig(role: "pibo" | "server"): DocsSyncConfig | null {
   for (const p of configCandidates(role)) {
-    if (!existsSync(p)) continue;
+    if (!existsSync(p)) {
+      continue;
+    }
     try {
       return JSON.parse(readFileSync(p, "utf8")) as DocsSyncConfig;
     } catch {

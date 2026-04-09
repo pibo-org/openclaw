@@ -1,26 +1,32 @@
 import { Command } from "commander";
-import { setupServer } from "./setup-server.js";
-import { setupPibo } from "./setup-pibo.js";
-import { showStatus } from "./status.js";
-import { runDiagnose } from "./diagnose.js";
-import { runTest } from "./test.js";
-import { runWizard } from "./wizard.js";
-import { showInfo } from "./info.js";
-import { runPrereqs } from "./prereqs.js";
-import { uninstallDocsSync } from "./uninstall.js";
 import { readConfig } from "./config.js";
 import { configExists } from "./config.js";
+import { runDiagnose } from "./diagnose.js";
+import { showInfo } from "./info.js";
+import { runPrereqs } from "./prereqs.js";
+import { setupPibo } from "./setup-pibo.js";
+import { setupServer } from "./setup-server.js";
+import { showStatus } from "./status.js";
+import { runTest } from "./test.js";
+import { uninstallDocsSync } from "./uninstall.js";
+import { runWizard } from "./wizard.js";
 
 export function docsSync() {
-  const cmd = new Command("docs-sync").description("Docs Sync Verwaltung — Setup, Status, Diagnose");
+  const cmd = new Command("docs-sync").description(
+    "Docs Sync Verwaltung — Setup, Status, Diagnose",
+  );
 
   cmd
     .command("setup <role>")
     .description("Setup ausführen — 'pibo' oder 'server'")
     .action(async (role: string) => {
-      if (role === "server") await setupServer(false);
-      else if (role === "pibo") await setupPibo(false);
-      else console.log(`Unbekannte Rolle: ${role}. Verwende 'pibo' oder 'server'.`);
+      if (role === "server") {
+        await setupServer(false);
+      } else if (role === "pibo") {
+        await setupPibo(false);
+      } else {
+        console.log(`Unbekannte Rolle: ${role}. Verwende 'pibo' oder 'server'.`);
+      }
     });
 
   cmd
@@ -35,25 +41,13 @@ export function docsSync() {
     .description("Erklärt Architektur, Voraussetzungen und Setup-Reihenfolge")
     .action(showInfo);
 
-  cmd
-    .command("status")
-    .description("Status aller Komponenten anzeigen")
-    .action(showStatus);
+  cmd.command("status").description("Status aller Komponenten anzeigen").action(showStatus);
 
-  cmd
-    .command("test")
-    .description("Test-Sync durchführen")
-    .action(runTest);
+  cmd.command("test").description("Test-Sync durchführen").action(runTest);
 
-  cmd
-    .command("doctor")
-    .description("Diagnose bei Problemen")
-    .action(runDiagnose);
+  cmd.command("doctor").description("Diagnose bei Problemen").action(runDiagnose);
 
-  cmd
-    .command("prereqs")
-    .description("Vorab-Checks für frisches Setup")
-    .action(runPrereqs);
+  cmd.command("prereqs").description("Vorab-Checks für frisches Setup").action(runPrereqs);
 
   cmd
     .command("uninstall <role>")

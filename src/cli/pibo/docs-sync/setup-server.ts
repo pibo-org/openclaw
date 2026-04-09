@@ -1,25 +1,45 @@
+import { execSync } from "child_process";
 import { unlinkSync } from "fs";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { execSync } from "child_process";
-import { bold, ok, fail, warn, info, run, commandExists, generateToken, nodeBin } from "./utils.js";
 import { DocsSyncConfig, readConfig, writeConfig, defaultConfig } from "./config.js";
+import { bold, ok, fail, warn, info, commandExists, generateToken, nodeBin } from "./utils.js";
 
 // ESM path resolution
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ASSETS_DIR = fileURLToPath(new URL("../../../../docs/pibo-cli/assets/", import.meta.url));
 
+function readExecErrorStderr(error: unknown): string {
+  if (!error || typeof error !== "object" || !("stderr" in error)) {
+    return "unknown error";
+  }
+  const stderr = error.stderr;
+  if (typeof stderr === "string") {
+    return stderr.trim() || "unknown error";
+  }
+  if (stderr instanceof Uint8Array) {
+    return Buffer.from(stderr).toString("utf8").trim() || "unknown error";
+  }
+  return "unknown error";
+}
+
 /** SCP a file with proper error handling */
-async function scpFile(keyPath: string, user: string, host: string, localPath: string, remotePath: string): Promise<boolean> {
+async function scpFile(
+  keyPath: string,
+  user: string,
+  host: string,
+  localPath: string,
+  remotePath: string,
+): Promise<boolean> {
   const cmd = `scp -i ${keyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=15 ${localPath} ${user}@${host}:${remotePath}`;
   try {
     execSync(cmd, { stdio: ["pipe", "pipe", "pipe"] });
     return true;
-  } catch (e: any) {
-    const stderr = e.stderr?.toString()?.trim() || "unknown error";
+  } catch (error) {
+    const stderr = readExecErrorStderr(error);
     console.log(fail(`SCP fehlgeschlagen: ${localPath} → ${host}:${remotePath}`));
     console.log(warn(`Error: ${stderr}`));
     return false;
@@ -27,13 +47,19 @@ async function scpFile(keyPath: string, user: string, host: string, localPath: s
 }
 
 /** Execute SSH command with proper error handling */
-async function sshExec(keyPath: string, user: string, host: string, remoteCmd: string, label: string): Promise<boolean> {
+async function sshExec(
+  keyPath: string,
+  user: string,
+  host: string,
+  remoteCmd: string,
+  label: string,
+): Promise<boolean> {
   const cmd = `ssh -i ${keyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes ${user}@${host} ${JSON.stringify(remoteCmd)}`;
   try {
     execSync(cmd, { stdio: ["pipe", "pipe", "pipe"] });
     return true;
-  } catch (e: any) {
-    const stderr = e.stderr?.toString()?.trim() || "unknown error";
+  } catch (error) {
+    const stderr = readExecErrorStderr(error);
     console.log(fail(`${label} fehlgeschlagen`));
     console.log(warn(`Error: ${stderr}`));
     return false;
@@ -91,7 +117,7 @@ export async function setupServer(interactive: boolean) {
     }
     if (attempt < 3) {
       console.log(info(`Versuch ${attempt} fehlgeschlagen, retry in 3s...`));
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 3000));
     }
   }
 
@@ -99,16 +125,30 @@ export async function setupServer(interactive: boolean) {
     console.log(fail("SSH-Verbindung zum Server fehlgeschlagen nach 3 Versuchen"));
     console.log(info("Prüfe:"));
     console.log(info(`  1. Server erreichbar? (ping ${serverIp})`));
-    console.log(info(`  2. SSH-Key auf Server installiert? (ssh-copy-id ${serverUser}@${serverIp})`));
+    console.log(
+      info(`  2. SSH-Key auf Server installiert? (ssh-copy-id ${serverUser}@${serverIp})`),
+    );
     return;
   }
 
   // Check / create bare repo
   console.log(info("Prüfe Bare Repo auf Server..."));
-  const bareExists = await sshExec(sshKey, serverUser, serverIp, "test -d /var/docs-remote", "Bare Repo Check");
+  const bareExists = await sshExec(
+    sshKey,
+    serverUser,
+    serverIp,
+    "test -d /var/docs-remote",
+    "Bare Repo Check",
+  );
   if (!bareExists) {
     console.log(info("Erstelle Bare Repo /var/docs-remote..."));
-    const created = await sshExec(sshKey, serverUser, serverIp, "mkdir -p /var/docs-remote && git init --bare /var/docs-remote", "Bare Repo erstellen");
+    const created = await sshExec(
+      sshKey,
+      serverUser,
+      serverIp,
+      "mkdir -p /var/docs-remote && git init --bare /var/docs-remote",
+      "Bare Repo erstellen",
+    );
     if (!created) {
       console.log(fail("Bare Repo konnte nicht erstellt werden. Setup abgebrochen."));
       return;
@@ -120,7 +160,13 @@ export async function setupServer(interactive: boolean) {
 
   // Check storage docs dir
   console.log(info("Prüfe Storage Docs Verzeichnis..."));
-  const storageExists = await sshExec(sshKey, serverUser, serverIp, `test -d ${cfg.server.remoteDocsPath}`, "Storage Docs Check");
+  const storageExists = await sshExec(
+    sshKey,
+    serverUser,
+    serverIp,
+    `test -d ${cfg.server.remoteDocsPath}`,
+    "Storage Docs Check",
+  );
   if (!storageExists) {
     console.log(fail(`Storage Docs Verzeichnis nicht gefunden: ${cfg.server.remoteDocsPath}`));
     console.log(info("Die WebApp muss installiert sein für Docs-Sync."));
@@ -154,7 +200,7 @@ export async function setupServer(interactive: boolean) {
 
   // Copy token to server
   console.log(info("Kopiere Token auf Server..."));
-  if (!await scpFile(sshKey, serverUser, serverIp, tokenHome, "/root/.pibo-docs-notify-token")) {
+  if (!(await scpFile(sshKey, serverUser, serverIp, tokenHome, "/root/.pibo-docs-notify-token"))) {
     console.log(fail("Token konnte nicht auf Server kopiert werden. Setup abgebrochen."));
     return;
   }
@@ -163,8 +209,22 @@ export async function setupServer(interactive: boolean) {
   // Server Watcher script
   const watcherScript = join(ASSETS_DIR, "scripts", "server-watcher.js");
   if (existsSync(watcherScript)) {
-    if (await scpFile(sshKey, serverUser, serverIp, watcherScript, "/root/bin/pibo-docs-server-watcher.js")) {
-      await sshExec(sshKey, serverUser, serverIp, "chmod +x /root/bin/pibo-docs-server-watcher.js", "Watcher chmod");
+    if (
+      await scpFile(
+        sshKey,
+        serverUser,
+        serverIp,
+        watcherScript,
+        "/root/bin/pibo-docs-server-watcher.js",
+      )
+    ) {
+      await sshExec(
+        sshKey,
+        serverUser,
+        serverIp,
+        "chmod +x /root/bin/pibo-docs-server-watcher.js",
+        "Watcher chmod",
+      );
       console.log(ok("Server Watcher → /root/bin/"));
     }
   } else {
@@ -175,7 +235,13 @@ export async function setupServer(interactive: boolean) {
   const syncScript = join(ASSETS_DIR, "scripts", "server-sync.sh");
   if (existsSync(syncScript)) {
     if (await scpFile(sshKey, serverUser, serverIp, syncScript, "/root/bin/pibo-docs-sync.sh")) {
-      await sshExec(sshKey, serverUser, serverIp, "chmod +x /root/bin/pibo-docs-sync.sh", "Sync chmod");
+      await sshExec(
+        sshKey,
+        serverUser,
+        serverIp,
+        "chmod +x /root/bin/pibo-docs-sync.sh",
+        "Sync chmod",
+      );
       console.log(ok("Sync Script → /root/bin/"));
     }
   } else {
@@ -185,8 +251,16 @@ export async function setupServer(interactive: boolean) {
   // Post-Receive Hook
   const hookFile = join(ASSETS_DIR, "hooks", "post-receive");
   if (existsSync(hookFile)) {
-    if (await scpFile(sshKey, serverUser, serverIp, hookFile, "/var/docs-remote/hooks/post-receive")) {
-      await sshExec(sshKey, serverUser, serverIp, "chmod +x /var/docs-remote/hooks/post-receive", "Hook chmod");
+    if (
+      await scpFile(sshKey, serverUser, serverIp, hookFile, "/var/docs-remote/hooks/post-receive")
+    ) {
+      await sshExec(
+        sshKey,
+        serverUser,
+        serverIp,
+        "chmod +x /var/docs-remote/hooks/post-receive",
+        "Hook chmod",
+      );
       console.log(ok("Post-Receive Hook → /var/docs-remote/hooks/"));
     }
   } else {
@@ -210,18 +284,40 @@ export async function setupServer(interactive: boolean) {
     mkdirSync(join(home, ".config"), { recursive: true });
     writeFileSync(tmpService, serviceContent);
 
-    if (await scpFile(sshKey, serverUser, serverIp, tmpService, "/etc/systemd/system/pibo-docs-server-watcher.service")) {
-      await sshExec(sshKey, serverUser, serverIp, "systemctl daemon-reload && systemctl enable --now pibo-docs-server-watcher.service", "Service enable");
+    if (
+      await scpFile(
+        sshKey,
+        serverUser,
+        serverIp,
+        tmpService,
+        "/etc/systemd/system/pibo-docs-server-watcher.service",
+      )
+    ) {
+      await sshExec(
+        sshKey,
+        serverUser,
+        serverIp,
+        "systemctl daemon-reload && systemctl enable --now pibo-docs-server-watcher.service",
+        "Service enable",
+      );
       console.log(ok("Systemd Service: pibo-docs-server-watcher.service"));
     }
 
     // Cleanup temp file
-    try { unlinkSync(tmpService); } catch {}
+    try {
+      unlinkSync(tmpService);
+    } catch {}
   }
 
   // Cron
   console.log(info("Prüfe Cron-Job..."));
-  const existingCron = await sshExec(sshKey, serverUser, serverIp, "crontab -l 2>/dev/null | grep -q pibo-docs-sync && echo yes || echo no", "Cron Check");
+  const existingCron = await sshExec(
+    sshKey,
+    serverUser,
+    serverIp,
+    "crontab -l 2>/dev/null | grep -q pibo-docs-sync && echo yes || echo no",
+    "Cron Check",
+  );
   if (!existingCron) {
     const cronCmd = `(crontab -l 2>/dev/null; echo '* * * * * HOME=/root /root/bin/pibo-docs-sync.sh >> /var/log/pibo-docs-sync.log 2>&1') | crontab -`;
     await sshExec(sshKey, serverUser, serverIp, cronCmd, "Cron Job hinzufügen");
@@ -231,7 +327,13 @@ export async function setupServer(interactive: boolean) {
   }
 
   // Backup config to server too
-  await scpFile(sshKey, serverUser, serverIp, join(home, ".pibo-docs-sync-config.json"), "/root/.pibo-docs-sync-config.json");
+  await scpFile(
+    sshKey,
+    serverUser,
+    serverIp,
+    join(home, ".pibo-docs-sync-config.json"),
+    "/root/.pibo-docs-sync-config.json",
+  );
 
   // Save config locally
   cfg.role = "server";

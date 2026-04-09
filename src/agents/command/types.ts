@@ -81,6 +81,8 @@ export type AgentCommandOpts = {
   spawnedBy?: SpawnedRunMetadata["spawnedBy"];
   deliveryTargetMode?: ChannelOutboundTargetMode;
   bestEffortDeliver?: boolean;
+  /** Internal-only: suppress local runtime logging for this run. */
+  suppressRuntimeOutput?: boolean;
   abortSignal?: AbortSignal;
   lane?: string;
   runId?: string;

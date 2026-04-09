@@ -16,6 +16,7 @@ import { createRuntimeEvents } from "./runtime-events.js";
 import { createRuntimeLogging } from "./runtime-logging.js";
 import { createRuntimeManagedSessions } from "./runtime-managed-sessions.js";
 import { createRuntimeMedia } from "./runtime-media.js";
+import { createRuntimePiboWorkflows } from "./runtime-pibo-workflows.js";
 import { createRuntimeSystem } from "./runtime-system.js";
 import { createRuntimeTaskFlow } from "./runtime-taskflow.js";
 import { createRuntimeTasks } from "./runtime-tasks.js";
@@ -177,6 +178,7 @@ export function createPluginRuntime(_options: CreatePluginRuntimeOptions = {}): 
     agent: createRuntimeAgent(),
     subagent,
     managedSessions: createRuntimeManagedSessions(subagent),
+    piboWorkflows: createRuntimePiboWorkflows(),
     system: createRuntimeSystem(),
     media: createRuntimeMedia(),
     webSearch: {

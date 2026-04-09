@@ -1,7 +1,7 @@
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
 
 type SambaShareAddOptions = {
   path?: string;
@@ -44,14 +44,21 @@ function shellEscape(value: string): string {
 }
 
 function ensureAbsolutePath(inputPath: string): string {
-  if (inputPath.startsWith("~/")) return path.join(os.homedir(), inputPath.slice(2));
-  if (inputPath === "~") return os.homedir();
+  if (inputPath.startsWith("~/")) {
+    return path.join(os.homedir(), inputPath.slice(2));
+  }
+  if (inputPath === "~") {
+    return os.homedir();
+  }
   return path.resolve(inputPath);
 }
 
 function getUserHome(username: string): string {
   try {
-    return execFileSync("getent", ["passwd", username], { encoding: "utf8" }).split(":")[5] || `/home/${username}`;
+    return (
+      execFileSync("getent", ["passwd", username], { encoding: "utf8" }).split(":")[5] ||
+      `/home/${username}`
+    );
   } catch {
     return `/home/${username}`;
   }
@@ -75,7 +82,12 @@ function shareHeaderRegex(shareName: string): RegExp {
   return new RegExp(`^\\[${escaped}\\]\\s*$`, "mi");
 }
 
-function buildShareBlock(shareName: string, sharePath: string, linuxUser: string, hostsAllow?: string): string {
+function buildShareBlock(
+  shareName: string,
+  sharePath: string,
+  linuxUser: string,
+  hostsAllow?: string,
+): string {
   const lines = [
     `[${shareName}]`,
     `path = ${sharePath}`,
@@ -144,7 +156,9 @@ function getLocalIpHint(): string {
   const interfaces = os.networkInterfaces();
   for (const list of Object.values(interfaces)) {
     for (const entry of list || []) {
-      if (entry.family === "IPv4" && !entry.internal) return entry.address;
+      if (entry.family === "IPv4" && !entry.internal) {
+        return entry.address;
+      }
     }
   }
   return "<server-ip>";
@@ -180,7 +194,9 @@ function applyShare(plan: SharePlan): void {
     runChecked("testparm", ["-s"]);
   } catch (error) {
     fs.copyFileSync(plan.backupPath, plan.smbConfPath);
-    throw new Error(`testparm fehlgeschlagen. Rollback auf ${plan.backupPath} ausgeführt.`);
+    throw new Error(`testparm fehlgeschlagen. Rollback auf ${plan.backupPath} ausgeführt.`, {
+      cause: error,
+    });
   }
 
   const reload = spawnSync("systemctl", ["reload", "smbd"], { stdio: "inherit" });

@@ -1,5 +1,5 @@
-import { bold, ok, fail, warn, info, run } from "./utils.js";
 import { readConfig } from "./config.js";
+import { bold, ok, fail, warn, info, run } from "./utils.js";
 
 export function runDiagnose() {
   const piboCfg = readConfig("pibo");
@@ -14,11 +14,15 @@ export function runDiagnose() {
   console.log("\nSystem:");
   const nodeVer = run("node --version");
   console.log(nodeVer ? ok(`Node.js: ${nodeVer}`) : fail("Node.js: NOT FOUND"));
-  if (!nodeVer) issues.push("Node.js fehlt");
+  if (!nodeVer) {
+    issues.push("Node.js fehlt");
+  }
 
   const gitOk = run("git --version");
   console.log(gitOk ? ok(`git: ${gitOk}`) : fail("git: NOT FOUND"));
-  if (!gitOk) issues.push("git fehlt");
+  if (!gitOk) {
+    issues.push("git fehlt");
+  }
 
   // PIBo Services
   console.log("\nPIBo Services:");
@@ -48,16 +52,26 @@ export function runDiagnose() {
   if (docsOk) {
     const commits = run(`cd ${docsPath} && git log --oneline -5 2>/dev/null`) || "";
     console.log(info("Letzte Commits:"));
-    commits.split("\n").forEach(line => console.log(`  ${line}`));
+    commits.split("\n").forEach((line) => console.log(`  ${line}`));
   }
-  if (!docsOk) issues.push("~/docs/ ist kein git Repo");
+  if (!docsOk) {
+    issues.push("~/docs/ ist kein git Repo");
+  }
 
   // SSH Tunnel
   console.log("\nSSH Tunnel:");
   if (piboCfg) {
-    const tunnelOk = run(`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:${piboCfg.pibo.notifyPort}/notify --connect-timeout 3 2>/dev/null`);
-    console.log(tunnelOk ? ok(`Tunnel/Notifier erreichbar (Port ${piboCfg.pibo.notifyPort})`) : warn(`Notifier auf Port ${piboCfg.pibo.notifyPort}: nicht erreichbar`));
-    if (tunnelOk !== "200" && tunnelOk !== "405") issues.push("Notifier nicht erreichbar (Tunnel oder Service gestoppt)");
+    const tunnelOk = run(
+      `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:${piboCfg.pibo.notifyPort}/notify --connect-timeout 3 2>/dev/null`,
+    );
+    console.log(
+      tunnelOk
+        ? ok(`Tunnel/Notifier erreichbar (Port ${piboCfg.pibo.notifyPort})`)
+        : warn(`Notifier auf Port ${piboCfg.pibo.notifyPort}: nicht erreichbar`),
+    );
+    if (tunnelOk !== "200" && tunnelOk !== "405") {
+      issues.push("Notifier nicht erreichbar (Tunnel oder Service gestoppt)");
+    }
   } else {
     console.log(warn("Keine Config — keine Tunnel-Prüfung möglich"));
     issues.push("Keine Config gefunden");
@@ -66,14 +80,24 @@ export function runDiagnose() {
   // Server Connectivity
   console.log("\nServer Verbindung:");
   if (piboCfg) {
-    const sshOk = run(`ssh -i ${piboCfg.server.sshKeyPath || `${home}/.ssh/id_ed25519`} -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes ${piboCfg.server.user}@${piboCfg.server.ip} "echo ok" 2>/dev/null`);
+    const sshOk = run(
+      `ssh -i ${piboCfg.server.sshKeyPath || `${home}/.ssh/id_ed25519`} -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes ${piboCfg.server.user}@${piboCfg.server.ip} "echo ok" 2>/dev/null`,
+    );
     console.log(sshOk === "ok" ? ok("SSH zum Server: OK") : fail("SSH zum Server: FEHLGESCHLAGEN"));
-    if (sshOk !== "ok") issues.push("SSH-Verbindung zum Server fehlgeschlagen");
+    if (sshOk !== "ok") {
+      issues.push("SSH-Verbindung zum Server fehlgeschlagen");
+    }
 
     // Bare Repo
-    const bareOk = run(`ssh -i ${piboCfg.server.sshKeyPath || `${home}/.ssh/id_ed25519`} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${piboCfg.server.ip} "test -d /var/docs-remote && echo ok" 2>/dev/null`);
-    console.log(bareOk === "ok" ? ok("Bare Repo: /var/docs-remote") : warn("Bare Repo: nicht gefunden"));
-    if (bareOk !== "ok") issues.push("Bare Repo auf Server fehlt");
+    const bareOk = run(
+      `ssh -i ${piboCfg.server.sshKeyPath || `${home}/.ssh/id_ed25519`} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${piboCfg.server.user}@${piboCfg.server.ip} "test -d /var/docs-remote && echo ok" 2>/dev/null`,
+    );
+    console.log(
+      bareOk === "ok" ? ok("Bare Repo: /var/docs-remote") : warn("Bare Repo: nicht gefunden"),
+    );
+    if (bareOk !== "ok") {
+      issues.push("Bare Repo auf Server fehlt");
+    }
   }
 
   // Summary
@@ -84,7 +108,9 @@ export function runDiagnose() {
   } else {
     console.log(bold(`\n${issues.length} Problem(e) gefunden:`));
     issues.forEach((issue, i) => console.log(`  ${i + 1}. ${fail(issue)}`));
-    console.log(`\n${info("Lösung: Behebe die obigen Punkte und führe 'pibo docs-sync doctor' erneut aus.")}`);
+    console.log(
+      `\n${info("Lösung: Behebe die obigen Punkte und führe 'pibo docs-sync doctor' erneut aus.")}`,
+    );
   }
   console.log("\n");
 }

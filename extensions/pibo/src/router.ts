@@ -6,6 +6,7 @@ import { parseCommandArgs } from "./parser.js";
 import { runPiboWorkflows } from "./workflow-runtime.js";
 
 const execFileAsync = promisify(execFile);
+let currentWorkflowApi: OpenClawPluginApi | null = null;
 
 interface ModuleCommand {
   description: string;
@@ -68,7 +69,10 @@ async function handleCommandsSubcommand(args: string[]): Promise<string> {
 
 async function handleWorkflowsSubcommand(args: string[]): Promise<string> {
   try {
-    const text = await runPiboWorkflows(args);
+    if (!currentWorkflowApi) {
+      throw new Error("workflow runtime API is not initialized");
+    }
+    const text = await runPiboWorkflows(currentWorkflowApi, args);
     return text.length > 3900 ? `${text.slice(0, 3900)}\n\n… gekürzt` : text;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -276,6 +280,7 @@ export async function handlePiboCommand(
   api: OpenClawPluginApi,
   ctx: PluginCommandContext,
 ): Promise<string> {
+  currentWorkflowApi = api;
   const raw = ctx.args?.trim() ?? "";
   api.logger.info?.(
     `pibo: /pibo invoked channel=${ctx.channel} sender=${ctx.senderId ?? "unknown"} rawArgs="${raw}"`,

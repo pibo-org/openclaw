@@ -241,15 +241,36 @@ describe("plugin runtime command execution", () => {
       name: "exposes managedSessions helpers",
       assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
         expectFunctionKeys(runtime.managedSessions as Record<string, unknown>, [
+          "buildKey",
           "buildWorkflowKey",
+          "list",
+          "get",
+          "status",
+          "resolveSelector",
           "resolve",
           "create",
+          "add",
           "patch",
+          "edit",
           "reset",
           "delete",
+          "compact",
           "ensureWorkflowSession",
           "runOnManagedSession",
           "runFirstManagedWorkflowTurn",
+        ]);
+      },
+    },
+    {
+      name: "exposes piboWorkflows helpers",
+      assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
+        expectFunctionKeys(runtime.piboWorkflows as Record<string, unknown>, [
+          "list",
+          "describe",
+          "start",
+          "status",
+          "abort",
+          "runs",
         ]);
       },
     },

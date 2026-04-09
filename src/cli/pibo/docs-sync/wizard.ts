@@ -1,11 +1,10 @@
-import * as readline from "readline";
 import { homedir } from "os";
 import { join } from "path";
-import { existsSync } from "fs";
-import { setupServer } from "./setup-server.js";
-import { setupPibo } from "./setup-pibo.js";
+import * as readline from "readline";
 import { writeConfig, defaultConfig, DocsSyncConfig } from "./config.js";
-import { bold, info, ok } from "./utils.js";
+import { setupPibo } from "./setup-pibo.js";
+import { setupServer } from "./setup-server.js";
+import { bold, info } from "./utils.js";
 
 async function ask(rl: readline.Interface, prompt: string, defaultVal?: string): Promise<string> {
   const label = defaultVal ? `${prompt} [${defaultVal}]: ` : `${prompt}: `;
@@ -18,17 +17,19 @@ function showPreReqGuide() {
   console.log("═".repeat(50));
 
   console.log("\n  " + bold("1. SSH-Keys erzeugen") + " (falls noch nicht geschehen)");
-  console.log("     ssh-keygen -t ed25519 -C \"pibo@hostname\"");
+  console.log('     ssh-keygen -t ed25519 -C "pibo@hostname"');
   console.log("     → Speichert unter ~/.ssh/id_ed25519");
   console.log("     → Keine Passphrase für automatischen Betrieb empfohlen");
   console.log("");
   console.log("  " + bold("2. SSH-Key auf Server kopieren"));
   console.log("     ssh-copy-id root@<SERVER-IP>");
   console.log("     → Oder manuell:");
-  console.log("       cat ~/.ssh/id_ed25519.pub | ssh root@<IP> 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'");
+  console.log(
+    "       cat ~/.ssh/id_ed25519.pub | ssh root@<IP> 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'",
+  );
   console.log("");
   console.log("  " + bold("3. GitHub Deploy Key für Server"));
-  console.log("     # Auf dem Server: ssh-keygen -t ed25519 -C \"docs-sync\"");
+  console.log('     # Auf dem Server: ssh-keygen -t ed25519 -C "docs-sync"');
   console.log("     cat /root/.ssh/id_ed25519.pub  → Output kopieren");
   console.log("     GitHub → Repo → Settings → Deploy Keys → Add deploy key");
   console.log("     → Key einfügen, 'Allow write access' anhaken");
@@ -65,7 +66,11 @@ export async function runWizard() {
 
   if (role === "server") {
     const ip = await ask(rl, "Server-IP?", "");
-    if (!ip) { console.log("\n" + info("IP fehlt. Abbruch.")); rl.close(); return; }
+    if (!ip) {
+      console.log("\n" + info("IP fehlt. Abbruch."));
+      rl.close();
+      return;
+    }
 
     const user = await ask(rl, "SSH-User?", "root");
     const sshKeyPath = await ask(rl, "SSH-Key für GitHub Deploy auf Server?", "");
@@ -82,9 +87,15 @@ export async function runWizard() {
     cfg.server.ip = ip;
     cfg.server.user = user;
     cfg.server.sshKeyPath = sshKeyPath || `/home/${user}/.ssh/id_ed25519`;
-    if (backupRepo) cfg.github.backupRepo = backupRepo;
-    if (webappRepo) cfg.github.webappRepo = webappRepo;
-    if (webappDeployKey) cfg.github.deployKeyPath = webappDeployKey;
+    if (backupRepo) {
+      cfg.github.backupRepo = backupRepo;
+    }
+    if (webappRepo) {
+      cfg.github.webappRepo = webappRepo;
+    }
+    if (webappDeployKey) {
+      cfg.github.deployKeyPath = webappDeployKey;
+    }
 
     // Write config so setup-server reads it
     writeConfig("server", cfg);
@@ -93,10 +104,18 @@ export async function runWizard() {
   } else {
     const home = homedir();
     const serverIp = await ask(rl, "Server-IP?", "");
-    if (!serverIp) { console.log("\n" + info("IP fehlt. Abbruch.")); rl.close(); return; }
+    if (!serverIp) {
+      console.log("\n" + info("IP fehlt. Abbruch."));
+      rl.close();
+      return;
+    }
 
     const serverUser = await ask(rl, "Server-User?", "root");
-    const sshKeyPath = await ask(rl, "SSH-Key für Verbindung zum Server?", join(home, ".ssh", "id_ed25519"));
+    const sshKeyPath = await ask(
+      rl,
+      "SSH-Key für Verbindung zum Server?",
+      join(home, ".ssh", "id_ed25519"),
+    );
     const docsPath = await ask(rl, "Lokaler Docs-Pfad?", join(home, "docs"));
     const backupRepo = await ask(rl, "GitHub Docs-Backup Repo URL?", "");
     const notifyPort = parseInt(await ask(rl, "Notify-Port?", "3472"), 10) || 3472;
@@ -112,7 +131,9 @@ export async function runWizard() {
     cfg.server.sshKeyPath = sshKeyPath;
     cfg.pibo.docsPath = docsPath;
     cfg.pibo.notifyPort = notifyPort;
-    if (backupRepo) cfg.github.backupRepo = backupRepo;
+    if (backupRepo) {
+      cfg.github.backupRepo = backupRepo;
+    }
 
     // Write config so setup-pibo reads it
     writeConfig("pibo", cfg);
