@@ -107,7 +107,6 @@ const helpCommands = (): string =>
   `Commands — Markdown-basierte Slash Commands\n\n` +
   `Befehle:\n` +
   `  set-dir <pfad>   Command-Verzeichnis setzen\n` +
-  `  scan             Markdown-Dateien scannen und registrieren\n` +
   `  list             Registrierte Commands anzeigen\n` +
   `  get-dir          Aktuellen Command-Pfad anzeigen\n` +
   `  show <name>      Markdown-Inhalt eines Commands anzeigen`;
@@ -151,11 +150,6 @@ const commandRegistry: Record<string, CommandModule> = {
           argument?.trim()
             ? handleCommandsSubcommand(["set-dir", argument.trim()])
             : "❌ Bitte gib ein Verzeichnis an.\n\nVerwendung: `/pibo commands set-dir <pfad>`",
-      },
-      scan: {
-        description: "Markdown-Dateien scannen und registrieren",
-        usage: "scan",
-        handler: async () => handleCommandsSubcommand(["scan"]),
       },
       list: {
         description: "Registrierte Commands anzeigen",
