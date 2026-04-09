@@ -49,6 +49,9 @@ Native workflow path:
 - `openclaw pibo workflows ...`
 - `extensions/pibo/src/workflow-runtime.ts`
 
+The plugin workflow adapter now formats and routes native workflow calls through
+`runtime.piboWorkflows`; it no longer shells out to an external standalone repo.
+
 CLI management commands:
 
 - `openclaw pibo managed-session list`

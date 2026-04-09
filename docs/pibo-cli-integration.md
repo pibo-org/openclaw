@@ -25,6 +25,9 @@ Current reality:
 - `langgraph_worker_critic` runs through OpenClaw-managed workflow sessions with persisted session keys in the run record
 
 The former standalone `pibo-cli` repo remains a historical migration source, not an active workflow runtime dependency.
+It is now archived locally at:
+
+- `/home/pibo/code/_archive/pibo-cli-legacy-2026-04-09`
 
 ## Integration shape
 
@@ -36,3 +39,7 @@ The former standalone `pibo-cli` repo remains a historical migration source, not
 ## Runtime migration
 
 The old active runtime path was the globally linked `pibo-cli` package and its `pibo` binary. After the native workflow cutover, that external workflow path is no longer needed for normal PIBO operation inside OpenClaw.
+
+For local development from the repo checkout, the intended entrypoint is:
+
+- `pnpm openclaw -- pibo ...`
