@@ -311,6 +311,15 @@ const entries: SubCliEntry[] = [
       mod.registerCompletionCli(program);
     },
   },
+  {
+    name: "pibo",
+    description: "PIBo CLI modules ported into OpenClaw",
+    hasSubcommands: true,
+    register: async (program) => {
+      const mod = await import("../pibo-cli.js");
+      mod.registerPiboCli(program);
+    },
+  },
 ];
 
 export function getSubCliEntries(): ReadonlyArray<SubCliDescriptor> {

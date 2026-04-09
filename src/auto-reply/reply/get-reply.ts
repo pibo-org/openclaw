@@ -8,6 +8,8 @@ import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
 import { applyMergePatch } from "../../config/merge-patch.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -26,6 +28,12 @@ import { initSessionState } from "./session.js";
 import { createTypingController } from "./typing.js";
 
 type ResetCommandAction = "new" | "reset";
+const getReplyDebugLog = createSubsystemLogger("telegram-routing/get-reply");
+
+function isTelegramRoutingDebugEnabled(): boolean {
+  return isTruthyEnvValue(process.env.OPENCLAW_DEBUG_TELEGRAM_ROUTING);
+}
+
 
 let sessionResetModelRuntimePromise: Promise<
   typeof import("./session-reset-model.runtime.js")
@@ -146,6 +154,21 @@ export async function getReplyFromConfig(
     sessionKey: agentSessionKey,
     config: cfg,
   });
+  if (isTelegramRoutingDebugEnabled()) {
+    getReplyDebugLog.info("getReplyFromConfig(start)", {
+      provider: ctx.Provider ?? null,
+      accountId: ctx.AccountId ?? null,
+      sessionKey: ctx.SessionKey ?? null,
+      targetSessionKey: ctx.CommandTargetSessionKey ?? null,
+      agentSessionKey: agentSessionKey ?? null,
+      resolvedAgentId: agentId,
+      from: ctx.From ?? null,
+      to: ctx.To ?? null,
+      threadId: ctx.MessageThreadId ?? null,
+      wasMentioned: ctx.WasMentioned === true,
+      bodyPreview: (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").slice(0, 160),
+    });
+  }
   const mergedSkillFilter = mergeSkillFilters(
     opts?.skillFilter,
     resolveAgentSkillsFilter(cfg, agentId),
@@ -250,6 +273,22 @@ export async function getReplyFromConfig(
     triggerBodyNormalized,
     bodyStripped,
   } = sessionState;
+
+  if (isTelegramRoutingDebugEnabled()) {
+    getReplyDebugLog.info("initSessionState(resolved)", {
+      provider: finalized.Provider ?? null,
+      accountId: finalized.AccountId ?? null,
+      sessionKey,
+      sessionId: sessionId ?? null,
+      isNewSession,
+      isGroup,
+      groupResolution: groupResolution
+        ? { channel: groupResolution.channel ?? null, id: groupResolution.id ?? null }
+        : null,
+      triggerBodyPreview: (triggerBodyNormalized ?? "").slice(0, 160),
+      bodyStrippedPreview: (bodyStripped ?? "").slice(0, 160),
+    });
+  }
 
   if (resetTriggered && bodyStripped?.trim()) {
     const { applyResetModelOverride } = await loadSessionResetModelRuntime();

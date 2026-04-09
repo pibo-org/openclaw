@@ -34,6 +34,14 @@ async function closeCliMemoryManagers(): Promise<void> {
   }
 }
 
+function stripLeadingArgTerminator(argv: string[]): string[] {
+  const next = [...argv];
+  if (next[2] === '--') {
+    next.splice(2, 1);
+  }
+  return next;
+}
+
 export function rewriteUpdateFlagArgv(argv: string[]): string[] {
   const index = argv.indexOf("--update");
   if (index === -1) {
@@ -142,7 +150,7 @@ export async function runCli(argv: string[] = process.argv) {
     }
     return;
   }
-  let normalizedArgv = parsedProfile.argv;
+  let normalizedArgv = stripLeadingArgTerminator(parsedProfile.argv);
 
   if (shouldLoadCliDotEnv()) {
     const { loadCliDotEnv } = await import("./dotenv.js");
@@ -227,7 +235,6 @@ export async function runCli(argv: string[] = process.argv) {
         }
       }
     }
-
     await program.parseAsync(parseArgv);
   } finally {
     await closeCliMemoryManagers();

@@ -7,6 +7,8 @@ import type { SkillCommandSpec } from "../../agents/skills.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { shouldHandleTextCommands } from "../commands-text-routing.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../thinking.js";
@@ -30,6 +32,12 @@ type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[num
 let commandsRegistryPromise: Promise<typeof import("../commands-registry.runtime.js")> | null =
   null;
 let skillCommandsPromise: Promise<typeof import("../skill-commands.runtime.js")> | null = null;
+
+const directivesDebugLog = createSubsystemLogger("telegram-routing/get-reply-directives");
+
+function isTelegramRoutingDebugEnabled(): boolean {
+  return isTruthyEnvValue(process.env.OPENCLAW_DEBUG_TELEGRAM_ROUTING);
+}
 
 function loadCommandsRegistry() {
   commandsRegistryPromise ??= import("../commands-registry.runtime.js");
@@ -378,6 +386,18 @@ export async function resolveReplyDirectives(params: {
     groupResolution,
   });
   const defaultActivation = defaultGroupActivation(requireMention);
+  if (isTelegramRoutingDebugEnabled()) {
+    directivesDebugLog.info("group directives resolved", {
+      provider: ctx.Provider ?? null,
+      accountId: ctx.AccountId ?? null,
+      from: ctx.From ?? null,
+      threadId: ctx.MessageThreadId ?? null,
+      wasMentioned: ctx.WasMentioned === true,
+      requireMention,
+      defaultActivation,
+      bodyPreview: (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").slice(0, 160),
+    });
+  }
   const resolvedThinkLevel =
     directives.thinkLevel ?? (sessionEntry?.thinkingLevel as ThinkLevel | undefined);
   const resolvedFastMode =

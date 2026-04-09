@@ -1,0 +1,17 @@
+[Unit]
+Description=PIBo Docs Server Watcher — auto-commit WebApp changes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{NODE_BIN}} {{SCRIPTS_DIR}}/server-watcher.js
+Restart=always
+RestartSec=5
+WorkingDirectory={{STORAGE_DOCS}}
+Environment=HOME=/root
+Environment=PATH={{NODE_BIN_DIR}}:{{PATH}}
+EnvironmentFile={{CONFIG_DIR}}/.pibo-docs-sync-env
+
+[Install]
+WantedBy=multi-user.target

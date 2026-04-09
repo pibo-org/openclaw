@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Post-Receive Hook für Docs Sync — triggert PIBo Notifier via SSH Tunnel.
+# Wird vom CLI Setup nach /var/docs-remote/hooks/post-receive installiert.
+#
+# Token-Pfad: /root/.pibo-docs-notify-token
+# Target: http://127.0.0.1:3472/notify (über Reverse Tunnel)
+# Log: /var/log/pibo-docs-post-receive.log
+
+set -euo pipefail
+
+while read oldrev newrev refname; do
+  if echo "$refname" | grep -q "refs/heads/master"; then
+    TOKEN=$(cat /root/.pibo-docs-notify-token)
+    curl -s -X POST \
+      -H "Authorization: Bearer $TOKEN" \
+      http://127.0.0.1:3472/notify \
+      --connect-timeout 3 --max-time 5 2>/dev/null || true
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [post-receive] Notified PIBo" >> /var/log/pibo-docs-post-receive.log
+  fi
+done
+

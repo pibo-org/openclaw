@@ -1,0 +1,5 @@
+# PIBo Docs Sync — Three-way merge sync every minute.
+# Installed by `pibo docs-sync setup server`.
+# DO NOT edit manually — use `pibo docs-sync config` instead.
+* * * * * HOME=/root {{SYNC_SCRIPT}} >> /var/log/pibo-docs-sync.log 2>&1
+

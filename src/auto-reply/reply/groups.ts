@@ -3,12 +3,20 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { resolveChannelGroupRequireMention } from "../../config/group-policy.js";
 import type { GroupKeyResolution, SessionEntry } from "../../config/sessions.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeGroupActivation } from "../group-activation.js";
 import type { TemplateContext } from "../templating.js";
 import { extractExplicitGroupId } from "./group-id.js";
 
 const WHATSAPP_GROUP_INTRO_HINT =
   "WhatsApp IDs: SenderId is the participant JID (group participant id).";
+
+const groupDebugLog = createSubsystemLogger("telegram-routing/groups");
+
+function isTelegramRoutingDebugEnabled(): boolean {
+  return isTruthyEnvValue(process.env.OPENCLAW_DEBUG_TELEGRAM_ROUTING);
+}
 
 const CHANNEL_LABELS: Partial<Record<ChannelId, string>> = {
   bluebubbles: "BlueBubbles",
@@ -109,6 +117,16 @@ export async function resolveGroupRequireMention(params: {
     requireMention = undefined;
   }
   if (typeof requireMention === "boolean") {
+    if (isTelegramRoutingDebugEnabled()) {
+      groupDebugLog.info("resolveGroupRequireMention(plugin)", {
+        provider: ctx.Provider ?? null,
+        accountId: ctx.AccountId ?? null,
+        groupId: groupId ?? null,
+        groupChannel: groupChannel ?? null,
+        groupSpace: groupSpace ?? null,
+        requireMention,
+      });
+    }
     return requireMention;
   }
   const builtInRequireMention = await resolveBuiltInRequireMentionFromConfig({
@@ -120,14 +138,35 @@ export async function resolveGroupRequireMention(params: {
     accountId: ctx.AccountId,
   });
   if (typeof builtInRequireMention === "boolean") {
+    if (isTelegramRoutingDebugEnabled()) {
+      groupDebugLog.info("resolveGroupRequireMention(builtin)", {
+        provider: ctx.Provider ?? null,
+        accountId: ctx.AccountId ?? null,
+        groupId: groupId ?? null,
+        groupChannel: groupChannel ?? null,
+        groupSpace: groupSpace ?? null,
+        requireMention: builtInRequireMention,
+      });
+    }
     return builtInRequireMention;
   }
-  return resolveChannelGroupRequireMention({
+  const fallbackRequireMention = resolveChannelGroupRequireMention({
     cfg,
     channel,
     groupId,
     accountId: ctx.AccountId,
   });
+  if (isTelegramRoutingDebugEnabled()) {
+    groupDebugLog.info("resolveGroupRequireMention(fallback)", {
+      provider: ctx.Provider ?? null,
+      accountId: ctx.AccountId ?? null,
+      groupId: groupId ?? null,
+      groupChannel: groupChannel ?? null,
+      groupSpace: groupSpace ?? null,
+      requireMention: fallbackRequireMention,
+    });
+  }
+  return fallbackRequireMention;
 }
 
 export function defaultGroupActivation(requireMention: boolean): "always" | "mention" {

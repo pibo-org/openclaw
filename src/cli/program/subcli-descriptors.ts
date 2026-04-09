@@ -133,6 +133,11 @@ export const SUB_CLI_DESCRIPTORS = [
     description: "Generate shell completion script",
     hasSubcommands: false,
   },
+  {
+    name: "pibo",
+    description: "PIBo CLI modules ported into OpenClaw",
+    hasSubcommands: true,
+  },
 ] as const satisfies ReadonlyArray<SubCliDescriptor>;
 
 export function getSubCliEntries(): ReadonlyArray<SubCliDescriptor> {
