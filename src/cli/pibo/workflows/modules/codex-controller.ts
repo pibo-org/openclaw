@@ -7,6 +7,8 @@ import { ensureWorkflowSessions } from "../managed-session-adapter.js";
 import { writeWorkflowArtifact } from "../store.js";
 import type { WorkflowModule, WorkflowRunRecord, WorkflowStartRequest } from "../types.js";
 
+type WorkerCompactionMode = "off" | "acp_control_command";
+
 type CodexControllerInput = {
   task: string;
   workingDirectory: string;
@@ -16,6 +18,8 @@ type CodexControllerInput = {
   codexAgentId: string;
   controllerAgentId: string;
   controllerPromptPath: string;
+  workerCompactionMode?: WorkerCompactionMode;
+  workerCompactionAfterRound?: number;
 };
 
 type ControllerDecision = {
@@ -29,7 +33,8 @@ type ControllerDecision = {
 const DEFAULT_MAX_ROUNDS = 6;
 const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
-const ACP_COMPACT_AFTER_ROUND = 3;
+const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "acp_control_command";
+const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
 
 function normalizeStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -39,6 +44,17 @@ function normalizeStringArray(value: unknown): string[] {
     return [value.trim()];
   }
   return [];
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
+function normalizeCompactionMode(value: unknown): WorkerCompactionMode {
+  return value === "off" ? "off" : DEFAULT_WORKER_COMPACTION_MODE;
 }
 
 function normalizeInput(request: WorkflowStartRequest): Required<CodexControllerInput> {
@@ -56,11 +72,9 @@ function normalizeInput(request: WorkflowStartRequest): Required<CodexController
     throw new Error("codex_controller benötigt ein nicht-leeres Feld `workingDirectory`.");
   }
   const maxRetries =
-    typeof record.maxRetries === "number" && Number.isFinite(record.maxRetries)
-      ? Math.max(1, Math.floor(record.maxRetries))
-      : typeof request.maxRounds === "number" && Number.isFinite(request.maxRounds)
-        ? Math.max(1, Math.floor(request.maxRounds))
-        : DEFAULT_MAX_ROUNDS;
+    normalizePositiveInteger(record.maxRetries) ??
+    normalizePositiveInteger(request.maxRounds) ??
+    DEFAULT_MAX_ROUNDS;
   return {
     task,
     workingDirectory,
@@ -79,6 +93,10 @@ function normalizeInput(request: WorkflowStartRequest): Required<CodexController
       typeof record.controllerPromptPath === "string" && record.controllerPromptPath.trim()
         ? record.controllerPromptPath.trim()
         : DEFAULT_CONTROLLER_PROMPT_PATH,
+    workerCompactionMode: normalizeCompactionMode(record.workerCompactionMode),
+    workerCompactionAfterRound:
+      normalizePositiveInteger(record.workerCompactionAfterRound) ??
+      DEFAULT_WORKER_COMPACTION_AFTER_ROUND,
   };
 }
 
@@ -99,7 +117,9 @@ function toBulletLines(values: string[]): string {
 
 function parseSection(raw: string, section: string): string[] {
   const normalized = raw.replace(/\r/g, "");
-  const pattern = new RegExp(`${section}:\\n([\\s\\S]*?)(?=\\n[A-Z_]+:|$)`);
+  const pattern = new RegExp(
+    `(?:^|\\n)${section}:\\s*\\n([\\s\\S]*?)(?=\\n[A-Z_]+:\\s*(?:\\n|$)|$)`,
+  );
   const match = normalized.match(pattern);
   if (!match) {
     return [];
@@ -108,24 +128,124 @@ function parseSection(raw: string, section: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => line.replace(/^-+\s*/, "").trim())
+    .map((line) => line.replace(/^[-*+]\s*/, "").trim())
     .filter((line) => line && line.toLowerCase() !== "none");
 }
 
-function parseControllerDecision(raw: string): ControllerDecision {
-  const decisionMatch = raw.match(/DECISION:\s*(CONTINUE|ESCALATE_BLOCKED|DONE)/);
-  if (!decisionMatch) {
-    throw new Error(
-      `Controller-Entscheidung unparsbar. Erwartet wurde 'DECISION: CONTINUE|ESCALATE_BLOCKED|DONE'.\n\n${raw}`,
-    );
+function normalizeSingleLineSection(raw: string, labels: string[]): string | null {
+  for (const label of labels) {
+    const match = raw.match(new RegExp(`(?:^|\\n)${label}:\\s*([^\\n]+)`));
+    const value = match?.[1]?.trim();
+    if (value) {
+      return value;
+    }
   }
+  return null;
+}
+
+function splitMessageIntoInstructions(messageLines: string[]): string[] {
+  return messageLines
+    .flatMap((line) => line.split(/\n+/))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*+]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function looksLikeDoneSignal(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return [
+    "task is complete",
+    "task appears complete",
+    "work is complete",
+    "implementation is complete",
+    "sufficiently complete",
+    "ready to wrap",
+    "ready to finalize",
+    "ready for final handoff",
+    "already complete",
+    "no further coding turn",
+    "stop the loop",
+    "controller approved completion",
+  ].some((needle) => normalized.includes(needle));
+}
+
+function mapLegacyDecision(raw: string): ControllerDecision | null {
+  const legacy = normalizeSingleLineSection(raw, ["MODULE_DECISION", "DECISION"]);
+  if (!legacy) {
+    return null;
+  }
+
+  const normalizedLegacy = legacy.trim().toUpperCase();
+  const rationale = parseSection(raw, "RATIONALE");
+  const reason = parseSection(raw, "MODULE_REASON");
+  const nextInstruction = parseSection(raw, "NEXT_INSTRUCTION");
+  const blocker = parseSection(raw, "BLOCKER");
+  const controllerMessage = splitMessageIntoInstructions(parseSection(raw, "CONTROLLER_MESSAGE"));
+
+  if (!["CONTINUE", "GUIDE", "ASK_USER", "STOP_BLOCKED"].includes(normalizedLegacy)) {
+    return null;
+  }
+
+  if (normalizedLegacy === "ASK_USER" || normalizedLegacy === "STOP_BLOCKED") {
+    return {
+      decision: "ESCALATE_BLOCKED",
+      reason: reason.length ? reason : rationale,
+      nextInstruction: [],
+      blocker: blocker.length ? blocker : controllerMessage,
+      raw,
+    };
+  }
+
+  if (reason.length || nextInstruction.length || blocker.length) {
+    return {
+      decision: looksLikeDoneSignal(raw) ? "DONE" : "CONTINUE",
+      reason: reason.length ? reason : rationale,
+      nextInstruction: nextInstruction.length ? nextInstruction : controllerMessage,
+      blocker,
+      raw,
+    };
+  }
+
   return {
-    decision: decisionMatch[1] as ControllerDecision["decision"],
-    reason: parseSection(raw, "REASON"),
-    nextInstruction: parseSection(raw, "NEXT_INSTRUCTION"),
-    blocker: parseSection(raw, "BLOCKER"),
+    decision: looksLikeDoneSignal(raw) ? "DONE" : "CONTINUE",
+    reason: rationale,
+    nextInstruction: controllerMessage,
+    blocker: [],
     raw,
   };
+}
+
+function parseControllerDecision(raw: string): ControllerDecision {
+  const explicitDecision = normalizeSingleLineSection(raw, ["MODULE_DECISION", "DECISION"]);
+  const normalizedExplicit = explicitDecision?.trim().toUpperCase() ?? null;
+
+  if (normalizedExplicit && ["CONTINUE", "ESCALATE_BLOCKED", "DONE"].includes(normalizedExplicit)) {
+    const decision = normalizedExplicit as ControllerDecision["decision"];
+    const reason = parseSection(raw, "MODULE_REASON");
+    const nextInstruction = parseSection(raw, "NEXT_INSTRUCTION");
+    const blocker = parseSection(raw, "BLOCKER");
+    const controllerMessage = splitMessageIntoInstructions(parseSection(raw, "CONTROLLER_MESSAGE"));
+    const rationale = parseSection(raw, "RATIONALE");
+
+    return {
+      decision,
+      reason: reason.length ? reason : rationale,
+      nextInstruction: nextInstruction.length ? nextInstruction : controllerMessage,
+      blocker,
+      raw,
+    };
+  }
+
+  const legacy = mapLegacyDecision(raw);
+  if (legacy) {
+    return legacy;
+  }
+
+  throw new Error(
+    "Controller-Entscheidung unparsbar. Erwartet wurde ein normalisierter MODULE_DECISION/DECISION-Block oder der Legacy-Contract des Controller-Prompts.\n\n" +
+      raw,
+  );
 }
 
 function buildCodexPrompt(params: {
@@ -165,23 +285,25 @@ function buildControllerPrompt(params: {
     "",
     "You are operating inside the codex_controller PIBO workflow module.",
     `Current round: ${params.round}/${params.maxRounds}.`,
-    "Your job is to replace routine user nudges and only escalate if there is a real blocker or the loop is exhausted.",
-    "Return exactly this format:",
-    "DECISION: CONTINUE | ESCALATE_BLOCKED | DONE",
-    "REASON:",
+    "Use the controller prompt above as policy, but normalize your final answer for the workflow runtime.",
+    "First decide using the prompt's native contract if helpful. Then return a final normalized block.",
+    "",
+    "NORMALIZED WORKFLOW CONTRACT:",
+    "MODULE_DECISION: CONTINUE | ESCALATE_BLOCKED | DONE",
+    "MODULE_REASON:",
     "- ...",
     "NEXT_INSTRUCTION:",
     "- ...",
     "BLOCKER:",
     "- ...",
     "",
-    "Rules:",
-    "- CONTINUE: Codex should keep going immediately; provide a concrete next instruction.",
-    "- DONE: task is sufficiently complete against the original request and success criteria.",
-    "- ESCALATE_BLOCKED: only if there is a real blocker that needs the user/operator.",
-    "- If DECISION is DONE or ESCALATE_BLOCKED, NEXT_INSTRUCTION may be empty.",
-    "- If DECISION is CONTINUE, NEXT_INSTRUCTION must be concrete and actionable.",
-    "- Never ask for routine confirmation.",
+    "Decision mapping rules:",
+    "- CONTINUE or GUIDE from the base prompt map to MODULE_DECISION: CONTINUE.",
+    "- ASK_USER or STOP_BLOCKED from the base prompt map to MODULE_DECISION: ESCALATE_BLOCKED.",
+    "- Use MODULE_DECISION: DONE only when the worker output is already sufficiently complete against the original task and success criteria.",
+    "- If MODULE_DECISION is CONTINUE, NEXT_INSTRUCTION must be concrete and actionable.",
+    "- If MODULE_DECISION is DONE or ESCALATE_BLOCKED, NEXT_INSTRUCTION may be empty.",
+    "- Do not silently omit the normalized block.",
     "",
     "ORIGINAL_TASK:",
     params.input.task,
@@ -275,28 +397,30 @@ async function runCodexTurn(params: {
 }
 
 async function maybeCompactCodexSession(params: {
+  input: Required<CodexControllerInput>;
   sessionKey: string;
-  workingDirectory: string;
-  agentId: string;
   round: number;
-  task: string;
-}) {
-  if (params.round < ACP_COMPACT_AFTER_ROUND) {
+}): Promise<boolean> {
+  if (params.input.workerCompactionMode === "off") {
     return false;
   }
+  if (params.round < params.input.workerCompactionAfterRound) {
+    return false;
+  }
+
   const cfg = loadConfig();
   const manager = getAcpSessionManager();
   await manager.initializeSession({
     cfg,
     sessionKey: params.sessionKey,
-    agent: params.agentId,
+    agent: params.input.codexAgentId,
     mode: "persistent",
-    cwd: params.workingDirectory,
+    cwd: params.input.workingDirectory,
   });
   await manager.runTurn({
     cfg,
     sessionKey: params.sessionKey,
-    text: `/compact Focus on the original task, current code changes, remaining gaps, and blocker state for: ${params.task}`,
+    text: `/compact Focus on the original task, current code changes, remaining gaps, and blocker state for: ${params.input.task}`,
     mode: "steer",
     requestId: `${params.sessionKey}:compact:${params.round}`,
   });
@@ -308,24 +432,26 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     moduleId: "codex_controller",
     displayName: "Codex Controller",
     description:
-      "Runs a Codex ACP worker under a controller loop that only escalates real blockers or exhausted retries.",
+      "Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
     kind: "agent_workflow",
-    version: "0.1.0",
+    version: "0.2.0",
     requiredAgents: ["codex", "langgraph"],
     terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
     supportsAbort: false,
     inputSchemaSummary: [
       "task (string, required): original coding task passed directly to Codex.",
-      "workingDirectory (string, required): absolute workspace path for the Codex ACP session.",
+      "workingDirectory (string, required): absolute workspace path for the persistent Codex ACP session.",
       "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 6.",
       "successCriteria (string[], optional): additional completion criteria.",
       "constraints (string[], optional): extra constraints to keep in every turn.",
       `controllerPromptPath (string, optional): defaults to ${DEFAULT_CONTROLLER_PROMPT_PATH}.`,
+      'workerCompactionMode ("off"|"acp_control_command", optional): semantic ACP-thread compaction strategy; defaults to acp_control_command.',
+      `workerCompactionAfterRound (number, optional): first round that may trigger ACP-thread compaction; defaults to ${DEFAULT_WORKER_COMPACTION_AFTER_ROUND}.`,
     ],
     artifactContract: [
       "round-<n>-codex.txt: raw Codex worker output per round.",
-      "round-<n>-controller.txt: parsed controller decision source per round.",
-      "run-summary.txt: terminal summary with final status and reason.",
+      "round-<n>-controller.txt: raw controller output per round, including normalized decision block.",
+      "run-summary.txt: terminal summary with final status, reason, and session keys.",
     ],
   },
   async start(request, ctx) {
@@ -347,8 +473,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     sessions.extras = {
       ...sessions.extras,
       codexWorkerRuntime: "acp",
+      codexWorkerSessionKind: "persistent_acp_thread",
       workingDirectory: input.workingDirectory,
       controllerPromptPath: input.controllerPromptPath,
+      workerCompactionMode: input.workerCompactionMode,
+      workerCompactionAfterRound: String(input.workerCompactionAfterRound),
     };
 
     let record = buildRecord({
@@ -373,11 +502,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     for (let round = 1; round <= input.maxRetries; round += 1) {
       if (round > 1) {
         const compacted = await maybeCompactCodexSession({
+          input,
           sessionKey: codexSessionKey,
-          workingDirectory: input.workingDirectory,
-          agentId: input.codexAgentId,
           round,
-          task: input.task,
         });
         if (compacted) {
           sessions.extras = { ...sessions.extras, lastCompactedBeforeRound: String(round) };
@@ -520,7 +647,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
 
       nextInstruction = decision.nextInstruction;
       if (nextInstruction.length === 0) {
-        throw new Error(`Controller returned CONTINUE without NEXT_INSTRUCTION in round ${round}.`);
+        throw new Error(
+          `Controller returned CONTINUE without actionable NEXT_INSTRUCTION in round ${round}.`,
+        );
       }
     }
 
