@@ -8,6 +8,11 @@ const readFileSync = vi.fn();
 const initializeSession = vi.fn();
 const runTurn = vi.fn();
 const loadConfig = vi.fn(() => ({ ok: true }));
+const ensureCliPluginRegistryLoaded = vi.fn(async () => {});
+const getActivePluginRegistry = vi.fn(() => ({ services: [] }));
+const startPluginServices = vi.fn(async () => ({ stop: async () => {} }));
+const getAcpRuntimeBackend = vi.fn();
+const requireAcpRuntimeBackend = vi.fn();
 
 vi.mock("node:fs", () => ({
   existsSync,
@@ -30,6 +35,23 @@ vi.mock("../../../../config/config.js", () => ({
   loadConfig,
 }));
 
+vi.mock("../../../../cli/plugin-registry-loader.js", () => ({
+  ensureCliPluginRegistryLoaded,
+}));
+
+vi.mock("../../../../plugins/runtime.js", () => ({
+  getActivePluginRegistry,
+}));
+
+vi.mock("../../../../plugins/services.js", () => ({
+  startPluginServices,
+}));
+
+vi.mock("../../../../acp/runtime/registry.js", () => ({
+  getAcpRuntimeBackend,
+  requireAcpRuntimeBackend,
+}));
+
 vi.mock("../../../../acp/control-plane/manager.js", () => ({
   getAcpSessionManager: () => ({
     initializeSession,
@@ -40,11 +62,21 @@ vi.mock("../../../../acp/control-plane/manager.js", () => ({
 describe("codex_controller module", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.resetModules();
     existsSync.mockReturnValue(true);
     readFileSync.mockReturnValue("controller prompt template");
     ensureWorkflowSessions.mockResolvedValue({
       orchestrator: "agent:langgraph:pibo:workflow:run-1:orchestrator:main",
     });
+    const backend = {
+      id: "acpx",
+      runtime: {
+        probeAvailability: vi.fn(async () => {}),
+      },
+      healthy: () => true,
+    };
+    getAcpRuntimeBackend.mockReturnValue(backend);
+    requireAcpRuntimeBackend.mockReturnValue(backend);
     writeWorkflowArtifact.mockImplementation((runId: string, name: string) => `${runId}/${name}`);
     initializeSession.mockResolvedValue(undefined);
     runTurn.mockImplementation(
@@ -102,6 +134,8 @@ describe("codex_controller module", () => {
     expect(record.status).toBe("done");
     expect(record.terminalReason).toContain("complete and verified");
     expect(record.sessions.worker).toBe("agent:codex:acp:pibo:workflow:run-1:worker:codex");
+    expect(ensureCliPluginRegistryLoaded).toHaveBeenCalledWith({ scope: "all" });
+    expect(startPluginServices).toHaveBeenCalledTimes(1);
   });
 
   it("maps legacy ASK_USER controller output to blocked without silent format break", async () => {
@@ -169,7 +203,9 @@ describe("codex_controller module", () => {
         messages: [],
       });
 
-    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
     const record = await codexControllerWorkflowModule.start(
       {
         input: {
@@ -197,5 +233,6 @@ describe("codex_controller module", () => {
         mode: "prompt",
       }),
     );
+    expect(startPluginServices).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,7 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getAcpSessionManager } from "../../../../acp/control-plane/manager.js";
+import {
+  getAcpRuntimeBackend,
+  requireAcpRuntimeBackend,
+} from "../../../../acp/runtime/registry.js";
 import type { AcpRuntimeEvent } from "../../../../acp/runtime/types.js";
+import { ensureCliPluginRegistryLoaded } from "../../../../cli/plugin-registry-loader.js";
 import { loadConfig } from "../../../../config/config.js";
+import { getActivePluginRegistry } from "../../../../plugins/runtime.js";
+import { startPluginServices, type PluginServicesHandle } from "../../../../plugins/services.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
 import { ensureWorkflowSessions } from "../managed-session-adapter.js";
 import { writeWorkflowArtifact } from "../store.js";
@@ -35,6 +42,10 @@ const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
 const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "acp_control_command";
 const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
+let cliPluginServicesHandlePromise: Promise<PluginServicesHandle> | null = null;
+type ProbeableAcpRuntime = {
+  probeAvailability?: () => Promise<void>;
+};
 
 function normalizeStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -353,6 +364,39 @@ function buildRecord(params: {
   };
 }
 
+async function ensureCliAcpRuntimeReady(cfg: ReturnType<typeof loadConfig>): Promise<void> {
+  await ensureCliPluginRegistryLoaded({ scope: "all" });
+  if (!cliPluginServicesHandlePromise) {
+    const registry = getActivePluginRegistry();
+    if (!registry) {
+      throw new Error("CLI plugin registry did not load for codex_controller ACP runtime.");
+    }
+    const startPromise = startPluginServices({
+      registry,
+      config: cfg,
+      workspaceDir: cfg.agents?.defaults?.workspace,
+    });
+    cliPluginServicesHandlePromise = startPromise.catch((error) => {
+      if (cliPluginServicesHandlePromise === startPromise) {
+        cliPluginServicesHandlePromise = null;
+      }
+      throw error;
+    });
+  }
+  await cliPluginServicesHandlePromise;
+
+  const backendId =
+    cfg.acp && typeof cfg.acp.backend === "string" && cfg.acp.backend.trim()
+      ? cfg.acp.backend.trim()
+      : undefined;
+  const backend = getAcpRuntimeBackend(backendId);
+  const runtime = backend?.runtime as ProbeableAcpRuntime | undefined;
+  if (backend?.healthy?.() === false && typeof runtime?.probeAvailability === "function") {
+    await runtime.probeAvailability();
+  }
+  requireAcpRuntimeBackend(backendId);
+}
+
 async function runCodexTurn(params: {
   sessionKey: string;
   workingDirectory: string;
@@ -361,6 +405,7 @@ async function runCodexTurn(params: {
   requestId: string;
 }): Promise<{ text: string; outputEvents: string[]; rawEvents: AcpRuntimeEvent[] }> {
   const cfg = loadConfig();
+  await ensureCliAcpRuntimeReady(cfg);
   const manager = getAcpSessionManager();
   await manager.initializeSession({
     cfg,
@@ -409,6 +454,7 @@ async function maybeCompactCodexSession(params: {
   }
 
   const cfg = loadConfig();
+  await ensureCliAcpRuntimeReady(cfg);
   const manager = getAcpSessionManager();
   await manager.initializeSession({
     cfg,
@@ -679,5 +725,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       updatedAt: ctx.nowIso(),
       currentTask: record.currentTask,
     });
+  },
+};
+
+export const __testing = {
+  resetCliPluginServicesHandleForTests() {
+    cliPluginServicesHandlePromise = null;
   },
 };
