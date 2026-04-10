@@ -4,9 +4,46 @@ import { createDefaultDeps } from "../../../cli/deps.js";
 import { loadConfig } from "../../../config/config.js";
 import { coreGatewayHandlers } from "../../../gateway/server-methods.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
-import { buildManagedWorkflowSessionKey } from "../../../plugins/runtime/runtime-managed-sessions.js";
+import { loadGatewaySessionRow } from "../../../gateway/session-utils.js";
+import { formatTimeAgo } from "../../../infra/format-time/format-relative.ts";
+import {
+  buildManagedWorkflowSessionKey,
+  classifyManagedSessionType,
+  createRuntimeManagedSessions,
+  type ManagedSessionResolveParams,
+  type ManagedSessionsListResult,
+  type ManagedSessionType,
+} from "../../../plugins/runtime/runtime-managed-sessions.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 
 type JsonRecord = Record<string, unknown>;
+const DEFAULT_MANAGED_SESSION_LIST_LIMIT = 10;
+const TYPE_PAD = 6;
+const AGENT_PAD = 10;
+const AGE_PAD = 9;
+const STATUS_PAD = 9;
+const SESSION_PAD = 42;
+const LABEL_PAD = 28;
+
+const unavailableSubagent = {
+  run: async () => {
+    throw new Error("managed-session CLI cannot run subagents directly");
+  },
+  waitForRun: async () => {
+    throw new Error("managed-session CLI cannot wait for subagents directly");
+  },
+  getSessionMessages: async () => {
+    throw new Error("managed-session CLI cannot read session messages directly");
+  },
+  getSession: async () => {
+    throw new Error("managed-session CLI cannot read sessions directly");
+  },
+  deleteSession: async () => {
+    throw new Error("managed-session CLI cannot delete sessions directly");
+  },
+};
+
+const managedSessions = createRuntimeManagedSessions(unavailableSubagent);
 
 function createMinimalGatewayContext(): GatewayRequestContext {
   return {
@@ -101,6 +138,12 @@ async function callGatewayMethod<T = unknown>(method: string, params: JsonRecord
 
 function printJson(value: unknown) {
   console.log(JSON.stringify(value, null, 2));
+}
+
+function printLines(lines: string[]) {
+  for (const line of lines) {
+    console.log(line);
+  }
 }
 
 function readScalarString(value: unknown): string | undefined {
@@ -256,6 +299,88 @@ function buildPatchFromOptions(key: string, opts: Record<string, unknown>): Json
   return patch;
 }
 
+function parseManagedSessionTypeOption(value: unknown): ManagedSessionType {
+  const normalized = readScalarString(value)?.trim().toLowerCase();
+  if (!normalized || normalized === "pibo") {
+    return "pibo";
+  }
+  if (normalized === "native" || normalized === "both") {
+    return normalized;
+  }
+  throw new Error(`Invalid --session-type value: ${String(value)}`);
+}
+
+function pad(value: string, width: number) {
+  return value.padEnd(width);
+}
+
+function truncate(value: string, width: number) {
+  if (value.length <= width) {
+    return value;
+  }
+  if (width <= 3) {
+    return value.slice(0, width);
+  }
+  return `${value.slice(0, width - 3)}...`;
+}
+
+function formatManagedSessionTarget(key: string) {
+  const parsed = parseAgentSessionKey(key);
+  if (!parsed) {
+    return key;
+  }
+  if (key.includes(":pibo:")) {
+    return parsed.rest.replace(/^pibo:/, "");
+  }
+  return parsed.rest;
+}
+
+export function renderManagedSessionList(result: ManagedSessionsListResult): string[] {
+  if (result.sessions.length === 0) {
+    return [`No ${result.sessionType} sessions found.`];
+  }
+
+  const header = [
+    pad("Type", TYPE_PAD),
+    pad("Agent", AGENT_PAD),
+    pad("Age", AGE_PAD),
+    pad("Status", STATUS_PAD),
+    pad("Session", SESSION_PAD),
+    pad("Label", LABEL_PAD),
+  ].join(" ");
+
+  const lines = [header];
+  for (const session of result.sessions) {
+    const parsed = parseAgentSessionKey(session.key);
+    const type = classifyManagedSessionType(session.key);
+    const age = session.updatedAt ? formatTimeAgo(Date.now() - session.updatedAt) : "-";
+    const status = session.status ?? "-";
+    const target = formatManagedSessionTarget(session.key);
+    const label = session.displayName ?? session.label ?? session.derivedTitle ?? "-";
+    lines.push(
+      [
+        pad(type, TYPE_PAD),
+        pad(parsed?.agentId ?? "-", AGENT_PAD),
+        pad(age, AGE_PAD),
+        pad(status, STATUS_PAD),
+        pad(truncate(target, SESSION_PAD), SESSION_PAD),
+        pad(truncate(label, LABEL_PAD), LABEL_PAD),
+      ]
+        .join(" ")
+        .trimEnd(),
+    );
+  }
+
+  if (result.truncated) {
+    lines.push(
+      `Showing ${result.shownCount} of ${result.totalCount} ${result.sessionType} sessions. Use --all or --limit <n> for more.`,
+    );
+  } else {
+    lines.push(`Showing ${result.shownCount} ${result.sessionType} sessions.`);
+  }
+  return lines;
+}
+
 export async function managedSessionSmoke() {
   const cfg = loadConfig();
   const agentId = resolveDefaultAgentId(cfg);
@@ -316,7 +441,10 @@ export function registerManagedSessionCommands(managed: Command) {
   managed
     .command("list")
     .description("Managed/agent Sessions listen")
+    .option("-a, --all", "Alle passenden Sessions anzeigen")
+    .option("--json", "JSON-Ausgabe")
     .option("--limit <n>", "Maximale Anzahl")
+    .option("--session-type <type>", "pibo|native|both", "pibo")
     .option("--active-minutes <n>", "Nur kürzlich aktive Sessions")
     .option("--include-global", "Globale Session einschließen")
     .option("--include-unknown", "Unknown Session einschließen")
@@ -327,64 +455,84 @@ export function registerManagedSessionCommands(managed: Command) {
     .option("--agent-id <id>", "Nach Agent filtern")
     .option("--search <text>", "Textsuche")
     .action(async (opts) => {
-      printJson(
-        await callGatewayMethod("sessions.list", {
-          ...(parseOptionalInteger(opts.limit) !== undefined
-            ? { limit: parseOptionalInteger(opts.limit) }
-            : {}),
-          ...(parseOptionalInteger(opts.activeMinutes) !== undefined
-            ? { activeMinutes: parseOptionalInteger(opts.activeMinutes) }
-            : {}),
-          ...(opts.includeGlobal ? { includeGlobal: true } : {}),
-          ...(opts.includeUnknown ? { includeUnknown: true } : {}),
-          ...(opts.includeDerivedTitles ? { includeDerivedTitles: true } : {}),
-          ...(opts.includeLastMessage ? { includeLastMessage: true } : {}),
-          ...(typeof opts.label === "string" && opts.label.trim()
-            ? { label: opts.label.trim() }
-            : {}),
-          ...(typeof opts.spawnedBy === "string" && opts.spawnedBy.trim()
-            ? { spawnedBy: opts.spawnedBy.trim() }
-            : {}),
-          ...(typeof opts.agentId === "string" && opts.agentId.trim()
-            ? { agentId: opts.agentId.trim() }
-            : {}),
-          ...(typeof opts.search === "string" && opts.search.trim()
-            ? { search: opts.search.trim() }
-            : {}),
-        }),
-      );
+      const result = await managedSessions.list({
+        ...(opts.all ? { all: true } : {}),
+        limit: opts.all
+          ? undefined
+          : (parseOptionalInteger(opts.limit) ?? DEFAULT_MANAGED_SESSION_LIST_LIMIT),
+        sessionType: parseManagedSessionTypeOption(opts.sessionType),
+        ...(parseOptionalInteger(opts.activeMinutes) !== undefined
+          ? { activeMinutes: parseOptionalInteger(opts.activeMinutes) }
+          : {}),
+        ...(opts.includeGlobal ? { includeGlobal: true } : {}),
+        ...(opts.includeUnknown ? { includeUnknown: true } : {}),
+        ...(opts.includeDerivedTitles ? { includeDerivedTitles: true } : {}),
+        ...(opts.includeLastMessage ? { includeLastMessage: true } : {}),
+        ...(typeof opts.label === "string" && opts.label.trim()
+          ? { label: opts.label.trim() }
+          : {}),
+        ...(typeof opts.spawnedBy === "string" && opts.spawnedBy.trim()
+          ? { spawnedBy: opts.spawnedBy.trim() }
+          : {}),
+        ...(typeof opts.agentId === "string" && opts.agentId.trim()
+          ? { agentId: opts.agentId.trim() }
+          : {}),
+        ...(typeof opts.search === "string" && opts.search.trim()
+          ? { search: opts.search.trim() }
+          : {}),
+      });
+      if (opts.json) {
+        printJson(result);
+        return;
+      }
+      printLines(renderManagedSessionList(result));
     });
 
   managed
     .command("resolve")
     .description("Session-Key aus key/sessionId/label auflösen")
+    .option("--json", "JSON-Ausgabe")
     .option("--key <key>", "Expliziter Session-Key")
     .option("--session-id <id>", "Session-ID")
     .option("--label <label>", "Session-Label")
+    .option("--session-type <type>", "pibo|native|both", "pibo")
     .option("--agent-id <id>", "Agent-ID Filter")
     .option("--spawned-by <key>", "Spawner/Parent Filter")
     .option("--include-global", "Globale Session einschließen")
     .option("--include-unknown", "Unknown Session einschließen")
     .action(async (opts) => {
-      printJson(
-        await callGatewayMethod("sessions.resolve", {
-          ...(typeof opts.key === "string" && opts.key.trim() ? { key: opts.key.trim() } : {}),
-          ...(typeof opts.sessionId === "string" && opts.sessionId.trim()
-            ? { sessionId: opts.sessionId.trim() }
-            : {}),
-          ...(typeof opts.label === "string" && opts.label.trim()
-            ? { label: opts.label.trim() }
-            : {}),
-          ...(typeof opts.agentId === "string" && opts.agentId.trim()
-            ? { agentId: opts.agentId.trim() }
-            : {}),
-          ...(typeof opts.spawnedBy === "string" && opts.spawnedBy.trim()
-            ? { spawnedBy: opts.spawnedBy.trim() }
-            : {}),
-          ...(opts.includeGlobal ? { includeGlobal: true } : {}),
-          ...(opts.includeUnknown ? { includeUnknown: true } : {}),
-        }),
-      );
+      const selector = {
+        ...(typeof opts.key === "string" && opts.key.trim() ? { key: opts.key.trim() } : {}),
+        ...(typeof opts.sessionId === "string" && opts.sessionId.trim()
+          ? { sessionId: opts.sessionId.trim() }
+          : {}),
+        ...(typeof opts.label === "string" && opts.label.trim()
+          ? { label: opts.label.trim() }
+          : {}),
+        ...(typeof opts.agentId === "string" && opts.agentId.trim()
+          ? { agentId: opts.agentId.trim() }
+          : {}),
+        ...(typeof opts.spawnedBy === "string" && opts.spawnedBy.trim()
+          ? { spawnedBy: opts.spawnedBy.trim() }
+          : {}),
+        ...(opts.includeGlobal ? { includeGlobal: true } : {}),
+        ...(opts.includeUnknown ? { includeUnknown: true } : {}),
+        sessionType: parseManagedSessionTypeOption(opts.sessionType),
+      } satisfies ManagedSessionResolveParams;
+      const result = await managedSessions.resolveSelector(selector);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      if (opts.json) {
+        printJson({
+          ok: true,
+          key: result.key,
+          sessionType: classifyManagedSessionType(result.key),
+          row: loadGatewaySessionRow(result.key),
+        });
+        return;
+      }
+      console.log(result.key);
     });
 
   managed
@@ -395,17 +543,8 @@ export function registerManagedSessionCommands(managed: Command) {
     .option("--limit <n>", "Maximale Nachrichtenanzahl", "50")
     .action(async (key, opts) => {
       const limit = parseOptionalInteger(opts.limit) ?? 50;
-      const [session, listed] = await Promise.all([
-        callGatewayMethod("sessions.get", { key, limit }),
-        callGatewayMethod("sessions.list", {
-          search: key,
-          limit: 200,
-          includeGlobal: true,
-          includeUnknown: true,
-        }),
-      ]);
-      const listPayload = listed as { sessions?: Array<{ key?: unknown }> };
-      const row = listPayload.sessions?.find((entry) => entry?.key === String(key).trim()) ?? null;
+      const session = await managedSessions.status({ key: String(key).trim(), limit });
+      const row = session.row ?? loadGatewaySessionRow(String(key).trim());
       printJson({
         key: String(key).trim(),
         row,

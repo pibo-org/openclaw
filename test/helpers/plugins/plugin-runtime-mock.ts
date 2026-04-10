@@ -483,6 +483,10 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         ts: Date.now(),
         path: "/tmp/session-store.json",
         count: 0,
+        sessionType: "pibo" as const,
+        totalCount: 0,
+        shownCount: 0,
+        truncated: false,
         defaults: {
           modelProvider: null,
           model: null,

@@ -15,6 +15,7 @@ import {
   type SessionsListParams,
   type SessionsResolveParams,
 } from "../../gateway/protocol/index.js";
+import { ErrorCodes, errorShape } from "../../gateway/protocol/index.js";
 import { performGatewaySessionReset } from "../../gateway/session-reset-service.js";
 import {
   archiveSessionTranscriptsForSession,
@@ -23,7 +24,8 @@ import {
 } from "../../gateway/session-reset-service.js";
 import {
   archiveFileOnDisk,
-  listSessionsFromStore,
+  buildGatewaySessionRow,
+  getSessionDefaults,
   loadSessionEntry,
   loadGatewaySessionRow,
   migrateAndPruneGatewaySessionStoreKey,
@@ -36,13 +38,17 @@ import {
 } from "../../gateway/session-utils.js";
 import type { SessionsPatchResult } from "../../gateway/session-utils.types.js";
 import { applySessionsPatchToStore } from "../../gateway/sessions-patch.js";
-import { resolveSessionKeyFromResolveParams } from "../../gateway/sessions-resolve.js";
 import {
   normalizeAgentId,
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
+import { parseSessionLabel } from "../../sessions/session-label.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "../../shared/string-coerce.js";
 import type { PluginRuntime } from "./types.js";
 
 function normalizeSegment(value: string | undefined): string | undefined {
@@ -140,6 +146,24 @@ export type ManagedSessionResolveResult = {
   sessionId?: string;
 };
 
+export type ManagedSessionType = "pibo" | "native" | "both";
+
+export type ManagedSessionsListParams = SessionsListParams & {
+  sessionType?: ManagedSessionType;
+  all?: boolean;
+};
+
+export type ManagedSessionResolveParams = SessionsResolveParams & {
+  sessionType?: ManagedSessionType;
+};
+
+export type ManagedSessionsListResult = SessionsListResult & {
+  sessionType: ManagedSessionType;
+  totalCount: number;
+  shownCount: number;
+  truncated: boolean;
+};
+
 export type ManagedSessionStatusResult = {
   found: boolean;
   key: string;
@@ -176,11 +200,11 @@ export type ManagedSessionsRuntime = {
     name?: string;
     agentId?: string;
   }) => string;
-  list: (input?: SessionsListParams) => Promise<SessionsListResult>;
+  list: (input?: ManagedSessionsListParams) => Promise<ManagedSessionsListResult>;
   get: (input: { key: string; limit?: number }) => Promise<ManagedSessionStatusResult>;
   status: (input: { key: string; limit?: number }) => Promise<ManagedSessionStatusResult>;
   resolveSelector: (
-    input: SessionsResolveParams,
+    input: ManagedSessionResolveParams,
   ) => Promise<
     { ok: true; key: string } | { ok: false; error: { code?: string | number; message: string } }
   >;
@@ -302,6 +326,283 @@ function requireKey(key: string): string {
   return normalized;
 }
 
+function normalizeManagedSessionType(value: unknown): ManagedSessionType {
+  const normalized = normalizeLowercaseStringOrEmpty(typeof value === "string" ? value : "");
+  if (normalized === "native" || normalized === "both") {
+    return normalized;
+  }
+  return "pibo";
+}
+
+export function classifyManagedSessionType(key: string): Exclude<ManagedSessionType, "both"> {
+  return key.includes(":pibo:") ? "pibo" : "native";
+}
+
+export function matchesManagedSessionType(key: string, sessionType: ManagedSessionType): boolean {
+  if (sessionType === "both") {
+    return true;
+  }
+  return classifyManagedSessionType(key) === sessionType;
+}
+
+export function listManagedSessionsFromStore(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  storePath: string;
+  store: Record<string, SessionEntry>;
+  opts?: ManagedSessionsListParams;
+}): ManagedSessionsListResult {
+  const { cfg, storePath, store } = params;
+  const opts = params.opts ?? {};
+  const now = Date.now();
+  const includeGlobal = opts.includeGlobal === true;
+  const includeUnknown = opts.includeUnknown === true;
+  const includeDerivedTitles = opts.includeDerivedTitles === true;
+  const includeLastMessage = opts.includeLastMessage === true;
+  const sessionType = normalizeManagedSessionType(opts.sessionType);
+  const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
+  const label = normalizeOptionalString(opts.label) ?? "";
+  const agentId = typeof opts.agentId === "string" ? normalizeAgentId(opts.agentId) : "";
+  const search = normalizeLowercaseStringOrEmpty(opts.search);
+  const activeMinutes =
+    typeof opts.activeMinutes === "number" && Number.isFinite(opts.activeMinutes)
+      ? Math.max(1, Math.floor(opts.activeMinutes))
+      : undefined;
+  const explicitLimit =
+    typeof opts.limit === "number" && Number.isFinite(opts.limit)
+      ? Math.max(1, Math.floor(opts.limit))
+      : undefined;
+  const limit = opts.all === true ? undefined : (explicitLimit ?? 10);
+
+  let candidateEntries = Object.entries(store)
+    .filter(([key]) => {
+      if (!matchesManagedSessionType(key, sessionType)) {
+        return false;
+      }
+      if (!includeGlobal && key === "global") {
+        return false;
+      }
+      if (!includeUnknown && key === "unknown") {
+        return false;
+      }
+      if (agentId) {
+        if (key === "global" || key === "unknown") {
+          return false;
+        }
+        const parsed = parseAgentSessionKey(key);
+        if (!parsed) {
+          return false;
+        }
+        return normalizeAgentId(parsed.agentId) === agentId;
+      }
+      return true;
+    })
+    .filter(([, entry]) => {
+      if (!label) {
+        return true;
+      }
+      return entry?.label === label;
+    })
+    .toSorted((a, b) => (b[1]?.updatedAt ?? 0) - (a[1]?.updatedAt ?? 0));
+  const candidateCountBeforeLimit = candidateEntries.length;
+
+  const canApplyEarlyLimit =
+    typeof limit === "number" &&
+    !spawnedBy &&
+    !search &&
+    activeMinutes === undefined &&
+    !includeDerivedTitles &&
+    !includeLastMessage;
+  if (canApplyEarlyLimit) {
+    candidateEntries = candidateEntries.slice(0, limit);
+  }
+
+  let sessions = candidateEntries
+    .map(([key, entry]) =>
+      buildGatewaySessionRow({
+        cfg,
+        storePath,
+        store,
+        key,
+        entry,
+        now,
+        includeDerivedTitles,
+        includeLastMessage,
+      }),
+    )
+    .filter((row) => {
+      if (!spawnedBy) {
+        return true;
+      }
+      return row.spawnedBy === spawnedBy || row.parentSessionKey === spawnedBy;
+    });
+
+  if (search) {
+    sessions = sessions.filter((session) => {
+      const fields = [
+        session.displayName,
+        session.label,
+        session.subject,
+        session.sessionId,
+        session.key,
+      ];
+      return fields.some(
+        (field) =>
+          typeof field === "string" && normalizeLowercaseStringOrEmpty(field).includes(search),
+      );
+    });
+  }
+
+  if (activeMinutes !== undefined) {
+    const cutoff = now - activeMinutes * 60_000;
+    sessions = sessions.filter((session) => (session.updatedAt ?? 0) >= cutoff);
+  }
+
+  const totalCount = canApplyEarlyLimit ? candidateCountBeforeLimit : sessions.length;
+  const shownSessions =
+    typeof limit === "number" && sessions.length > limit ? sessions.slice(0, limit) : sessions;
+
+  return {
+    ts: now,
+    path: storePath,
+    count: shownSessions.length,
+    defaults: getSessionDefaults(cfg),
+    sessions: shownSessions,
+    sessionType,
+    totalCount,
+    shownCount: shownSessions.length,
+    truncated: shownSessions.length < totalCount,
+  };
+}
+
+export async function resolveManagedSessionSelector(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  storePath: string;
+  store: Record<string, SessionEntry>;
+  input: ManagedSessionResolveParams;
+}): Promise<
+  { ok: true; key: string } | { ok: false; error: { code?: string | number; message: string } }
+> {
+  const { cfg, storePath, store, input } = params;
+  const key = normalizeOptionalString(input.key) ?? "";
+  const hasKey = key.length > 0;
+  const sessionId = normalizeOptionalString(input.sessionId) ?? "";
+  const hasSessionId = sessionId.length > 0;
+  const hasLabel = (normalizeOptionalString(input.label) ?? "").length > 0;
+  const selectionCount = [hasKey, hasSessionId, hasLabel].filter(Boolean).length;
+
+  if (selectionCount > 1) {
+    return {
+      ok: false,
+      error: errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        "Provide either key, sessionId, or label (not multiple)",
+      ),
+    };
+  }
+  if (selectionCount === 0) {
+    return {
+      ok: false,
+      error: errorShape(ErrorCodes.INVALID_REQUEST, "Either key, sessionId, or label is required"),
+    };
+  }
+
+  const listInput = {
+    includeGlobal: input.includeGlobal === true,
+    includeUnknown: input.includeUnknown === true,
+    agentId: input.agentId,
+    spawnedBy: input.spawnedBy,
+    sessionType: input.sessionType,
+    all: true,
+  } satisfies ManagedSessionsListParams;
+
+  if (hasKey) {
+    const canonicalKey = resolveGatewaySessionStoreTarget({ cfg, key }).canonicalKey;
+    const list = listManagedSessionsFromStore({
+      cfg,
+      storePath,
+      store,
+      opts: listInput,
+    });
+    const match = list.sessions.find((session) => session.key === canonicalKey);
+    if (!match) {
+      return {
+        ok: false,
+        error: errorShape(ErrorCodes.INVALID_REQUEST, `No session found: ${key}`),
+      };
+    }
+    return { ok: true, key: match.key };
+  }
+
+  if (hasSessionId) {
+    const list = listManagedSessionsFromStore({
+      cfg,
+      storePath,
+      store,
+      opts: listInput,
+    });
+    const matches = list.sessions.filter(
+      (session) => session.sessionId === sessionId || session.key === sessionId,
+    );
+    if (matches.length === 0) {
+      return {
+        ok: false,
+        error: errorShape(ErrorCodes.INVALID_REQUEST, `No session found: ${sessionId}`),
+      };
+    }
+    if (matches.length > 1) {
+      const keys = matches.map((session) => session.key).join(", ");
+      return {
+        ok: false,
+        error: errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `Multiple sessions found for sessionId: ${sessionId} (${keys})`,
+        ),
+      };
+    }
+    return { ok: true, key: String(matches[0]?.key ?? "") };
+  }
+
+  const parsedLabel = parseSessionLabel(input.label);
+  if (!parsedLabel.ok) {
+    return {
+      ok: false,
+      error: errorShape(ErrorCodes.INVALID_REQUEST, parsedLabel.error),
+    };
+  }
+
+  const list = listManagedSessionsFromStore({
+    cfg,
+    storePath,
+    store,
+    opts: {
+      ...listInput,
+      label: parsedLabel.label,
+      all: true,
+    },
+  });
+  if (list.sessions.length === 0) {
+    return {
+      ok: false,
+      error: errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        `No session found with label: ${parsedLabel.label}`,
+      ),
+    };
+  }
+  if (list.sessions.length > 1) {
+    const keys = list.sessions.map((session) => session.key).join(", ");
+    return {
+      ok: false,
+      error: errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        `Multiple sessions found with label: ${parsedLabel.label} (${keys})`,
+      ),
+    };
+  }
+
+  return { ok: true, key: String(list.sessions[0]?.key ?? "") };
+}
+
 function ensureSessionTranscriptFile(params: {
   sessionId: string;
   storePath: string;
@@ -378,7 +679,7 @@ export function createRuntimeManagedSessions(
         key: `agent:${normalizeAgentId(input.agentId ?? resolveDefaultAgentId(cfg))}:dashboard:list`,
       });
       const store = loadSessionStore(target.storePath);
-      return listSessionsFromStore({
+      return listManagedSessionsFromStore({
         cfg,
         storePath: target.storePath,
         store,
@@ -393,17 +694,19 @@ export function createRuntimeManagedSessions(
     },
     async resolveSelector(input) {
       const cfg = loadConfig();
-      const resolved = await resolveSessionKeyFromResolveParams({ cfg, p: input });
-      if (resolved.ok) {
-        return resolved;
-      }
-      return {
-        ok: false as const,
-        error: {
-          code: resolved.error.code,
-          message: resolved.error.message,
-        },
-      };
+      const { storePath, store } = (() => {
+        const target = resolveGatewaySessionStoreTarget({
+          cfg,
+          key: `agent:${normalizeAgentId(input.agentId ?? resolveDefaultAgentId(cfg))}:dashboard:resolve`,
+        });
+        return { storePath: target.storePath, store: loadSessionStore(target.storePath) };
+      })();
+      return await resolveManagedSessionSelector({
+        cfg,
+        storePath,
+        store,
+        input,
+      });
     },
     async resolve(key) {
       const status = await loadManagedSessionStatus({ key, limit: 1 });

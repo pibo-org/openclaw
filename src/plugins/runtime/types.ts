@@ -4,12 +4,12 @@ import type {
   WorkflowStartRequest,
 } from "../../cli/pibo/workflows/types.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import type { SessionsListParams, SessionsResolveParams } from "../../gateway/protocol/index.js";
+import type { GatewaySessionRow, SessionsPatchResult } from "../../gateway/session-utils.js";
 import type {
-  GatewaySessionRow,
-  SessionsListResult,
-  SessionsPatchResult,
-} from "../../gateway/session-utils.js";
+  ManagedSessionResolveParams,
+  ManagedSessionsListParams,
+  ManagedSessionsListResult,
+} from "./runtime-managed-sessions.js";
 import type { PluginRuntimeChannel } from "./types-channel.js";
 import type { PluginRuntimeCore, RuntimeLogger } from "./types-core.js";
 
@@ -97,7 +97,7 @@ export type PluginRuntime = PluginRuntimeCore & {
       name?: string;
       agentId?: string;
     }) => string;
-    list: (input?: SessionsListParams) => Promise<SessionsListResult>;
+    list: (input?: ManagedSessionsListParams) => Promise<ManagedSessionsListResult>;
     get: (input: { key: string; limit?: number }) => Promise<{
       found: boolean;
       key: string;
@@ -115,7 +115,7 @@ export type PluginRuntime = PluginRuntimeCore & {
       messageCount: number;
     }>;
     resolveSelector: (
-      input: SessionsResolveParams,
+      input: ManagedSessionResolveParams,
     ) => Promise<
       { ok: true; key: string } | { ok: false; error: { code?: string | number; message: string } }
     >;

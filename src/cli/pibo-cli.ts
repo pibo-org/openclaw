@@ -260,7 +260,10 @@ export function registerPiboCli(program: Command) {
       todoTokens({ max: opts.max });
     });
 
-  const managed = pibo.command("managed-session").description("PIBo managed session helpers");
+  const managed = pibo
+    .command("managed-session")
+    .alias("managed-sessions")
+    .description("PIBo managed session helpers");
   registerManagedSessionCommands(managed);
 
   const workflows = pibo.command("workflows").description("Generische PIBO Workflow-Module");
