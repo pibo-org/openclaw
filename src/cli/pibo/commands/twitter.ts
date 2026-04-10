@@ -11,10 +11,11 @@ const STATE_PATH = path.join(
   process.env.HOME || "",
   ".openclaw/workspace/state/twitter/last_check_heartbeat.json",
 );
-const BROWSER_USER_DATA_DIR = path.join(
+const BROWSER_PROFILE_DIR = path.join(
   process.env.HOME || "",
-  ".openclaw/browser/openclaw/user-data/Default",
+  ".openclaw/browser/openclaw/user-data",
 );
+const BROWSER_DEFAULT_DIR = path.join(BROWSER_PROFILE_DIR, "Default");
 
 // ── Konstanten ─────────────────────────────────────────────────
 
@@ -130,43 +131,237 @@ function writeState(state: State): void {
 
 // ── Browser Recovery ───────────────────────────────────────────
 
+const RECOVERY_WAIT_MS = 1500;
+const TASK_DRAIN_TIMEOUT_MS = 10000;
+const SAFE_RESTART_HOUR_START = 2;
+const SAFE_RESTART_HOUR_END = 6;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function commandSucceeds(command: string, timeout = 15000): Promise<boolean> {
+  try {
+    await execAsync(command, { timeout });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getCdpPidList(): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync(`lsof -ti:18800 2>/dev/null || true`, { timeout: 5000 });
+    return stdout
+      .trim()
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function removeBrowserLockFiles(): Promise<number> {
+  const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+  let removed = 0;
+
+  for (const dir of [BROWSER_PROFILE_DIR, BROWSER_DEFAULT_DIR]) {
+    for (const lock of lockFiles) {
+      const lockPath = path.join(dir, lock);
+      try {
+        if (fs.existsSync(lockPath)) {
+          fs.unlinkSync(lockPath);
+          removed++;
+          console.log(`   Entfernt: ${lockPath}`);
+        }
+      } catch {}
+    }
+  }
+
+  return removed;
+}
+
+async function isBrowserReachable(): Promise<boolean> {
+  try {
+    const browser = await chromium.connectOverCDP(CDP_URL);
+    void browser.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForBrowserReachable(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isBrowserReachable()) {
+      return true;
+    }
+    await wait(1500);
+  }
+  return false;
+}
+
+type RestartDecision = {
+  allowed: boolean;
+  reason: string;
+};
+
+function isInSafeRestartWindow(now = new Date()): boolean {
+  const hour = now.getHours();
+  return hour >= SAFE_RESTART_HOUR_START && hour < SAFE_RESTART_HOUR_END;
+}
+
+async function getRunningTaskCount(): Promise<number | null> {
+  try {
+    const { stdout } = await execAsync(`openclaw tasks list --status running --json`, {
+      timeout: TASK_DRAIN_TIMEOUT_MS,
+    });
+    const parsed = JSON.parse(stdout) as { count?: unknown };
+    return typeof parsed.count === "number" ? parsed.count : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getRecentCronSessions(): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync(
+      `openclaw status --all 2>/dev/null | grep 'agent:main:cron:' || true`,
+      { timeout: TASK_DRAIN_TIMEOUT_MS },
+    );
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function hasCronOrHeartbeatActivity(): Promise<RestartDecision | null> {
+  const recentCronLines = await getRecentCronSessions();
+  if (recentCronLines.length > 0) {
+    return {
+      allowed: false,
+      reason: `erkennbare Cron-/Heartbeat-Session-Aktivität (${recentCronLines.length} Session-Zeile(n) in openclaw status)`,
+    };
+  }
+  return null;
+}
+
+async function canSafelyRestartGateway(): Promise<RestartDecision> {
+  if (!isInSafeRestartWindow()) {
+    return {
+      allowed: false,
+      reason: `außerhalb Safe-Window ${SAFE_RESTART_HOUR_START}:00-${SAFE_RESTART_HOUR_END}:00`,
+    };
+  }
+
+  const runningTasks = await getRunningTaskCount();
+  if (runningTasks == null) {
+    return {
+      allowed: false,
+      reason: "running-task-Zustand konnte nicht sicher bestimmt werden",
+    };
+  }
+
+  if (runningTasks > 0) {
+    return {
+      allowed: false,
+      reason: `${runningTasks} laufende Background-Task(s) aktiv`,
+    };
+  }
+
+  const cronOrHeartbeatActivity = await hasCronOrHeartbeatActivity();
+  if (cronOrHeartbeatActivity) {
+    return cronOrHeartbeatActivity;
+  }
+
+  return {
+    allowed: true,
+    reason: "keine laufenden Background-Tasks und im Safe-Window",
+  };
+}
+
+async function tryGatewayRestartRecovery(): Promise<boolean> {
+  const decision = await canSafelyRestartGateway();
+  if (!decision.allowed) {
+    console.log(`   Gateway-Restart übersprungen: ${decision.reason}`);
+    return false;
+  }
+
+  console.log(`   Gateway-Restart freigegeben: ${decision.reason}`);
+
+  try {
+    execSync("openclaw gateway restart", { stdio: "pipe", timeout: 45000 });
+  } catch (err) {
+    console.error(`⚠️ Gateway-Restart fehlgeschlagen: ${formatUnknownError(err)}`);
+    return false;
+  }
+
+  await wait(5000);
+
+  const browserRestored = await recoverBrowser();
+  if (!browserRestored) {
+    console.error("⚠️ Browser blieb auch nach Gateway-Restart nicht erreichbar.");
+    return false;
+  }
+
+  return true;
+}
+
 /**
- * Führt Browser-CDP-Recovery durch (aus Known-Issues).
- * Killt Zombie-Prozesse, räumt Lock-Files auf.
+ * Führt Browser-CDP-Recovery durch.
+ * Wichtige Einsicht: Locks liegen im Profil-Root, nicht in Default/.
+ * Außerdem reicht nur Port-Kill oft nicht, weil der Browser-Control-Pfad hängen kann.
  */
 async function recoverBrowser(): Promise<boolean> {
   console.log("🔧 Browser-Recovery wird ausgeführt...");
 
   try {
-    // 1. Chrome-Prozesse mit CDP-Port killen
-    try {
-      const { stdout } = await execAsync(`lsof -ti:18800 2>/dev/null || true`);
-      const pids = stdout.trim().split("\n").filter(Boolean);
-      if (pids.length > 0) {
-        console.log(`   Kill PID(s): ${pids.join(", ")}`);
-        for (const pid of pids) {
-          try {
-            process.kill(parseInt(pid), "SIGKILL");
-          } catch {}
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    } catch {}
-
-    // 2. Lock-Files entfernen
-    const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
-    for (const lock of lockFiles) {
-      const lockPath = path.join(BROWSER_USER_DATA_DIR, lock);
-      try {
-        if (fs.existsSync(lockPath)) {
-          fs.unlinkSync(lockPath);
-          console.log(`   Entfernt: ${lock}`);
-        }
-      } catch {}
+    const pidsBefore = await getCdpPidList();
+    if (pidsBefore.length > 0) {
+      console.log(`   CDP PID(s) vor Recovery: ${pidsBefore.join(", ")}`);
     }
 
-    console.log("✅ Recovery abgeschlossen.");
-    return true;
+    console.log("   Schritt 1/4: openclaw browser stop");
+    await commandSucceeds("openclaw browser stop", 10000);
+    await wait(RECOVERY_WAIT_MS);
+
+    const pidsAfterStop = await getCdpPidList();
+    if (pidsAfterStop.length > 0) {
+      console.log(
+        `   Schritt 2/4: harte Kills für verbliebene CDP PID(s): ${pidsAfterStop.join(", ")}`,
+      );
+      for (const pid of pidsAfterStop) {
+        try {
+          process.kill(parseInt(pid, 10), "SIGKILL");
+        } catch {}
+      }
+      await wait(RECOVERY_WAIT_MS);
+    } else {
+      console.log("   Schritt 2/4: keine verbliebenen CDP-PIDs");
+    }
+
+    console.log("   Schritt 3/4: Singleton-/Lock-Files entfernen");
+    const removedLocks = await removeBrowserLockFiles();
+    if (removedLocks === 0) {
+      console.log("   Keine Lock-Files gefunden");
+    }
+
+    console.log("   Schritt 4/4: Browser neu starten");
+    execSync("openclaw browser start", { stdio: "pipe", timeout: 45000 });
+
+    const ready = await waitForBrowserReachable(45000);
+    if (ready) {
+      console.log("✅ Browser-Recovery erfolgreich.");
+      return true;
+    }
+
+    console.error("⚠️ Recovery hat den Browser nicht wieder erreichbar gemacht.");
+    return false;
   } catch (err) {
     console.error(`⚠️ Recovery fehlgeschlagen: ${formatUnknownError(err)}`);
     return false;
@@ -177,44 +372,31 @@ async function recoverBrowser(): Promise<boolean> {
 
 /** Prüft, ob der native Browser läuft. Falls nicht: starten. */
 async function ensureBrowserRunning(): Promise<boolean> {
-  try {
-    const browser = await chromium.connectOverCDP(CDP_URL);
-    void browser.close();
+  if (await isBrowserReachable()) {
     console.log("✅ Browser läuft bereits.");
     return true;
-  } catch {
-    console.log("🚀 Browser nicht erreichbar — starte...");
-    try {
-      // Erst Recovery versuchen
-      await recoverBrowser();
-
-      execSync("openclaw browser stop", { stdio: "pipe", timeout: 5000 });
-      await new Promise((r) => setTimeout(r, 2000));
-
-      execSync("openclaw browser start", { stdio: "pipe", timeout: 30000 });
-
-      // Kurz warten, bis CDP-Port bereit ist
-      let attempts = 0;
-      while (attempts < 15) {
-        try {
-          const browser = await chromium.connectOverCDP(CDP_URL);
-          void browser.close();
-          console.log("✅ Browser gestartet.");
-          return true;
-        } catch {
-          attempts++;
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-      }
-      throw new Error("Browser startete nicht innerhalb von 30s");
-    } catch (err) {
-      console.error(`❌ Browser konnte nicht gestartet werden: ${formatUnknownError(err)}`);
-      console.error(
-        "\n💡 Tipp: Führe 'openclaw browser restart' aus oder starte Chrome manuell neu.",
-      );
-      return false;
-    }
   }
+
+  console.log("🚀 Browser nicht erreichbar — Recovery-Strategie startet...");
+  const recovered = await recoverBrowser();
+  if (recovered) {
+    return true;
+  }
+
+  console.warn("⚠️ Lokale Recovery hat nicht gereicht.");
+  console.log("🛟 Prüfe Safe-Restart-Gate für Gateway-Eskalation...");
+
+  const restarted = await tryGatewayRestartRecovery();
+  if (restarted) {
+    console.log("✅ Browser nach Gateway-Restart wieder erreichbar.");
+    return true;
+  }
+
+  console.error("❌ Browser konnte nicht automatisch wiederhergestellt werden.");
+  console.error(
+    "💡 Auto-Restart wurde entweder blockiert oder hat nicht gereicht. Bitte später im Leerlauf erneut versuchen oder manuell eingreifen.",
+  );
+  return false;
 }
 
 async function connectBrowser() {
