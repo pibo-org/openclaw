@@ -26,6 +26,7 @@ function mockConfig(storePath: string, overrides?: Partial<OpenClawConfig>) {
         timeoutSeconds: 600,
         ...overrides?.agents?.defaults,
       },
+      list: overrides?.agents?.list,
     },
     session: {
       store: storePath,
@@ -84,6 +85,31 @@ beforeEach(async () => {
 });
 
 describe("agentCliCommand", () => {
+  it("uses an explicit session key for gateway routing", async () => {
+    await withTempStore(
+      async () => {
+        mockGatewaySuccessReply();
+
+        await agentCliCommand(
+          {
+            message: "hi",
+            agent: "ops",
+            sessionKey: "agent:ops:pibo:workflow:run-1:worker:main",
+          },
+          runtime,
+        );
+
+        expect(callGateway).toHaveBeenCalledTimes(1);
+        const request = callGateway.mock.calls[0]?.[0] as {
+          params?: { sessionKey?: string; agentId?: string };
+        };
+        expect(request.params?.agentId).toBe("ops");
+        expect(request.params?.sessionKey).toBe("agent:ops:pibo:workflow:run-1:worker:main");
+      },
+      { agents: { list: [{ id: "ops" }] } },
+    );
+  });
+
   it("uses a timer-safe max gateway timeout when --timeout is 0", async () => {
     await withTempStore(async () => {
       mockGatewaySuccessReply();
@@ -119,6 +145,31 @@ describe("agentCliCommand", () => {
       expect(agentCommand).toHaveBeenCalledTimes(1);
       expect(runtime.log).toHaveBeenCalledWith("local");
     });
+  });
+
+  it("forwards an explicit session key to embedded fallback runs", async () => {
+    await withTempStore(
+      async () => {
+        callGateway.mockRejectedValue(new Error("gateway not connected"));
+        mockLocalAgentReply();
+
+        await agentCliCommand(
+          {
+            message: "hi",
+            agent: "ops",
+            sessionKey: "agent:ops:pibo:workflow:run-1:worker:main",
+          },
+          runtime,
+        );
+
+        expect(agentCommand).toHaveBeenCalledTimes(1);
+        expect(agentCommand.mock.calls[0]?.[0]).toMatchObject({
+          agentId: "ops",
+          sessionKey: "agent:ops:pibo:workflow:run-1:worker:main",
+        });
+      },
+      { agents: { list: [{ id: "ops" }] } },
+    );
   });
 
   it("skips gateway when --local is set", async () => {

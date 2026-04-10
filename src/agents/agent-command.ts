@@ -200,7 +200,9 @@ async function prepareAgentCommandExecution(
   }
   const body = prependInternalEventContext(message, opts.internalEvents);
   if (!opts.to && !opts.sessionId && !opts.sessionKey && !opts.agentId) {
-    throw new Error("Pass --to <E.164>, --session-id, or --agent to choose a session");
+    throw new Error(
+      "Pass --to <E.164>, --session-id, --session-key, or --agent to choose a session",
+    );
   }
 
   const { cfg } = await resolveAgentRuntimeConfig(runtime, {
