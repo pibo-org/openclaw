@@ -29,6 +29,16 @@ describe("command-path-policy", () => {
     });
   });
 
+  it("loads plugins for workflow commands that depend on runtime backends", () => {
+    expect(resolveCliCommandPathPolicy(["pibo", "workflows", "start"])).toEqual({
+      bypassConfigGuard: false,
+      routeConfigGuard: "never",
+      loadPlugins: "always",
+      hideBanner: false,
+      ensureCliPath: true,
+    });
+  });
+
   it("resolves mixed startup-only rules", () => {
     expect(resolveCliCommandPathPolicy(["config", "validate"])).toEqual({
       bypassConfigGuard: true,

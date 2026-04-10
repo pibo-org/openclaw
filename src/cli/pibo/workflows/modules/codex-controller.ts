@@ -464,7 +464,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         {
           role: "orchestrator",
           agentId: input.controllerAgentId,
-          label: "codex-controller-controller",
+          label: `Workflow ${ctx.runId} Controller`,
         },
       ],
     });
