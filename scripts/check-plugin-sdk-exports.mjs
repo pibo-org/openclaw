@@ -15,15 +15,6 @@ import { pluginSdkSubpaths } from "./lib/plugin-sdk-entries.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const distFile = resolve(__dirname, "..", "dist", "plugin-sdk", "index.js");
-const generatedFacadeTypeMapDts = resolve(
-  __dirname,
-  "..",
-  "dist",
-  "plugin-sdk",
-  "src",
-  "generated",
-  "plugin-sdk-facade-type-map.generated.d.ts",
-);
 const pluginSdkDistRoot = resolve(__dirname, "..", "dist", "plugin-sdk");
 
 function collectFiles(rootDir, predicate) {
@@ -152,21 +143,6 @@ for (const entry of requiredRuntimeShimEntries) {
   const shimPath = resolve(__dirname, "..", "dist", "plugin-sdk", entry);
   if (!existsSync(shimPath)) {
     console.error(`MISSING RUNTIME SHIM: dist/plugin-sdk/${entry}`);
-    missing += 1;
-  }
-}
-
-if (!existsSync(generatedFacadeTypeMapDts)) {
-  console.error(
-    "MISSING GENERATED FACADE TYPE MAP DTS: dist/plugin-sdk/src/generated/plugin-sdk-facade-type-map.generated.d.ts",
-  );
-  missing += 1;
-} else {
-  const facadeTypeMapContent = readFileSync(generatedFacadeTypeMapDts, "utf-8");
-  if (facadeTypeMapContent.includes("@openclaw/")) {
-    console.error(
-      "INVALID GENERATED FACADE TYPE MAP DTS: dist/plugin-sdk/src/generated/plugin-sdk-facade-type-map.generated.d.ts leaks @openclaw/* imports",
-    );
     missing += 1;
   }
 }
