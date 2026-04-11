@@ -1340,6 +1340,7 @@ export function buildGatewaySessionRow(params: {
     derivedTitle,
     lastMessagePreview,
     channel,
+    groupId: entry?.groupId,
     subject,
     groupChannel,
     space,

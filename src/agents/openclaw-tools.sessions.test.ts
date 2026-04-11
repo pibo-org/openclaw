@@ -894,4 +894,131 @@ describe("sessions tools", () => {
       message: "announce now",
     });
   });
+
+  it("sessions_send keeps internal agent sessions on a one-way announce flow", async () => {
+    const calls: Array<{ method?: string; params?: unknown }> = [];
+    let agentCallCount = 0;
+    let lastWaitedRunId: string | undefined;
+    const replyByRunId = new Map<string, string>();
+    const requesterKey = "agent:main:telegram:group:-100123:topic:3216";
+    const targetKey = "agent:langgraph:subagent:abc123";
+    let sendParams: { to?: string; channel?: string; message?: string; accountId?: string } = {};
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: Record<string, unknown> };
+      calls.push(request);
+      if (request.method === "agent") {
+        agentCallCount += 1;
+        const runId = `run-${agentCallCount}`;
+        const params = request.params;
+        const reply =
+          typeof params?.message === "string" && params.message.includes("LANGGRAPH SESSION")
+            ? "1. Vorige Nachricht: LANGGRAPH CROSS AGENT SENDER TEST OK\n2. Jetzt: LANGGRAPH SESSION CONTINUATION OK"
+            : "unexpected";
+        replyByRunId.set(runId, reply);
+        return {
+          runId,
+          status: "accepted",
+          acceptedAt: 2000 + agentCallCount,
+        };
+      }
+      if (request.method === "agent.wait") {
+        lastWaitedRunId = request.params?.runId as string | undefined;
+        return { runId: request.params?.runId ?? "run-1", status: "ok" };
+      }
+      if (request.method === "chat.history") {
+        const text = (lastWaitedRunId && replyByRunId.get(lastWaitedRunId)) ?? "";
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text }],
+              timestamp: 20,
+            },
+          ],
+        };
+      }
+      if (request.method === "sessions.list") {
+        return {
+          sessions: [
+            {
+              key: targetKey,
+              deliveryContext: {
+                channel: "telegram",
+                to: "-100123",
+                accountId: "default",
+              },
+            },
+          ],
+        };
+      }
+      if (request.method === "send") {
+        sendParams = {
+          to: request.params?.to as string | undefined,
+          channel: request.params?.channel as string | undefined,
+          message: request.params?.message as string | undefined,
+          accountId: request.params?.accountId as string | undefined,
+        };
+        return { messageId: "m-announce" };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: requesterKey,
+      agentChannel: "telegram",
+      config: {
+        ...TEST_CONFIG,
+        bindings: [
+          { agentId: "langgraph", match: { channel: "telegram", accountId: "langgraph" } },
+        ],
+      },
+    }).find((candidate) => candidate.name === "sessions_send");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const waited = await tool.execute("call-internal-send", {
+      sessionKey: targetKey,
+      message:
+        "Antworte in genau 2 Zeilen:\n1. Vorige Nachricht: <...>\n2. Jetzt: LANGGRAPH SESSION CONTINUATION OK",
+      timeoutSeconds: 1,
+    });
+    expect(waited.details).toMatchObject({
+      status: "ok",
+      reply:
+        "1. Vorige Nachricht: LANGGRAPH CROSS AGENT SENDER TEST OK\n2. Jetzt: LANGGRAPH SESSION CONTINUATION OK",
+    });
+
+    await vi.waitFor(
+      () => {
+        expect(calls.filter((call) => call.method === "agent")).toHaveLength(1);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+
+    const agentCalls = calls.filter((call) => call.method === "agent");
+    expect(agentCalls).toHaveLength(1);
+    expect(
+      agentCalls.some((call) =>
+        String((call.params as { extraSystemPrompt?: string })?.extraSystemPrompt ?? "").includes(
+          "Agent-to-agent reply step",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      agentCalls.some((call) =>
+        String((call.params as { message?: string })?.message ?? "").includes(
+          "Agent-to-agent announce step.",
+        ),
+      ),
+    ).toBe(false);
+    expect(sendParams).toMatchObject({
+      to: "-100123",
+      channel: "telegram",
+      message:
+        "1. Vorige Nachricht: LANGGRAPH CROSS AGENT SENDER TEST OK\n2. Jetzt: LANGGRAPH SESSION CONTINUATION OK",
+    });
+  });
 });

@@ -206,13 +206,16 @@ export async function resolveSubagentCompletionOrigin(params: {
   const requesterConversation: ConversationRef | undefined =
     channel && conversationId ? { channel, accountId, conversationId } : undefined;
 
-  const route = createBoundDeliveryRouter().resolveDestination({
-    eventKind: "task_completion",
-    targetSessionKey: params.childSessionKey,
-    requester: requesterConversation,
-    failClosed: false,
-  });
-  if (route.mode === "bound" && route.binding) {
+  const boundOrigin = (() => {
+    const route = createBoundDeliveryRouter().resolveDestination({
+      eventKind: "task_completion",
+      targetSessionKey: params.childSessionKey,
+      requester: requesterConversation,
+      failClosed: false,
+    });
+    if (route.mode !== "bound" || !route.binding) {
+      return undefined;
+    }
     const boundTarget = resolveConversationDeliveryTarget({
       channel: route.binding.conversation.channel,
       conversationId: route.binding.conversation.conversationId,
@@ -231,39 +234,36 @@ export async function resolveSubagentCompletionOrigin(params: {
       },
       requesterOrigin,
     );
-  }
+  })();
 
   const hookRunner = getGlobalHookRunner();
-  if (!hookRunner?.hasHooks("subagent_delivery_target")) {
-    return requesterOrigin;
-  }
-  try {
-    const result = await hookRunner.runSubagentDeliveryTarget(
-      {
-        childSessionKey: params.childSessionKey,
-        requesterSessionKey: params.requesterSessionKey,
-        requesterOrigin,
-        childRunId: params.childRunId,
-        spawnMode: params.spawnMode,
-        expectsCompletionMessage: params.expectsCompletionMessage,
-      },
-      {
-        runId: params.childRunId,
-        childSessionKey: params.childSessionKey,
-        requesterSessionKey: params.requesterSessionKey,
-      },
-    );
-    const hookOrigin = normalizeDeliveryContext(result?.origin);
-    if (!hookOrigin) {
-      return requesterOrigin;
+  if (hookRunner?.hasHooks("subagent_delivery_target")) {
+    try {
+      const result = await hookRunner.runSubagentDeliveryTarget(
+        {
+          childSessionKey: params.childSessionKey,
+          requesterSessionKey: params.requesterSessionKey,
+          requesterOrigin,
+          childRunId: params.childRunId,
+          spawnMode: params.spawnMode,
+          expectsCompletionMessage: params.expectsCompletionMessage,
+        },
+        {
+          runId: params.childRunId,
+          childSessionKey: params.childSessionKey,
+          requesterSessionKey: params.requesterSessionKey,
+        },
+      );
+      const hookOrigin = normalizeDeliveryContext(result?.origin);
+      if (hookOrigin && !(hookOrigin.channel && isInternalMessageChannel(hookOrigin.channel))) {
+        return mergeDeliveryContext(hookOrigin, boundOrigin ?? requesterOrigin);
+      }
+    } catch {
+      // Fall back to bound/requester origin below.
     }
-    if (hookOrigin.channel && isInternalMessageChannel(hookOrigin.channel)) {
-      return requesterOrigin;
-    }
-    return mergeDeliveryContext(hookOrigin, requesterOrigin);
-  } catch {
-    return requesterOrigin;
   }
+
+  return boundOrigin ?? requesterOrigin;
 }
 
 async function sendAnnounce(item: AnnounceQueueItem) {

@@ -16,6 +16,13 @@ type SessionsToolTestConfig = {
     agentToAgent: { enabled: boolean };
     sessions?: { visibility: "all" | "own" };
   };
+  bindings?: Array<{
+    agentId: string;
+    match: {
+      channel: string;
+      accountId?: string;
+    };
+  }>;
 };
 
 const loadConfigMock = vi.fn<() => SessionsToolTestConfig>(() => ({
@@ -109,6 +116,30 @@ const installRegistry = async () => {
           },
           config: {
             listAccountIds: () => ["default"],
+            resolveAccount: () => ({}),
+          },
+        },
+      },
+      {
+        pluginId: "telegram",
+        source: "test",
+        plugin: {
+          id: "telegram",
+          meta: {
+            id: "telegram",
+            label: "Telegram",
+            selectionLabel: "Telegram",
+            docsPath: "/channels/telegram",
+            blurb: "Telegram test stub.",
+            preferSessionLookupForAnnounceTarget: true,
+          },
+          capabilities: { chatTypes: ["direct", "group", "thread"] },
+          messaging: {
+            resolveSessionConversation: resolveSessionConversationStub,
+            resolveSessionTarget: resolveSessionTargetStub,
+          },
+          config: {
+            listAccountIds: () => ["default", "langgraph"],
             resolveAccount: () => ({}),
           },
         },
@@ -267,6 +298,11 @@ describe("extractAssistantText", () => {
 describe("resolveAnnounceTarget", () => {
   beforeEach(async () => {
     callGatewayMock.mockClear();
+    loadConfigMock.mockReset();
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main" },
+      tools: { agentToAgent: { enabled: false } },
+    });
     await installRegistry();
   });
 
@@ -330,6 +366,99 @@ describe("resolveAnnounceTarget", () => {
       channel: "whatsapp",
       to: "123@g.us",
       accountId: "work",
+    });
+  });
+
+  it("prefers the agent-bound Telegram account for internal subagent sessions", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main" },
+      tools: { agentToAgent: { enabled: false } },
+      bindings: [{ agentId: "langgraph", match: { channel: "telegram", accountId: "langgraph" } }],
+    });
+    callGatewayMock.mockResolvedValueOnce({
+      sessions: [
+        {
+          key: "agent:langgraph:subagent:abc123",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "default",
+          },
+        },
+      ],
+    });
+
+    const target = await resolveAnnounceTarget({
+      sessionKey: "agent:langgraph:subagent:abc123",
+      displayKey: "agent:langgraph:subagent:abc123",
+    });
+    expect(target).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "langgraph",
+    });
+  });
+
+  it("normalizes Telegram direct route targets and preserves threadId", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main" },
+      tools: { agentToAgent: { enabled: false } },
+      bindings: [{ agentId: "langgraph", match: { channel: "telegram", accountId: "langgraph" } }],
+    });
+    callGatewayMock.mockResolvedValueOnce({
+      sessions: [
+        {
+          key: "agent:langgraph:subagent:abc123",
+          deliveryContext: {
+            channel: "telegram",
+            to: "telegram:group:-100123:topic:554",
+            accountId: "default",
+          },
+        },
+      ],
+    });
+
+    const target = await resolveAnnounceTarget({
+      sessionKey: "agent:langgraph:subagent:abc123",
+      displayKey: "agent:langgraph:subagent:abc123",
+    });
+    expect(target).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      threadId: "554",
+      accountId: "langgraph",
+    });
+  });
+
+  it("reconstructs Telegram topic targets for internal subagent sessions from groupId", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main" },
+      tools: { agentToAgent: { enabled: false } },
+      bindings: [{ agentId: "langgraph", match: { channel: "telegram", accountId: "langgraph" } }],
+    });
+    callGatewayMock.mockResolvedValueOnce({
+      sessions: [
+        {
+          key: "agent:langgraph:subagent:abc123",
+          deliveryContext: {
+            channel: "telegram",
+          },
+          groupId: "-100123:topic:554",
+          spawnedBy: "agent:main:telegram:group:-100123:topic:554",
+          lastAccountId: "default",
+        },
+      ],
+    });
+
+    const target = await resolveAnnounceTarget({
+      sessionKey: "agent:langgraph:subagent:abc123",
+      displayKey: "agent:langgraph:subagent:abc123",
+    });
+    expect(target).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      threadId: "554",
+      accountId: "langgraph",
     });
   });
 });

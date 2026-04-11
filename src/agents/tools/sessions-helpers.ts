@@ -51,6 +51,7 @@ export type SessionListRow = {
   key: string;
   kind: SessionKind;
   channel: string;
+  groupId?: string;
   origin?: {
     provider?: string;
     accountId?: string;
@@ -83,6 +84,7 @@ export type SessionListRow = {
   lastChannel?: string;
   lastTo?: string;
   lastAccountId?: string;
+  lastThreadId?: string | number;
   transcriptPath?: string;
   messages?: unknown[];
 };

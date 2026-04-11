@@ -10,6 +10,7 @@ import {
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/text-runtime";
 import type { OpenClawPluginApi } from "../runtime-api.js";
+import { resolveTelegramAccountConfig } from "./accounts.js";
 import { parseTelegramTarget } from "./targets.js";
 import {
   createTelegramThreadBindingManager,
@@ -83,7 +84,26 @@ function normalizeBindingMetadataValue(metadata: unknown, key: string): string |
   return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
 }
 
+function resolveTelegramBindingAccountId(params: {
+  cfg: OpenClawPluginApi["config"];
+  binding: {
+    accountId: string;
+    metadata?: Record<string, unknown>;
+  };
+}): string {
+  const childAgentAccountId = normalizeOptionalLowercaseString(
+    normalizeBindingMetadataValue(params.binding.metadata, "agentId"),
+  );
+  if (!childAgentAccountId || childAgentAccountId === params.binding.accountId) {
+    return params.binding.accountId;
+  }
+  return resolveTelegramAccountConfig(params.cfg, childAgentAccountId)
+    ? childAgentAccountId
+    : params.binding.accountId;
+}
+
 function resolveTelegramBindingOrigin(binding: {
+  cfg: OpenClawPluginApi["config"];
   accountId: string;
   conversationId: string;
   metadata?: Record<string, unknown>;
@@ -99,7 +119,10 @@ function resolveTelegramBindingOrigin(binding: {
   if (parsedTopic) {
     return {
       channel: "telegram" as const,
-      accountId: binding.accountId,
+      accountId: resolveTelegramBindingAccountId({
+        cfg: binding.cfg,
+        binding,
+      }),
       to:
         normalizeOptionalString(parseTelegramTarget(storedDeliveryTo ?? "").chatId) ??
         parsedTopic.chatId,
@@ -114,7 +137,10 @@ function resolveTelegramBindingOrigin(binding: {
   }
   return {
     channel: "telegram" as const,
-    accountId: binding.accountId,
+    accountId: resolveTelegramBindingAccountId({
+      cfg: binding.cfg,
+      binding,
+    }),
     to,
     ...(storedDeliveryThreadId
       ? { threadId: storedDeliveryThreadId }
@@ -287,7 +313,10 @@ export async function handleTelegramSubagentSpawning(
   }
 }
 
-export function handleTelegramSubagentDeliveryTarget(event: TelegramSubagentDeliveryTargetEvent) {
+export function handleTelegramSubagentDeliveryTarget(
+  api: OpenClawPluginApi,
+  event: TelegramSubagentDeliveryTargetEvent,
+) {
   if (!event.expectsCompletionMessage) {
     return;
   }
@@ -308,7 +337,10 @@ export function handleTelegramSubagentDeliveryTarget(event: TelegramSubagentDeli
     return;
   }
 
-  const origin = resolveTelegramBindingOrigin(binding);
+  const origin = resolveTelegramBindingOrigin({
+    cfg: api.config,
+    ...binding,
+  });
   return origin ? { origin } : undefined;
 }
 
@@ -323,6 +355,6 @@ export function handleTelegramSubagentEnded(event: TelegramSubagentEndedEvent) {
 
 export function registerTelegramSubagentHooks(api: OpenClawPluginApi) {
   api.on("subagent_spawning", (event) => handleTelegramSubagentSpawning(api, event));
-  api.on("subagent_delivery_target", (event) => handleTelegramSubagentDeliveryTarget(event));
+  api.on("subagent_delivery_target", (event) => handleTelegramSubagentDeliveryTarget(api, event));
   api.on("subagent_ended", (event) => handleTelegramSubagentEnded(event));
 }

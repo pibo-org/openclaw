@@ -13,7 +13,14 @@ import {
 
 const baseConfig = {
   session: { mainKey: "main", scope: "per-sender" },
-  channels: { telegram: {} },
+  channels: {
+    telegram: {
+      accounts: {
+        work: {},
+        langgraph: {},
+      },
+    },
+  },
 };
 
 function registerHandlersForTest(config: Record<string, unknown> = baseConfig) {
@@ -210,6 +217,59 @@ describe("telegram subagent hook handlers", () => {
         accountId: "work",
         to: "-100200300",
         threadId: "88",
+      },
+    });
+  });
+
+  it("uses the child agent Telegram account for cross-agent completion delivery", async () => {
+    const handlers = registerHandlersForTest();
+    const spawnHandler = getRequiredHookHandler(handlers, "subagent_spawning");
+    const deliveryHandler = getRequiredHookHandler(handlers, "subagent_delivery_target");
+    createTelegramThreadBindingManager({
+      accountId: "work",
+      persist: false,
+      enableSweeper: false,
+    });
+
+    const result = await spawnHandler(
+      {
+        childSessionKey: "agent:langgraph:subagent:topic-child",
+        agentId: "langgraph",
+        label: "topic-child",
+        mode: "run",
+        requester: {
+          channel: "telegram",
+          accountId: "work",
+          to: "telegram:-100200300",
+          threadId: "77",
+        },
+        threadRequested: true,
+      },
+      {},
+    );
+
+    expect(result).toEqual({ status: "ok", threadBindingReady: true });
+    expect(
+      deliveryHandler(
+        {
+          childSessionKey: "agent:langgraph:subagent:topic-child",
+          requesterSessionKey: "agent:main:main",
+          requesterOrigin: {
+            channel: "telegram",
+            accountId: "work",
+            to: "telegram:-100200300",
+            threadId: "77",
+          },
+          expectsCompletionMessage: true,
+        },
+        {},
+      ),
+    ).toEqual({
+      origin: {
+        channel: "telegram",
+        accountId: "langgraph",
+        to: "-100200300",
+        threadId: "77",
       },
     });
   });

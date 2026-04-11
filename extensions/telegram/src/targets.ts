@@ -9,15 +9,14 @@ const TELEGRAM_USERNAME_REGEX = /^[A-Za-z0-9_]{5,}$/i;
 
 export function stripTelegramInternalPrefixes(to: string): string {
   let trimmed = to.trim();
-  let strippedTelegramPrefix = false;
   while (true) {
     const next = (() => {
       if (/^(telegram|tg):/i.test(trimmed)) {
-        strippedTelegramPrefix = true;
         return trimmed.replace(/^(telegram|tg):/i, "").trim();
       }
-      // Legacy internal form: `telegram:group:<id>` (still emitted by session keys).
-      if (strippedTelegramPrefix && /^group:/i.test(trimmed)) {
+      // Legacy internal form: `telegram:group:<id>`; raw `group:<id>` can also
+      // surface when a session-derived announce target bypasses the outer prefix.
+      if (/^group:/i.test(trimmed)) {
         return trimmed.replace(/^group:/i, "").trim();
       }
       return trimmed;

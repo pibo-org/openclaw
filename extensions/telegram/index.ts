@@ -33,7 +33,7 @@ export default defineBundledChannelEntry({
     });
     api.on("subagent_delivery_target", async (event) => {
       const { handleTelegramSubagentDeliveryTarget } = await loadTelegramSubagentHooksModule();
-      return handleTelegramSubagentDeliveryTarget(event);
+      return handleTelegramSubagentDeliveryTarget(api, event);
     });
     api.on("subagent_ended", async (event) => {
       const { handleTelegramSubagentEnded } = await loadTelegramSubagentHooksModule();

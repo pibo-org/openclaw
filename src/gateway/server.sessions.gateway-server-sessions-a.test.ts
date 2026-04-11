@@ -980,6 +980,7 @@ describe("gateway server sessions", () => {
         "discord:group:dev": {
           sessionId: "sess-group",
           updatedAt: stale,
+          groupId: "group-1",
           totalTokens: 50,
         },
         "agent:main:subagent:one": {
@@ -1027,6 +1028,7 @@ describe("gateway server sessions", () => {
         totalTokensFresh?: boolean;
         thinkingLevel?: string;
         verboseLevel?: string;
+        groupId?: string;
         lastAccountId?: string;
         deliveryContext?: { channel?: string; to?: string; accountId?: string };
       }>;
@@ -1048,6 +1050,8 @@ describe("gateway server sessions", () => {
       accountId: "work",
       threadId: "1737500000.123456",
     });
+    const group = list1.payload?.sessions.find((s) => s.key === "agent:main:discord:group:dev");
+    expect(group?.groupId).toBe("group-1");
 
     const active = await rpcReq<{
       sessions: Array<{ key: string }>;

@@ -30,6 +30,7 @@ export type GatewaySessionRow = {
   derivedTitle?: string;
   lastMessagePreview?: string;
   channel?: string;
+  groupId?: string;
   subject?: string;
   groupChannel?: string;
   space?: string;

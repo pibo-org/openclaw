@@ -23,8 +23,8 @@ describe("stripTelegramInternalPrefixes", () => {
     expect(stripTelegramInternalPrefixes("telegram:group:-100123")).toBe("-100123");
   });
 
-  it("does not strip group prefix without telegram prefix", () => {
-    expect(stripTelegramInternalPrefixes("group:-100123")).toBe("group:-100123");
+  it("strips raw legacy group prefix without telegram prefix", () => {
+    expect(stripTelegramInternalPrefixes("group:-100123")).toBe("-100123");
   });
 
   it("is idempotent", () => {
@@ -80,6 +80,14 @@ describe("parseTelegramTarget", () => {
 
   it("strips internal prefixes before parsing", () => {
     expect(parseTelegramTarget("telegram:group:-1001234567890:topic:456")).toEqual({
+      chatId: "-1001234567890",
+      messageThreadId: 456,
+      chatType: "group",
+    });
+  });
+
+  it("parses raw legacy group targets without telegram prefix", () => {
+    expect(parseTelegramTarget("group:-1001234567890:topic:456")).toEqual({
       chatId: "-1001234567890",
       messageThreadId: 456,
       chatType: "group",

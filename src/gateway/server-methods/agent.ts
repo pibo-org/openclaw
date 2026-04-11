@@ -776,7 +776,10 @@ export const agentHandlers: GatewayRequestHandlers = {
     });
     respond(true, accepted, undefined, { runId });
 
-    if (resolvedSessionKey) {
+    const shouldReactivateCompletedSubagentSession = !(
+      inputProvenance?.kind === "inter_session" && inputProvenance?.sourceTool === "sessions_send"
+    );
+    if (resolvedSessionKey && shouldReactivateCompletedSubagentSession) {
       await reactivateCompletedSubagentSession({
         sessionKey: resolvedSessionKey,
         runId,

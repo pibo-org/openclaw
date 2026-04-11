@@ -5,8 +5,9 @@ export const SESSIONS_LIST_TOOL_DISPLAY_SUMMARY =
   "List visible sessions and optional recent messages.";
 export const SESSIONS_HISTORY_TOOL_DISPLAY_SUMMARY =
   "Read sanitized message history for a visible session.";
-export const SESSIONS_SEND_TOOL_DISPLAY_SUMMARY = "Send a message to another visible session.";
-export const SESSIONS_SPAWN_TOOL_DISPLAY_SUMMARY = "Spawn sub-agent or ACP sessions.";
+export const SESSIONS_SEND_TOOL_DISPLAY_SUMMARY =
+  "Continue or message an existing visible session.";
+export const SESSIONS_SPAWN_TOOL_DISPLAY_SUMMARY = "Create a fresh sub-agent or ACP session.";
 export const SESSION_STATUS_TOOL_DISPLAY_SUMMARY = "Show session status, usage, and model state.";
 export const UPDATE_PLAN_TOOL_DISPLAY_SUMMARY = "Track a short structured work plan.";
 
@@ -27,13 +28,16 @@ export function describeSessionsHistoryTool(): string {
 export function describeSessionsSendTool(): string {
   return [
     "Send a message into another visible session by sessionKey or label.",
-    "Use this to delegate follow-up work to an existing session; waits for the target run and returns the updated assistant reply when available.",
+    "Use this to continue follow-up work in an existing session when you already know the target session key or label.",
+    "Do not use sessions_spawn for that; sessions_spawn creates a fresh child session instead.",
+    "Waits for the target run and returns the updated assistant reply when available.",
   ].join(" ");
 }
 
 export function describeSessionsSpawnTool(): string {
   return [
     'Spawn an isolated session with `runtime="subagent"` or `runtime="acp"`.',
+    "This always creates a new child session; it does not continue an existing session key.",
     '`mode="run"` is one-shot and `mode="session"` is persistent or thread-bound.',
     "Subagents inherit the parent workspace directory automatically.",
     "Use this when the work should happen in a fresh child session instead of the current one.",

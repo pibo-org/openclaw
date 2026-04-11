@@ -551,6 +551,82 @@ describe("gateway agent handler", () => {
     });
   });
 
+  it("skips completed subagent reactivation for inter-session sessions_send runs", async () => {
+    mocks.loadSessionEntry.mockReset();
+    mocks.loadGatewaySessionRow.mockReset();
+    mocks.updateSessionStore.mockReset();
+    mocks.getLatestSubagentRunByChildSessionKey.mockReset();
+    mocks.replaceSubagentRunAfterSteer.mockReset();
+    mocks.agentCommand.mockReset();
+
+    const childSessionKey = "agent:langgraph:subagent:followup";
+    const completedRun = {
+      runId: "run-old",
+      childSessionKey,
+      controllerSessionKey: "agent:main:telegram:group:-100:topic:1",
+      ownerKey: "agent:main:telegram:group:-100:topic:1",
+      scopeKind: "session",
+      requesterDisplayKey: "agent:main:telegram:group:-100:topic:1",
+      task: "initial task",
+      cleanup: "keep" as const,
+      createdAt: 1,
+      startedAt: 2,
+      endedAt: 3,
+      outcome: { status: "ok" as const },
+    };
+
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: {},
+      storePath: "/tmp/sessions.json",
+      entry: {
+        sessionId: "sess-followup",
+        updatedAt: Date.now(),
+      },
+      canonicalKey: childSessionKey,
+    });
+    mocks.updateSessionStore.mockImplementation(async (_path, updater) => {
+      const store: Record<string, unknown> = {
+        [childSessionKey]: {
+          sessionId: "sess-followup",
+          updatedAt: Date.now(),
+        },
+      };
+      return await updater(store);
+    });
+    mocks.getLatestSubagentRunByChildSessionKey.mockReturnValueOnce(completedRun);
+    mocks.loadGatewaySessionRow.mockReturnValueOnce({
+      status: "idle",
+      startedAt: undefined,
+      endedAt: 3,
+      runtimeMs: 10,
+    });
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+
+    await invokeAgent({
+      message: "follow-up",
+      sessionKey: childSessionKey,
+      idempotencyKey: "run-new",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:telegram:group:-100:topic:1",
+        sourceChannel: "telegram",
+        sourceTool: "sessions_send",
+      },
+    });
+
+    expect(mocks.replaceSubagentRunAfterSteer).not.toHaveBeenCalled();
+
+    mocks.loadSessionEntry.mockReset();
+    mocks.loadGatewaySessionRow.mockReset();
+    mocks.updateSessionStore.mockReset();
+    mocks.getLatestSubagentRunByChildSessionKey.mockReset();
+    mocks.replaceSubagentRunAfterSteer.mockReset();
+    mocks.agentCommand.mockReset();
+  });
+
   it("includes live session setting metadata in agent send events", async () => {
     mockMainSessionEntry({
       sessionId: "sess-main",
