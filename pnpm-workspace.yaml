@@ -1,6 +1,7 @@
 packages:
   - .
   - ui
+  - ui-pibo
   - packages/*
   - extensions/*
 
