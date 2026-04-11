@@ -18,7 +18,7 @@ describe("collectPreparedPrepackErrors", () => {
   it("accepts prepared release artifacts", () => {
     expect(
       collectPreparedPrepackErrors(
-        ["dist/index.mjs", "dist/control-ui/index.html"],
+        ["dist/index.mjs", "dist/control-ui/index.html", "dist/cli-startup-metadata.json"],
         ["dist/control-ui/assets/index-Bu8rSoJV.js"],
       ),
     ).toEqual([]);
@@ -28,6 +28,7 @@ describe("collectPreparedPrepackErrors", () => {
     expect(collectPreparedPrepackErrors([], [])).toEqual([
       "missing required prepared artifact: dist/index.js or dist/index.mjs",
       "missing required prepared artifact: dist/control-ui/index.html",
+      "missing required prepared artifact: dist/cli-startup-metadata.json",
       "missing prepared Control UI asset payload under dist/control-ui/assets/",
     ]);
   });

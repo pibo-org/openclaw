@@ -50,6 +50,32 @@ describe("command-execution-startup", () => {
     });
   });
 
+  it("uses commandPathOverride when route-first callers need the full matched path", () => {
+    expect(
+      mod.resolveCliExecutionStartupContext({
+        argv: ["node", "openclaw", "pibo", "commands", "list"],
+        jsonOutputMode: false,
+        routeMode: true,
+        commandPathOverride: ["pibo", "commands", "list"],
+      }),
+    ).toEqual({
+      invocation: {
+        argv: ["node", "openclaw", "pibo", "commands", "list"],
+        commandPath: ["pibo", "commands"],
+        primary: "pibo",
+        hasHelpOrVersion: false,
+        isRootHelpInvocation: false,
+      },
+      commandPath: ["pibo", "commands", "list"],
+      startupPolicy: {
+        suppressDoctorStdout: false,
+        hideBanner: false,
+        skipConfigGuard: true,
+        loadPlugins: false,
+      },
+    });
+  });
+
   it("routes logs to stderr and emits banner only when allowed", async () => {
     await mod.applyCliExecutionStartupPresentation({
       startupPolicy: {

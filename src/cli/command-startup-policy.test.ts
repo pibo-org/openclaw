@@ -110,5 +110,18 @@ describe("command-startup-policy", () => {
       skipConfigGuard: true,
       loadPlugins: false,
     });
+
+    expect(
+      resolveCliStartupPolicy({
+        commandPath: ["pibo", "commands", "list"],
+        jsonOutputMode: false,
+        routeMode: true,
+      }),
+    ).toEqual({
+      suppressDoctorStdout: false,
+      hideBanner: false,
+      skipConfigGuard: true,
+      loadPlugins: false,
+    });
   });
 });

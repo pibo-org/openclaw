@@ -71,6 +71,15 @@ export function shouldUseRootHelpFastPath(argv: string[]): boolean {
   return resolveCliArgvInvocation(argv).isRootHelpInvocation;
 }
 
+export function shouldUsePiboHelpFastPath(argv: string[]): boolean {
+  const invocation = resolveCliArgvInvocation(argv);
+  return (
+    invocation.primary === "pibo" &&
+    invocation.commandPath.length === 1 &&
+    invocation.hasHelpOrVersion
+  );
+}
+
 export function resolveMissingPluginCommandMessage(
   pluginId: string,
   config?: OpenClawConfig,
@@ -158,6 +167,13 @@ export async function runCli(argv: string[] = process.argv) {
         await outputRootHelp();
       }
       return;
+    }
+
+    if (shouldUsePiboHelpFastPath(normalizedArgv)) {
+      const { outputPrecomputedPiboHelpText } = await import("./root-help-metadata.js");
+      if (outputPrecomputedPiboHelpText()) {
+        return;
+      }
     }
 
     if (await tryRouteCli(normalizedArgv)) {

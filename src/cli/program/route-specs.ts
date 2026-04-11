@@ -1,4 +1,4 @@
-import { hasFlag } from "../argv.js";
+import { getCommandPathWithRootOptions, hasFlag } from "../argv.js";
 import { cliCommandCatalog, type CliCommandCatalogEntry } from "../command-catalog.js";
 import { matchesCommandPath } from "../command-path-matches.js";
 import { resolveCliCommandPathPolicy } from "../command-path-policy.js";
@@ -8,7 +8,9 @@ import {
 } from "./routed-command-definitions.js";
 
 export type RouteSpec = {
+  commandPath: readonly string[];
   match: (path: string[]) => boolean;
+  matchArgv?: (argv: string[]) => boolean;
   loadPlugins?: boolean | ((argv: string[]) => boolean);
   run: (argv: string[]) => Promise<boolean>;
 };
@@ -25,8 +27,15 @@ function createParsedRoute(params: {
   definition: AnyRoutedCommandDefinition;
 }): RouteSpec {
   return {
+    commandPath: [...params.entry.commandPath],
     match: (path) =>
       matchesCommandPath(path, params.entry.commandPath, { exact: params.entry.exact }),
+    matchArgv: (argv) =>
+      matchesCommandPath(
+        getCommandPathWithRootOptions(argv, params.entry.commandPath.length),
+        params.entry.commandPath,
+        { exact: params.entry.exact },
+      ),
     loadPlugins: params.entry.route?.preloadPlugins
       ? createCommandLoadPlugins(params.entry.commandPath)
       : undefined,

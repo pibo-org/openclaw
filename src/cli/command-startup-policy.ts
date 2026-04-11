@@ -45,11 +45,13 @@ export function resolveCliStartupPolicy(params: {
   routeMode?: boolean;
 }) {
   const suppressDoctorStdout = params.jsonOutputMode;
+  const bypassConfigGuard = shouldBypassConfigGuardForCommandPath(params.commandPath);
   return {
     suppressDoctorStdout,
     hideBanner: shouldHideCliBannerForCommandPath(params.commandPath, params.env),
     skipConfigGuard: params.routeMode
-      ? shouldSkipRouteConfigGuardForCommandPath({
+      ? bypassConfigGuard ||
+        shouldSkipRouteConfigGuardForCommandPath({
           commandPath: params.commandPath,
           suppressDoctorStdout,
         })

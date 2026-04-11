@@ -83,8 +83,8 @@ export function registerCommandGroups(
       if (placeholder) {
         registerLazyCommandGroup(program, entry, placeholder);
       }
-      return;
     }
+    return;
   }
 
   for (const entry of entries) {

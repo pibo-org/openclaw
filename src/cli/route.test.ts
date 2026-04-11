@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 const emitCliBannerMock = vi.hoisted(() => vi.fn());
 const ensureConfigReadyMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensurePluginRegistryLoadedMock = vi.hoisted(() => vi.fn());
-const findRoutedCommandMock = vi.hoisted(() => vi.fn());
+const findRoutedCommandForArgvMock = vi.hoisted(() => vi.fn());
 const runRouteMock = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock("./banner.js", () => ({
@@ -19,7 +19,7 @@ vi.mock("./plugin-registry.js", () => ({
 }));
 
 vi.mock("./program/routes.js", () => ({
-  findRoutedCommand: findRoutedCommandMock,
+  findRoutedCommandForArgv: findRoutedCommandForArgvMock,
 }));
 
 vi.mock("../runtime.js", () => ({
@@ -54,7 +54,8 @@ describe("tryRouteCli", () => {
     delete process.env.OPENCLAW_HIDE_BANNER;
     originalForceStderr = loggingState.forceConsoleToStderr;
     loggingState.forceConsoleToStderr = false;
-    findRoutedCommandMock.mockReturnValue({
+    findRoutedCommandForArgvMock.mockReturnValue({
+      commandPath: ["status"],
       loadPlugins: (argv: string[]) => !argv.includes("--json"),
       run: runRouteMock,
     });
@@ -94,7 +95,8 @@ describe("tryRouteCli", () => {
   });
 
   it("routes logs to stderr during plugin loading in --json mode and restores after", async () => {
-    findRoutedCommandMock.mockReturnValue({
+    findRoutedCommandForArgvMock.mockReturnValue({
+      commandPath: ["agents"],
       loadPlugins: true,
       run: runRouteMock,
     });
@@ -114,7 +116,8 @@ describe("tryRouteCli", () => {
   });
 
   it("does not route logs to stderr during plugin loading without --json", async () => {
-    findRoutedCommandMock.mockReturnValue({
+    findRoutedCommandForArgvMock.mockReturnValue({
+      commandPath: ["agents"],
       loadPlugins: true,
       run: runRouteMock,
     });
@@ -136,12 +139,29 @@ describe("tryRouteCli", () => {
       true,
     );
 
-    expect(findRoutedCommandMock).toHaveBeenCalledWith(["status"]);
+    expect(findRoutedCommandForArgvMock).toHaveBeenCalledWith([
+      "node",
+      "openclaw",
+      "--log-level",
+      "debug",
+      "status",
+    ]);
     expect(ensureConfigReadyMock).toHaveBeenCalledWith({
       runtime: expect.any(Object),
       commandPath: ["status"],
     });
     expect(ensurePluginRegistryLoadedMock).toHaveBeenCalledWith({ scope: "channels" });
+  });
+
+  it("uses the full routed command path for deep pibo fast paths", async () => {
+    findRoutedCommandForArgvMock.mockReturnValue({
+      commandPath: ["pibo", "commands", "list"],
+      run: runRouteMock,
+    });
+
+    await expect(tryRouteCli(["node", "openclaw", "pibo", "commands", "list"])).resolves.toBe(true);
+
+    expect(ensureConfigReadyMock).not.toHaveBeenCalled();
   });
 
   it("respects OPENCLAW_HIDE_BANNER for routed commands", async () => {

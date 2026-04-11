@@ -7,6 +7,13 @@ const modelsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const modelsStatusCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const runDaemonStatusMock = vi.hoisted(() => vi.fn(async () => {}));
 const statusJsonCommandMock = vi.hoisted(() => vi.fn(async () => {}));
+const todoStatusMock = vi.hoisted(() => vi.fn());
+const listCommandsMock = vi.hoisted(() =>
+  vi.fn(() => ({ commands: {}, commandDir: "/tmp", scannedAt: "now" })),
+);
+const formatRegistrySummaryMock = vi.hoisted(() => vi.fn(() => "registry summary"));
+const getCommandPromptMock = vi.hoisted(() => vi.fn());
+const findInitMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../config-cli.js", () => ({
   runConfigGet: runConfigGetMock,
@@ -24,6 +31,20 @@ vi.mock("../daemon-cli/status.js", () => ({
 
 vi.mock("../../commands/status-json.js", () => ({
   statusJsonCommand: statusJsonCommandMock,
+}));
+
+vi.mock("../pibo/commands/todo.js", () => ({
+  todoStatus: todoStatusMock,
+}));
+
+vi.mock("../pibo/commands/commands/index.js", () => ({
+  listCommands: listCommandsMock,
+  formatRegistrySummary: formatRegistrySummaryMock,
+  getCommandPrompt: getCommandPromptMock,
+}));
+
+vi.mock("../pibo/find/index.js", () => ({
+  findInit: findInitMock,
 }));
 
 describe("program routes", () => {
@@ -193,6 +214,34 @@ describe("program routes", () => {
 
   it("does not match unknown routes", () => {
     expect(findRoutedCommand(["definitely-not-real"])).toBeNull();
+  });
+
+  it("routes pibo todo status through the direct handler", async () => {
+    const route = expectRoute(["pibo", "todo", "status"]);
+    await expect(
+      route?.run(["node", "openclaw", "pibo", "todo", "status", "--max", "123"]),
+    ).resolves.toBe(true);
+    expect(todoStatusMock).toHaveBeenCalledWith({ max: 123 });
+  });
+
+  it("routes pibo commands list through the direct handler", async () => {
+    const route = expectRoute(["pibo", "commands", "list"]);
+    await expect(route?.run(["node", "openclaw", "pibo", "commands", "list"])).resolves.toBe(true);
+    expect(listCommandsMock).toHaveBeenCalledTimes(1);
+    expect(formatRegistrySummaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns false for pibo commands show route when name is missing", async () => {
+    await expectRunFalse(
+      ["pibo", "commands", "show"],
+      ["node", "openclaw", "pibo", "commands", "show"],
+    );
+  });
+
+  it("routes pibo find init through the direct handler", async () => {
+    const route = expectRoute(["pibo", "find", "init"]);
+    await expect(route?.run(["node", "openclaw", "pibo", "find", "init"])).resolves.toBe(true);
+    expect(findInitMock).toHaveBeenCalledTimes(1);
   });
 
   it("returns false for config get route when path argument is missing", async () => {

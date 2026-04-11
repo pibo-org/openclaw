@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   renderBundledRootHelpText,
+  renderSourcePiboHelpText,
   writeCliStartupMetadata,
 } from "../../scripts/write-cli-startup-metadata.ts";
 import { createScriptTestHarness } from "./test-helpers.js";
@@ -15,6 +16,13 @@ describe("write-cli-startup-metadata", () => {
 
     expect(rootHelpText).toContain("Usage:");
     expect(rootHelpText).toContain("openclaw");
+  });
+
+  it("captures source pibo help text from the CLI program", () => {
+    const piboHelpText = renderSourcePiboHelpText();
+
+    expect(piboHelpText).toContain("Usage:");
+    expect(piboHelpText).toContain("PIBo CLI modules ported into OpenClaw");
   });
 
   it("writes startup metadata with populated root help text", async () => {
@@ -44,9 +52,12 @@ describe("write-cli-startup-metadata", () => {
     const written = JSON.parse(readFileSync(outputPath, "utf8")) as {
       channelOptions: string[];
       rootHelpText: string;
+      piboHelpText: string;
     };
     expect(written.channelOptions).toContain("matrix");
     expect(written.rootHelpText).toContain("Usage:");
     expect(written.rootHelpText).toContain("openclaw");
+    expect(written.piboHelpText).toContain("Usage:");
+    expect(written.piboHelpText).toContain("PIBo CLI modules ported into OpenClaw");
   });
 });

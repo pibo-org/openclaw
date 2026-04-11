@@ -242,3 +242,107 @@ export function parseModelsStatusRouteArgs(argv: string[]) {
     probe: hasFlag(argv, "--probe"),
   };
 }
+
+function parseNoPositionalRouteArgs(
+  argv: string[],
+  params: {
+    commandPath: string[];
+    booleanFlags?: string[];
+    valueFlags?: string[];
+  },
+) {
+  const positionals = getCommandPositionalsWithRootOptions(argv, params);
+  if (!positionals || positionals.length !== 0) {
+    return null;
+  }
+  return {};
+}
+
+export function parsePiboTodoInitRouteArgs(argv: string[]) {
+  return parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "todo", "init"],
+  });
+}
+
+export function parsePiboTodoStatusRouteArgs(argv: string[]) {
+  const max = getPositiveIntFlagValue(argv, "--max");
+  if (max === null) {
+    return null;
+  }
+  const base = parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "todo", "status"],
+    valueFlags: ["--max"],
+  });
+  if (!base) {
+    return null;
+  }
+  return { max };
+}
+
+export function parsePiboTodoCheckRouteArgs(argv: string[]) {
+  const max = getPositiveIntFlagValue(argv, "--max");
+  if (max === null) {
+    return null;
+  }
+  const base = parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "todo", "check"],
+    valueFlags: ["--max"],
+  });
+  if (!base) {
+    return null;
+  }
+  return { max };
+}
+
+export function parsePiboTodoTokensRouteArgs(argv: string[]) {
+  const max = getPositiveIntFlagValue(argv, "--max");
+  if (max === null) {
+    return null;
+  }
+  const base = parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "todo", "tokens"],
+    valueFlags: ["--max"],
+  });
+  if (!base) {
+    return null;
+  }
+  return { max };
+}
+
+export function parsePiboCommandsListRouteArgs(argv: string[]) {
+  return parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "commands", "list"],
+  });
+}
+
+export function parsePiboCommandsGetDirRouteArgs(argv: string[]) {
+  return parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "commands", "get-dir"],
+  });
+}
+
+export function parsePiboCommandsShowRouteArgs(argv: string[]) {
+  const name = parseSinglePositional(argv, {
+    commandPath: ["pibo", "commands", "show"],
+  });
+  if (!name) {
+    return null;
+  }
+  return { name };
+}
+
+export function parsePiboCommandsSetDirRouteArgs(argv: string[]) {
+  const dir = parseSinglePositional(argv, {
+    commandPath: ["pibo", "commands", "set-dir"],
+  });
+  if (!dir) {
+    return null;
+  }
+  return { dir };
+}
+
+export function parsePiboFindInitRouteArgs(argv: string[]) {
+  return parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "find", "init"],
+  });
+}

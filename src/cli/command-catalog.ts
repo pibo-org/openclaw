@@ -9,7 +9,16 @@ export type CliRoutedCommandId =
   | "config-get"
   | "config-unset"
   | "models-list"
-  | "models-status";
+  | "models-status"
+  | "pibo-todo-init"
+  | "pibo-todo-status"
+  | "pibo-todo-check"
+  | "pibo-todo-tokens"
+  | "pibo-commands-list"
+  | "pibo-commands-get-dir"
+  | "pibo-commands-show"
+  | "pibo-commands-set-dir"
+  | "pibo-find-init";
 
 export type CliCommandPathPolicy = {
   bypassConfigGuard: boolean;
@@ -90,6 +99,60 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
     exact: true,
     policy: { ensureCliPath: false },
     route: { id: "models-status" },
+  },
+  {
+    commandPath: ["pibo", "todo", "init"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-todo-init" },
+  },
+  {
+    commandPath: ["pibo", "todo", "status"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-todo-status" },
+  },
+  {
+    commandPath: ["pibo", "todo", "check"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-todo-check" },
+  },
+  {
+    commandPath: ["pibo", "todo", "tokens"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-todo-tokens" },
+  },
+  {
+    commandPath: ["pibo", "commands", "list"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-commands-list" },
+  },
+  {
+    commandPath: ["pibo", "commands", "get-dir"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-commands-get-dir" },
+  },
+  {
+    commandPath: ["pibo", "commands", "show"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-commands-show" },
+  },
+  {
+    commandPath: ["pibo", "commands", "set-dir"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-commands-set-dir" },
+  },
+  {
+    commandPath: ["pibo", "find", "init"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false },
+    route: { id: "pibo-find-init" },
   },
   { commandPath: ["backup"], policy: { bypassConfigGuard: true } },
   { commandPath: ["doctor"], policy: { bypassConfigGuard: true } },

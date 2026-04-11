@@ -7,6 +7,15 @@ import {
   parseHealthRouteArgs,
   parseModelsListRouteArgs,
   parseModelsStatusRouteArgs,
+  parsePiboCommandsGetDirRouteArgs,
+  parsePiboCommandsListRouteArgs,
+  parsePiboCommandsSetDirRouteArgs,
+  parsePiboCommandsShowRouteArgs,
+  parsePiboFindInitRouteArgs,
+  parsePiboTodoCheckRouteArgs,
+  parsePiboTodoInitRouteArgs,
+  parsePiboTodoStatusRouteArgs,
+  parsePiboTodoTokensRouteArgs,
   parseSessionsRouteArgs,
   parseStatusRouteArgs,
 } from "./route-args.js";
@@ -106,6 +115,76 @@ export const routedCommandDefinitions = {
     runParsedArgs: async (args) => {
       const { modelsStatusCommand } = await import("../../commands/models.js");
       await modelsStatusCommand(args, defaultRuntime);
+    },
+  }),
+  "pibo-todo-init": defineRoutedCommand({
+    parseArgs: parsePiboTodoInitRouteArgs,
+    runParsedArgs: async () => {
+      const { todoInit } = await import("../pibo/commands/todo.js");
+      await todoInit({});
+    },
+  }),
+  "pibo-todo-status": defineRoutedCommand({
+    parseArgs: parsePiboTodoStatusRouteArgs,
+    runParsedArgs: async (args) => {
+      const { todoStatus } = await import("../pibo/commands/todo.js");
+      todoStatus({ max: args.max });
+    },
+  }),
+  "pibo-todo-check": defineRoutedCommand({
+    parseArgs: parsePiboTodoCheckRouteArgs,
+    runParsedArgs: async (args) => {
+      const { todoCheck } = await import("../pibo/commands/todo.js");
+      todoCheck({ max: args.max });
+    },
+  }),
+  "pibo-todo-tokens": defineRoutedCommand({
+    parseArgs: parsePiboTodoTokensRouteArgs,
+    runParsedArgs: async (args) => {
+      const { todoTokens } = await import("../pibo/commands/todo.js");
+      todoTokens({ max: args.max });
+    },
+  }),
+  "pibo-commands-list": defineRoutedCommand({
+    parseArgs: parsePiboCommandsListRouteArgs,
+    runParsedArgs: async () => {
+      const { formatRegistrySummary, listCommands } =
+        await import("../pibo/commands/commands/index.js");
+      console.log(formatRegistrySummary(listCommands()));
+    },
+  }),
+  "pibo-commands-get-dir": defineRoutedCommand({
+    parseArgs: parsePiboCommandsGetDirRouteArgs,
+    runParsedArgs: async () => {
+      const { getCommandDir } = await import("../pibo/commands/commands/index.js");
+      console.log(getCommandDir());
+    },
+  }),
+  "pibo-commands-show": defineRoutedCommand({
+    parseArgs: parsePiboCommandsShowRouteArgs,
+    runParsedArgs: async (args) => {
+      const { getCommandPrompt } = await import("../pibo/commands/commands/index.js");
+      const result = getCommandPrompt(args.name);
+      if (!result) {
+        console.error(`Command nicht gefunden: ${args.name}`);
+        process.exit(1);
+      }
+      console.log(result.content);
+    },
+  }),
+  "pibo-commands-set-dir": defineRoutedCommand({
+    parseArgs: parsePiboCommandsSetDirRouteArgs,
+    runParsedArgs: async (args) => {
+      const { setCommandDir } = await import("../pibo/commands/commands/index.js");
+      const registry = setCommandDir(args.dir);
+      console.log(`✅ Command-Verzeichnis gesetzt: ${registry.commandDir}`);
+    },
+  }),
+  "pibo-find-init": defineRoutedCommand({
+    parseArgs: parsePiboFindInitRouteArgs,
+    runParsedArgs: async () => {
+      const { findInit } = await import("../pibo/find/index.js");
+      findInit();
     },
   }),
 };

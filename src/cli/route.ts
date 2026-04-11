@@ -7,7 +7,7 @@ import {
   ensureCliExecutionBootstrap,
   resolveCliExecutionStartupContext,
 } from "./command-execution-startup.js";
-import { findRoutedCommand } from "./program/routes.js";
+import { findRoutedCommandForArgv } from "./program/routes.js";
 
 async function prepareRoutedCommand(params: {
   argv: string[];
@@ -19,6 +19,7 @@ async function prepareRoutedCommand(params: {
     jsonOutputMode: hasFlag(params.argv, "--json"),
     env: process.env,
     routeMode: true,
+    commandPathOverride: params.commandPath,
   });
   const { VERSION } = await import("../version.js");
   await applyCliExecutionStartupPresentation({
@@ -49,13 +50,13 @@ export async function tryRouteCli(argv: string[]): Promise<boolean> {
   if (!invocation.commandPath[0]) {
     return false;
   }
-  const route = findRoutedCommand(invocation.commandPath);
+  const route = findRoutedCommandForArgv(argv);
   if (!route) {
     return false;
   }
   await prepareRoutedCommand({
     argv,
-    commandPath: invocation.commandPath,
+    commandPath: [...route.commandPath],
     loadPlugins: route.loadPlugins,
   });
   return route.run(argv);

@@ -11,9 +11,10 @@ export function resolveCliExecutionStartupContext(params: {
   jsonOutputMode: boolean;
   env?: NodeJS.ProcessEnv;
   routeMode?: boolean;
+  commandPathOverride?: string[];
 }) {
   const invocation = resolveCliArgvInvocation(params.argv);
-  const { commandPath } = invocation;
+  const commandPath = params.commandPathOverride ?? invocation.commandPath;
   return {
     invocation,
     commandPath,

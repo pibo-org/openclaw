@@ -26,6 +26,11 @@ const distDir = path.join(rootDir, "dist");
 const outputPath = path.join(distDir, "cli-startup-metadata.json");
 const extensionsDir = path.join(rootDir, "extensions");
 const ROOT_HELP_RENDER_TIMEOUT_MS = 60_000;
+const PIBO_HELP_SOURCE_PATHS = [
+  path.join("src", "cli", "pibo-cli.ts"),
+  path.join("src", "cli", "pibo", "docs-sync", "index.ts"),
+  path.join("src", "cli", "pibo", "local-sync", "index.ts"),
+] as const;
 const CORE_CHANNEL_ORDER = [
   "telegram",
   "whatsapp",
@@ -160,6 +165,17 @@ function createIsolatedRootHelpRenderContext(
   return { config, env };
 }
 
+function createFileSignature(pathsToHash: readonly string[], baseDir: string = rootDir): string {
+  const signature = createHash("sha1");
+  for (const relativePath of pathsToHash) {
+    const absolutePath = path.join(baseDir, relativePath);
+    signature.update(`${relativePath}\0`);
+    signature.update(readFileSync(absolutePath, "utf8"));
+    signature.update("\0");
+  }
+  return signature.digest("hex");
+}
+
 export async function renderBundledRootHelpText(
   _distDirOverride: string = distDir,
   renderContext: RootHelpRenderContext = createIsolatedRootHelpRenderContext(
@@ -245,6 +261,54 @@ function renderSourceRootHelpText(
   return result.stdout ?? "";
 }
 
+export function renderSourcePiboHelpText(rootDirOverride: string = rootDir): string {
+  const moduleUrl = pathToFileURL(path.join(rootDirOverride, "src/cli/pibo-cli.ts")).href;
+  const inlineModule = [
+    "const { Command } = await import('commander');",
+    `const mod = await import(${JSON.stringify(moduleUrl)});`,
+    "if (typeof mod.registerPiboCli !== 'function') {",
+    `  throw new Error(${JSON.stringify("Source pibo-cli module does not export registerPiboCli.")});`,
+    "}",
+    "const program = new Command();",
+    "mod.registerPiboCli(program);",
+    "const pibo = program.commands.find((command) => command.name() === 'pibo');",
+    "if (!pibo) {",
+    `  throw new Error(${JSON.stringify("Failed to register the pibo command while rendering help text.")});`,
+    "}",
+    "let output = '';",
+    "const originalWrite = process.stdout.write.bind(process.stdout);",
+    "process.stdout.write = ((chunk) => { output += String(chunk); return true; });",
+    "try {",
+    "  pibo.outputHelp();",
+    "} finally {",
+    "  process.stdout.write = originalWrite;",
+    "}",
+    "process.stdout.write(output);",
+    "process.exit(0);",
+  ].join("\n");
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", inlineModule],
+    {
+      cwd: rootDirOverride,
+      encoding: "utf8",
+      env: process.env,
+      timeout: ROOT_HELP_RENDER_TIMEOUT_MS,
+    },
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr?.trim();
+    throw new Error(
+      "Failed to render source pibo help" +
+        (stderr ? `: ${stderr}` : result.signal ? `: terminated by ${result.signal}` : ""),
+    );
+  }
+  return result.stdout ?? "";
+}
+
 export async function writeCliStartupMetadata(options?: {
   distDir?: string;
   outputPath?: string;
@@ -255,6 +319,7 @@ export async function writeCliStartupMetadata(options?: {
   const resolvedExtensionsDir = options?.extensionsDir ?? extensionsDir;
   const channelCatalog = readBundledChannelCatalog(resolvedExtensionsDir);
   const bundleIdentity = resolveRootHelpBundleIdentity(resolvedDistDir);
+  const piboHelpSignature = createFileSignature(PIBO_HELP_SOURCE_PATHS);
   const bundledPluginsDir = path.join(resolvedDistDir, "extensions");
   const renderContext = createIsolatedRootHelpRenderContext(
     existsSync(bundledPluginsDir) ? bundledPluginsDir : resolvedExtensionsDir,
@@ -265,11 +330,13 @@ export async function writeCliStartupMetadata(options?: {
     const existing = JSON.parse(readFileSync(resolvedOutputPath, "utf8")) as {
       rootHelpBundleSignature?: unknown;
       channelCatalogSignature?: unknown;
+      piboHelpSignature?: unknown;
     };
     if (
       bundleIdentity &&
       existing.rootHelpBundleSignature === bundleIdentity.signature &&
-      existing.channelCatalogSignature === channelCatalog.signature
+      existing.channelCatalogSignature === channelCatalog.signature &&
+      existing.piboHelpSignature === piboHelpSignature
     ) {
       return;
     }
@@ -283,6 +350,7 @@ export async function writeCliStartupMetadata(options?: {
   } catch {
     rootHelpText = renderSourceRootHelpText(renderContext);
   }
+  const piboHelpText = renderSourcePiboHelpText();
 
   mkdirSync(resolvedDistDir, { recursive: true });
   writeFileSync(
@@ -293,7 +361,9 @@ export async function writeCliStartupMetadata(options?: {
         channelOptions,
         channelCatalogSignature: channelCatalog.signature,
         rootHelpBundleSignature: bundleIdentity?.signature ?? null,
+        piboHelpSignature,
         rootHelpText,
+        piboHelpText,
       },
       null,
       2,

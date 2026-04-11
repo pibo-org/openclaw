@@ -2,29 +2,49 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-let precomputedRootHelpText: string | null | undefined;
+type CliStartupMetadata = {
+  rootHelpText?: unknown;
+  piboHelpText?: unknown;
+};
+
+let cachedStartupMetadata: CliStartupMetadata | null | undefined;
+
+function getStartupMetadataCandidatePaths(moduleUrl: string = import.meta.url): string[] {
+  const moduleDir = path.dirname(fileURLToPath(moduleUrl));
+  return [
+    path.resolve(moduleDir, "cli-startup-metadata.json"),
+    path.resolve(moduleDir, "..", "cli-startup-metadata.json"),
+    path.resolve(moduleDir, "..", "..", "dist", "cli-startup-metadata.json"),
+  ];
+}
+
+function loadStartupMetadata(): CliStartupMetadata | null {
+  if (cachedStartupMetadata !== undefined) {
+    return cachedStartupMetadata;
+  }
+
+  for (const metadataPath of getStartupMetadataCandidatePaths()) {
+    try {
+      const raw = fs.readFileSync(metadataPath, "utf8");
+      cachedStartupMetadata = JSON.parse(raw) as CliStartupMetadata;
+      return cachedStartupMetadata;
+    } catch {
+      // Try the next candidate path.
+    }
+  }
+
+  cachedStartupMetadata = null;
+  return cachedStartupMetadata;
+}
+
+function loadPrecomputedHelpText(key: "rootHelpText" | "piboHelpText"): string | null {
+  const metadata = loadStartupMetadata();
+  const value = metadata?.[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 export function loadPrecomputedRootHelpText(): string | null {
-  if (precomputedRootHelpText !== undefined) {
-    return precomputedRootHelpText;
-  }
-  try {
-    const metadataPath = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "..",
-      "cli-startup-metadata.json",
-    );
-    const raw = fs.readFileSync(metadataPath, "utf8");
-    const parsed = JSON.parse(raw) as { rootHelpText?: unknown };
-    if (typeof parsed.rootHelpText === "string" && parsed.rootHelpText.length > 0) {
-      precomputedRootHelpText = parsed.rootHelpText;
-      return precomputedRootHelpText;
-    }
-  } catch {
-    // Fall back to live root-help rendering.
-  }
-  precomputedRootHelpText = null;
-  return null;
+  return loadPrecomputedHelpText("rootHelpText");
 }
 
 export function outputPrecomputedRootHelpText(): boolean {
@@ -36,8 +56,24 @@ export function outputPrecomputedRootHelpText(): boolean {
   return true;
 }
 
+export function loadPrecomputedPiboHelpText(): string | null {
+  return loadPrecomputedHelpText("piboHelpText");
+}
+
+export function outputPrecomputedPiboHelpText(): boolean {
+  const piboHelpText = loadPrecomputedPiboHelpText();
+  if (!piboHelpText) {
+    return false;
+  }
+  process.stdout.write(piboHelpText);
+  return true;
+}
+
 export const __testing = {
-  resetPrecomputedRootHelpTextForTests(): void {
-    precomputedRootHelpText = undefined;
+  getStartupMetadataCandidatePathsForTests(moduleUrl: string): string[] {
+    return getStartupMetadataCandidatePaths(moduleUrl);
+  },
+  resetPrecomputedHelpTextCacheForTests(): void {
+    cachedStartupMetadata = undefined;
   },
 };

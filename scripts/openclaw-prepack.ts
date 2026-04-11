@@ -9,6 +9,7 @@ const skipPrepackPreparedEnv = "OPENCLAW_PREPACK_PREPARED";
 const requiredPreparedPathGroups = [
   ["dist/index.js", "dist/index.mjs"],
   ["dist/control-ui/index.html"],
+  ["dist/cli-startup-metadata.json"],
 ];
 const requiredControlUiAssetPrefix = "dist/control-ui/assets/";
 

@@ -1,47 +1,40 @@
 import { Command } from "commander";
-import { agentsTask } from "./pibo/commands/agents.js";
-import {
-  formatRegistrySummary,
-  getCommandDir,
-  getCommandPrompt,
-  listCommands,
-  setCommandDir,
-} from "./pibo/commands/commands/index.js";
-import { registerManagedSessionCommands } from "./pibo/commands/managed-session.js";
-import {
-  mcpCall,
-  mcpCallHelp,
-  mcpDisable,
-  mcpDoctor,
-  mcpEnable,
-  mcpInspect,
-  mcpList,
-  mcpRefresh,
-  mcpRegister,
-  mcpShow,
-  mcpTools,
-  mcpUnregister,
-} from "./pibo/commands/mcp.js";
-import { sambaShareAdd } from "./pibo/commands/samba.js";
-import {
-  todoCheck,
-  todoInit,
-  todoStatus,
-  todoTokens,
-  DEFAULT_MAX_TOKENS,
-} from "./pibo/commands/todo.js";
-import { twitterCheck, twitterStatus, twitterReset } from "./pibo/commands/twitter.js";
 import { docsSync } from "./pibo/docs-sync/index.js";
-import { findInit, findRun } from "./pibo/find/index.js";
 import { localSync } from "./pibo/local-sync/index.js";
-import {
-  workflowsAbort,
-  workflowsDescribe,
-  workflowsList,
-  workflowsRuns,
-  workflowsStart,
-  workflowsStatus,
-} from "./pibo/workflows/index.js";
+
+const TODO_DEFAULT_MAX_TOKENS = 2000;
+
+async function loadAgentsModule() {
+  return import("./pibo/commands/agents.js");
+}
+
+async function loadCommandRegistryModule() {
+  return import("./pibo/commands/commands/index.js");
+}
+
+async function loadFindModule() {
+  return import("./pibo/find/index.js");
+}
+
+async function loadMcpModule() {
+  return import("./pibo/commands/mcp.js");
+}
+
+async function loadSambaModule() {
+  return import("./pibo/commands/samba.js");
+}
+
+async function loadTodoModule() {
+  return import("./pibo/commands/todo.js");
+}
+
+async function loadTwitterModule() {
+  return import("./pibo/commands/twitter.js");
+}
+
+async function loadWorkflowModule() {
+  return import("./pibo/workflows/index.js");
+}
 
 export function registerPiboCli(program: Command) {
   const pibo = program.command("pibo").description("PIBo CLI modules ported into OpenClaw");
@@ -53,12 +46,14 @@ export function registerPiboCli(program: Command) {
     .option("--cold-start", "Cold Start — alle Tweets holen, nichts senden")
     .option("--verbose", "Volle Ausgabe, keine Zusammenfassung")
     .action(async (opts) => {
+      const { twitterCheck } = await loadTwitterModule();
       await twitterCheck(opts);
     });
   twitter
     .command("status")
     .description("Heartbeat-State anzeigen")
     .action(async () => {
+      const { twitterStatus } = await loadTwitterModule();
       await twitterStatus();
     });
   twitter
@@ -66,6 +61,7 @@ export function registerPiboCli(program: Command) {
     .description("Heartbeat-State zurücksetzen")
     .option("-y", "Keine Nachfrage")
     .action(async (opts) => {
+      const { twitterReset } = await loadTwitterModule();
       await twitterReset(opts.y);
     });
 
@@ -74,6 +70,7 @@ export function registerPiboCli(program: Command) {
     .command("task <prompt>")
     .description("One-Shot Task an einen Agent starten")
     .action(async (prompt: string) => {
+      const { agentsTask } = await loadAgentsModule();
       await agentsTask(prompt);
     });
 
@@ -84,6 +81,7 @@ export function registerPiboCli(program: Command) {
     .option("--docs", "Nur im Dokumentenwesen suchen")
     .option("--code", "Nur im Code-Verzeichnis suchen")
     .action(async (prompt: string | undefined, opts: { docs?: boolean; code?: boolean }) => {
+      const { findInit, findRun } = await loadFindModule();
       if (prompt === "init") {
         findInit();
         return;
@@ -102,6 +100,7 @@ export function registerPiboCli(program: Command) {
     .command("set-dir <dir>")
     .description("Verzeichnis für Markdown-Commands setzen")
     .action(async (dir: string) => {
+      const { setCommandDir } = await loadCommandRegistryModule();
       const registry = setCommandDir(dir);
       console.log(`✅ Command-Verzeichnis gesetzt: ${registry.commandDir}`);
     });
@@ -109,6 +108,7 @@ export function registerPiboCli(program: Command) {
     .command("list")
     .description("Aktuell registrierte Commands anzeigen")
     .action(async () => {
+      const { formatRegistrySummary, listCommands } = await loadCommandRegistryModule();
       const registry = listCommands();
       console.log(formatRegistrySummary(registry));
     });
@@ -116,12 +116,14 @@ export function registerPiboCli(program: Command) {
     .command("get-dir")
     .description("Aktuell gesetztes Command-Verzeichnis anzeigen")
     .action(async () => {
+      const { getCommandDir } = await loadCommandRegistryModule();
       console.log(getCommandDir());
     });
   commands
     .command("show <name>")
     .description("Markdown-Inhalt eines Commands anzeigen")
     .action(async (name: string) => {
+      const { getCommandPrompt } = await loadCommandRegistryModule();
       const result = getCommandPrompt(name);
       if (!result) {
         console.error(`Command nicht gefunden: ${name}`);
@@ -139,44 +141,51 @@ export function registerPiboCli(program: Command) {
   mcp
     .command("register <name> <json>")
     .description("MCP-Server persistent in PIBo-Registry speichern")
-    .action((name: string, json: string) => {
+    .action(async (name: string, json: string) => {
+      const { mcpRegister } = await loadMcpModule();
       mcpRegister(name, json);
     });
   mcp
     .command("list")
     .description("Registrierte und aktive MCP-Server anzeigen")
-    .action(() => {
+    .action(async () => {
+      const { mcpList } = await loadMcpModule();
       mcpList();
     });
   mcp
     .command("show <name>")
     .description("Definition eines MCP-Servers anzeigen")
-    .action((name: string) => {
+    .action(async (name: string) => {
+      const { mcpShow } = await loadMcpModule();
       mcpShow(name);
     });
   mcp
     .command("enable <name>")
     .description("Registrierten MCP-Server in OpenClaw aktivieren")
-    .action((name: string) => {
+    .action(async (name: string) => {
+      const { mcpEnable } = await loadMcpModule();
       mcpEnable(name);
     });
   mcp
     .command("disable <name>")
     .description("MCP-Server aus OpenClaw entfernen, aber registriert lassen")
-    .action((name: string) => {
+    .action(async (name: string) => {
+      const { mcpDisable } = await loadMcpModule();
       mcpDisable(name);
     });
   mcp
     .command("unregister <name>")
     .description("MCP-Server aus der PIBo-Registry entfernen")
     .option("--force", "Auch wenn er noch aktiv ist")
-    .action((name: string, opts: { force?: boolean }) => {
+    .action(async (name: string, opts: { force?: boolean }) => {
+      const { mcpUnregister } = await loadMcpModule();
       mcpUnregister(name, !!opts.force);
     });
   mcp
     .command("refresh <name>")
     .description("Tool-Discovery für einen MCP-Server erneuern")
     .action(async (name: string) => {
+      const { mcpRefresh } = await loadMcpModule();
       await mcpRefresh(name);
     });
   mcp
@@ -184,6 +193,7 @@ export function registerPiboCli(program: Command) {
     .description("Registry, Cache und Runtime eines MCP-Servers prüfen")
     .option("--refresh", "Am Ende Discovery-Cache aktiv erneuern")
     .action(async (name: string, opts: { refresh?: boolean }) => {
+      const { mcpDoctor } = await loadMcpModule();
       await mcpDoctor(name, opts);
     });
   mcp
@@ -191,6 +201,7 @@ export function registerPiboCli(program: Command) {
     .description("Toolnamen eines MCP-Servers anzeigen")
     .option("--refresh", "Discovery nicht aus Cache lesen")
     .action(async (name: string, opts: { refresh?: boolean }) => {
+      const { mcpTools } = await loadMcpModule();
       await mcpTools(name, opts);
     });
   mcp
@@ -198,6 +209,7 @@ export function registerPiboCli(program: Command) {
     .description("Discovery-Daten oder ein einzelnes Tool inspizieren")
     .option("--refresh", "Discovery nicht aus Cache lesen")
     .action(async (name: string, tool: string | undefined, opts: { refresh?: boolean }) => {
+      const { mcpInspect } = await loadMcpModule();
       await mcpInspect(name, tool, opts);
     });
   mcp
@@ -219,6 +231,7 @@ export function registerPiboCli(program: Command) {
           console.error("Usage: openclaw pibo mcp call <server> [tool] [--json <json>|--stdin]");
           process.exit(1);
         }
+        const { mcpCall, mcpCallHelp } = await loadMcpModule();
         const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h");
         if (wantsHelp || !tool) {
           await mcpCallHelp(server, tool, { refresh: opts.refresh });
@@ -232,53 +245,53 @@ export function registerPiboCli(program: Command) {
   todo
     .command("init")
     .description("TODO.md mit Grundstruktur anlegen")
-    .action(() => {
+    .action(async () => {
+      const { todoInit } = await loadTodoModule();
       void todoInit({});
     });
   todo
     .command("status")
     .description("TODO.md Status zusammenfassen")
-    .action(() => {
+    .action(async () => {
+      const { todoStatus } = await loadTodoModule();
       todoStatus({});
     });
   todo
     .command("check")
     .description("Token-Budget prüfen")
-    .option("--max <tokens>", `Maximale Tokenzahl (default: ${DEFAULT_MAX_TOKENS})`, (value) =>
+    .option("--max <tokens>", `Maximale Tokenzahl (default: ${TODO_DEFAULT_MAX_TOKENS})`, (value) =>
       Number(value),
     )
-    .action((opts: { max?: number }) => {
+    .action(async (opts: { max?: number }) => {
+      const { todoCheck } = await loadTodoModule();
       todoCheck({ max: opts.max });
     });
   todo
     .command("tokens")
     .description("Token-Anzahl von TODO.md anzeigen")
-    .option("--max <tokens>", `Maximale Tokenzahl (default: ${DEFAULT_MAX_TOKENS})`, (value) =>
+    .option("--max <tokens>", `Maximale Tokenzahl (default: ${TODO_DEFAULT_MAX_TOKENS})`, (value) =>
       Number(value),
     )
-    .action((opts: { max?: number }) => {
+    .action(async (opts: { max?: number }) => {
+      const { todoTokens } = await loadTodoModule();
       todoTokens({ max: opts.max });
     });
-
-  const managed = pibo
-    .command("managed-session")
-    .alias("managed-sessions")
-    .description("PIBo managed session helpers");
-  registerManagedSessionCommands(managed);
 
   const workflows = pibo.command("workflows").description("Generische PIBO Workflow-Module");
   workflows
     .command("list")
     .description("Registrierte Workflow-Module anzeigen")
     .option("--json", "JSON-Ausgabe")
-    .action((opts: { json?: boolean }) => {
+    .action(async (opts: { json?: boolean }) => {
+      const { workflowsList } = await loadWorkflowModule();
       workflowsList({ json: opts.json });
     });
   workflows
     .command("describe <moduleId>")
     .description("Workflow-Modul beschreiben")
     .option("--json", "JSON-Ausgabe")
-    .action((moduleId: string, opts: { json?: boolean }) => {
+    .action(async (moduleId: string, opts: { json?: boolean }) => {
+      const { workflowsDescribe } = await loadWorkflowModule();
       workflowsDescribe(moduleId, { json: opts.json });
     });
   workflows
@@ -298,6 +311,7 @@ export function registerPiboCli(program: Command) {
           outputJson?: boolean;
         },
       ) => {
+        const { workflowsStart } = await loadWorkflowModule();
         await workflowsStart(moduleId, opts);
       },
     );
@@ -305,14 +319,16 @@ export function registerPiboCli(program: Command) {
     .command("status <runId>")
     .description("Workflow-Run Status anzeigen")
     .option("--json", "JSON-Ausgabe")
-    .action((runId: string, opts: { json?: boolean }) => {
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const { workflowsStatus } = await loadWorkflowModule();
       workflowsStatus(runId, { json: opts.json });
     });
   workflows
     .command("abort <runId>")
     .description("Workflow-Run abbrechen")
     .option("--json", "JSON-Ausgabe")
-    .action((runId: string, opts: { json?: boolean }) => {
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const { workflowsAbort } = await loadWorkflowModule();
       workflowsAbort(runId, { json: opts.json });
     });
   workflows
@@ -320,7 +336,8 @@ export function registerPiboCli(program: Command) {
     .description("Gespeicherte Workflow-Runs anzeigen")
     .option("--limit <n>", "Maximale Anzahl")
     .option("--json", "JSON-Ausgabe")
-    .action((opts: { limit?: string; json?: boolean }) => {
+    .action(async (opts: { limit?: string; json?: boolean }) => {
+      const { workflowsRuns } = await loadWorkflowModule();
       workflowsRuns({ limit: opts.limit, json: opts.json });
     });
 
@@ -333,10 +350,11 @@ export function registerPiboCli(program: Command) {
     .option("--hosts-allow <list>", "Optionales hosts allow, z.B. 192.168.0. 127.")
     .option("--apply", "Änderung wirklich anwenden")
     .action(
-      (
+      async (
         linuxUser: string,
         opts: { path?: string; name?: string; hostsAllow?: string; apply?: boolean },
       ) => {
+        const { sambaShareAdd } = await loadSambaModule();
         sambaShareAdd(linuxUser, opts);
       },
     );
