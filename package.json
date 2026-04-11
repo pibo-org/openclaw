@@ -1304,9 +1304,9 @@
     "ui:i18n:check": "node --import tsx scripts/control-ui-i18n.ts check",
     "ui:i18n:sync": "node --import tsx scripts/control-ui-i18n.ts sync --write",
     "ui:install": "node scripts/ui.js install",
-    "ui:pibo:build": "pnpm --dir ui-pibo build",
-    "ui:pibo:dev": "pnpm --dir ui-pibo dev",
-    "ui:pibo:install": "pnpm install --filter ./ui-pibo --filter ./packages/pibo-shared-auth"
+    "ui:pibo:build": "corepack pnpm --dir ui-pibo build",
+    "ui:pibo:dev": "corepack pnpm --dir ui-pibo dev",
+    "ui:pibo:install": "corepack pnpm install --filter ./ui-pibo --filter ./packages/pibo-shared-auth"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.18.0",
