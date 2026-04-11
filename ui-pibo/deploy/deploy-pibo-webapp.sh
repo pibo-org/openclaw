@@ -55,7 +55,7 @@ else
 fi
 
 echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Installing workspace dependencies"
-corepack pnpm --dir "$REPO_DIR" install --filter ./ui-pibo --filter ./packages/pibo-shared-auth --frozen-lockfile
+(cd "$REPO_DIR" && corepack pnpm install --filter ./ui-pibo --filter ./packages/pibo-shared-auth --frozen-lockfile)
 
 echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Building app"
 corepack pnpm --dir "$REPO_DIR" ui:pibo:build
