@@ -2,11 +2,13 @@ import type { CronServiceState } from "./state.js";
 
 const storeLocks = new Map<string, Promise<void>>();
 
-const resolveChain = (promise: Promise<unknown>) =>
-  promise.then(
-    () => undefined,
-    () => undefined,
-  );
+const resolveChain = (promise: Promise<unknown> | null | undefined) =>
+  promise
+    ? promise.then(
+        () => undefined,
+        () => undefined,
+      )
+    : Promise.resolve(undefined);
 
 export async function locked<T>(state: CronServiceState, fn: () => Promise<T>): Promise<T> {
   const storePath = state.deps.storePath;

@@ -1275,7 +1275,6 @@ async function executeDetachedCronJob(
     error: res.error,
     summary: res.summary,
     delivered: res.delivered,
-    deliveryAttempted: res.deliveryAttempted,
     sessionId: res.sessionId,
     sessionKey: res.sessionKey,
     model: res.model,
@@ -1386,7 +1385,9 @@ export function stopTimer(state: CronServiceState) {
 
 export function emit(state: CronServiceState, evt: CronEvent) {
   try {
-    state.deps.onEvent?.(evt);
+    if (state.deps.onEvent) {
+      state.deps.onEvent(evt);
+    }
   } catch {
     /* ignore */
   }

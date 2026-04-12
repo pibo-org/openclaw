@@ -158,7 +158,7 @@ export function createCronPromptExecutor(params: {
           timeoutMs: params.timeoutMs,
           bootstrapContextMode: params.agentPayload?.lightContext ? "lightweight" : undefined,
           bootstrapContextRunKind: "cron",
-          toolsAllow: params.agentPayload?.toolsAllow,
+          toolsAllow: params.agentPayload?.toolsAllow ?? undefined,
           runId: params.cronSession.sessionEntry.sessionId,
           requireExplicitMessageTarget: params.toolPolicy.requireExplicitMessageTarget,
           disableMessageTool: params.toolPolicy.disableMessageTool,

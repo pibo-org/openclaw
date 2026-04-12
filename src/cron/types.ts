@@ -1,19 +1,30 @@
+import type { FailoverReason } from "../agents/pi-embedded-helpers.js";
+import type { ChannelId } from "../channels/plugins/types.js";
+import type { HookExternalContentSource } from "../security/external-content.js";
+import type { CronJobBase } from "./types-shared.js";
+
 export type CronRunStatus = "ok" | "error" | "skipped";
 
 export type CronRetryOn = "rate_limit" | "overloaded" | "network" | "timeout" | "server_error";
 
 export type CronDeliveryStatus = "not-requested" | "delivered" | "not-delivered" | "unknown";
 
+export type CronUsageSummary = {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+};
+
 export type CronRunTelemetry = {
   model?: string;
   provider?: string;
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-    costUsd?: number;
-  };
-  // Delivery diagnostics for surfaced summaries/announcements.
+  usage?: CronUsageSummary;
   deliveryStatus?: CronDeliveryStatus;
   deliveryError?: string;
 };
@@ -21,6 +32,7 @@ export type CronRunTelemetry = {
 export type CronRunOutcome = {
   status: CronRunStatus;
   error?: string;
+  errorKind?: "delivery-target";
   delivered?: boolean;
   summary?: string;
   sessionId?: string;
@@ -49,6 +61,7 @@ type CronAgentTurnPayloadFields = {
   timeoutSeconds?: number;
   lightContext?: boolean;
   allowUnsafeExternalContent?: boolean;
+  externalContentSource?: HookExternalContentSource;
 };
 
 export type CronAgentTurnPayload = {
@@ -60,45 +73,15 @@ type CronAgentTurnPayloadPatch = {
 } & Partial<Omit<CronAgentTurnPayloadFields, "toolsAllow">> & {
     toolsAllow?: string[] | null;
   };
-export type CronJobState = {
-  nextRunAtMs?: number;
-  runningAtMs?: number;
-  lastRunAtMs?: number;
-  lastRunStatus?: CronRunStatus;
-  lastStatus?: CronRunStatus;
-  lastError?: string;
-  // Normalized failover reason (for UI/API consumers) derived from the last error.
-  lastErrorReason?: string;
-  lastDurationMs?: number;
-  // Whether the last run's summary/announcement was delivered successfully.
-  lastDelivered?: boolean;
-  // Delivery status for the last run (requested + outcome aware).
-  lastDeliveryStatus?: CronDeliveryStatus;
-  // Delivery-specific error when delivery was attempted but failed.
-  lastDeliveryError?: string;
-  // Consecutive error count for retry/backoff/auto-disable.
-  consecutiveErrors?: number;
-  // Timestamp of the last emitted failure alert for cooldown handling.
-  lastFailureAlertAtMs?: number;
-};
 
 export type CronScheduleAt = {
   kind: "at";
-  /**
-   * Absolute wall-clock time for one-shot schedules, serialized as an ISO string.
-   * Older data may still carry `atMs`; normalization/migrations should coerce to `at`.
-   */
   at: string;
 };
 
 export type CronScheduleEvery = {
   kind: "every";
   everyMs: number;
-  /**
-   * Stable anchor timestamp in milliseconds since epoch.
-   * If omitted, the scheduler uses job.createdAtMs as the initial anchor.
-   * This keeps repeating schedules phase-stable across restarts and edits.
-   */
   anchorMs?: number;
 };
 
@@ -106,94 +89,88 @@ export type CronScheduleCron = {
   kind: "cron";
   expr: string;
   tz?: string;
-  /**
-   * Optional per-job stagger window (ms) for cron expressions. Jobs are
-   * deterministically offset within this window based on job id, avoiding
-   * thundering herds after restarts while remaining stable over time.
-   * `0` disables staggering for the job.
-   */
   staggerMs?: number;
 };
 
 export type CronSchedule = CronScheduleAt | CronScheduleEvery | CronScheduleCron;
 
-export type CronMessageChannel = "last" | "telegram" | "signal" | "discord" | "slack";
+export type CronSessionTarget = "main" | "isolated" | "current" | `session:${string}`;
+
+export type CronWakeMode = "next-heartbeat" | "now";
+
+export type CronMessageChannel = ChannelId;
 
 export type CronDeliveryMode = "none" | "announce" | "webhook";
+
+export type CronFailureDestination = {
+  channel?: CronMessageChannel;
+  to?: string;
+  accountId?: string;
+  mode?: "announce" | "webhook";
+};
 
 export type CronDelivery = {
   mode?: CronDeliveryMode;
   channel?: CronMessageChannel;
   to?: string;
-  threadId?: string;
-  accountId?: string;
-  /**
-   * If true, job success is preserved even when summary delivery fails.
-   * When false/omitted, delivery failure marks the run as error.
-   */
-  bestEffort?: boolean;
-  /**
-   * Optional alternate destination for failure notifications. When omitted,
-   * failures may be announced to the primary delivery channel depending on
-   * scheduler/global policy.
-   */
-  failureDestination?: {
-    mode?: CronDeliveryMode | "announce" | "webhook";
-    channel?: CronMessageChannel;
-    to?: string;
-    accountId?: string;
-  };
-};
-
-export type CronDeliveryPatch = {
-  mode?: CronDeliveryMode;
-  channel?: CronMessageChannel;
-  to?: string;
-  threadId?: string;
+  threadId?: string | number;
   accountId?: string;
   bestEffort?: boolean;
-  failureDestination?: {
-    mode?: CronDeliveryMode | "announce" | "webhook";
-    channel?: CronMessageChannel;
-    to?: string;
-    accountId?: string;
-  } | null;
+  failureDestination?: CronFailureDestination;
 };
 
-export type CronJob = {
-  id: string;
-  name: string;
-  description?: string;
-  enabled?: boolean;
-  agentId?: string;
-  schedule: CronSchedule;
-  sessionTarget: "main" | "isolated" | "current" | `session:${string}`;
-  sessionKey?: string;
-  payload: CronPayload;
-  wakeMode?: "now" | "next-heartbeat";
-  /** Optional delivery configuration for isolated jobs. */
-  delivery?: CronDelivery;
-  /** Optional failure alert policy. */
-  failureAlert?: CronFailureAlert | false;
-  createdAtMs: number;
-  updatedAtMs: number;
+export type CronDeliveryPatch = Partial<CronDelivery> & {
+  failureDestination?: CronFailureDestination | null;
+};
+
+export type CronJobState = {
+  nextRunAtMs?: number;
+  runningAtMs?: number;
+  lastRunAtMs?: number;
+  lastRunStatus?: CronRunStatus;
+  lastStatus?: CronRunStatus;
+  lastError?: string;
+  lastErrorReason?: FailoverReason;
+  lastDurationMs?: number;
+  lastDelivered?: boolean;
+  lastDeliveryStatus?: CronDeliveryStatus;
+  lastDeliveryError?: string;
+  consecutiveErrors?: number;
+  lastFailureAlertAtMs?: number;
+  scheduleErrorCount?: number;
+};
+
+export type CronJob = CronJobBase<
+  CronSchedule,
+  CronSessionTarget,
+  CronWakeMode,
+  CronPayload,
+  CronDelivery,
+  CronFailureAlert | false
+> & {
   state: CronJobState;
-  deleteAfterRun?: boolean;
 };
+
+export type CronStoreFile = {
+  version: 1;
+  jobs: CronJob[];
+};
+
+export type CronStore = CronStoreFile;
 
 export type CronJobCreate = Omit<CronJob, "id" | "createdAtMs" | "updatedAtMs" | "state"> & {
-  deleteAfterRun?: boolean;
+  state?: Partial<CronJobState>;
 };
 
 export type CronJobPatch = Partial<
-  Omit<CronJobCreate, "payload" | "schedule" | "delivery" | "failureAlert">
+  Omit<
+    CronJob,
+    "id" | "createdAtMs" | "state" | "payload" | "schedule" | "delivery" | "failureAlert"
+  >
 > & {
-  schedule?: Partial<CronScheduleAt> | Partial<CronScheduleEvery> | Partial<CronScheduleCron>;
+  schedule?: CronSchedule;
   payload?: CronPayloadPatch;
   delivery?: CronDeliveryPatch;
   failureAlert?: CronFailureAlert | false;
-};
-
-export type CronStore = {
-  jobs: CronJob[];
+  state?: Partial<CronJobState>;
 };
