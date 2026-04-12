@@ -2,6 +2,18 @@
 
 Date: 2026-04-10
 
+## Documentation status
+
+Repo-nahe technische Referenz.
+
+Kanonische PIBO-Doku für den aktuellen Betriebsstand:
+
+- `~/docs/pibo/workflows/codex-controller.md`
+- `~/docs/pibo/workflows/workflow-runtime-architecture.md`
+- `~/docs/pibo/workflows/workflow-debugging.md`
+
+Diese Datei bleibt nützlich für quellnahe technische Details, ist aber nicht alleinige Source of Truth für die übergreifende Workflow-Dokumentation.
+
 ## Purpose
 
 `codex_controller` is a native PIBO workflow module for supervised coding loops with a persistent Codex ACP worker and a separate controller agent.
@@ -24,7 +36,7 @@ It is intended for tasks where:
 
 The Codex worker keeps a persistent ACP session and requires an explicit ACP `cwd`/working directory during initialization.
 
-The generic managed workflow-session adapter is used for the controller session, but the worker remains on the ACP session-manager path because that is the runtime path that currently exposes:
+The controller itself runs on a normal native OpenClaw workflow session key, but the worker remains on the ACP session-manager path because that is the runtime path that currently exposes:
 
 - persistent ACP thread reuse
 - explicit ACP `cwd`
@@ -67,7 +79,7 @@ This avoids silent breakage when the underlying prompt template is still on the 
 
 That means the module may send `/compact ...` into the persistent Codex ACP thread after `workerCompactionAfterRound`.
 
-This is intentionally **not** wired to `runtime.managedSessions.compact(...)`, because that helper truncates managed-session transcript files and is not the same thing as semantic Codex ACP thread compaction.
+This is intentionally **not** wired to the generic OpenClaw session-compaction path such as `openclaw sessions compact`, because normal session compaction is not the same thing as semantic Codex ACP thread compaction.
 
 If manual ACP compaction is not wanted, set:
 

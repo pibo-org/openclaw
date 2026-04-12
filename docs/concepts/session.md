@@ -101,6 +101,7 @@ Preview with `openclaw sessions cleanup --dry-run`.
 
 - `openclaw status` -- session store path and recent activity.
 - `openclaw sessions --json` -- all sessions (filter with `--active <minutes>`).
+- `openclaw sessions compact <key>` -- trigger manual semantic compaction for one session key.
 - `/status` in chat -- context usage, model, and toggles.
 - `/context list` -- what is in the system prompt.
 

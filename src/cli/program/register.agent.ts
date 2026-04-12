@@ -62,7 +62,7 @@ ${formatHelpExamples([
     "Target a session with explicit thinking level.",
   ],
   [
-    'openclaw agent --agent ops --session-key agent:ops:pibo:workflow:run-1:worker:main --message "Continue"',
+    'openclaw agent --agent ops --session-key agent:ops:workflow:run-1:worker:main --message "Continue"',
     "Run a specific agent on an explicit session key.",
   ],
   [

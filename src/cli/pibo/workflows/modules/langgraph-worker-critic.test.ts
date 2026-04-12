@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ensureWorkflowSessions = vi.fn();
 const runWorkflowAgentOnSession = vi.fn();
 const writeWorkflowArtifact = vi.fn();
+const emitTracedWorkflowReportEvent = vi.fn(async () => ({ attempted: true, delivered: true }));
+const traceEmit = vi.fn();
 
-vi.mock("../managed-session-adapter.js", () => ({
+vi.mock("../workflow-session-helper.js", () => ({
   ensureWorkflowSessions,
 }));
 
@@ -16,12 +18,16 @@ vi.mock("../store.js", () => ({
   writeWorkflowArtifact,
 }));
 
+vi.mock("../workflow-reporting.js", () => ({
+  emitTracedWorkflowReportEvent,
+}));
+
 describe("langgraph_worker_critic module", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ensureWorkflowSessions.mockResolvedValue({
-      worker: "agent:langgraph:pibo:workflow:run-1:worker:main",
-      critic: "agent:critic:pibo:workflow:run-1:critic:main",
+      worker: "agent:langgraph:workflow:run-1:worker:main",
+      critic: "agent:critic:workflow:run-1:critic:main",
     });
     runWorkflowAgentOnSession
       .mockResolvedValueOnce({
@@ -55,6 +61,7 @@ describe("langgraph_worker_critic module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
+        trace: { emit: traceEmit },
       },
     );
 
@@ -96,16 +103,60 @@ describe("langgraph_worker_critic module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
+        trace: { emit: traceEmit },
       },
     );
 
     expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        sessionKey: "agent:critic:pibo:workflow:run-1:critic:main",
+        sessionKey: "agent:critic:workflow:run-1:critic:main",
         message: expect.stringContaining(
           "ADDITIONAL_CRITIC_INSTRUCTIONS:\nBe extra strict about hidden assumptions.",
         ),
+      }),
+    );
+  });
+
+  it("reports completed runs with the final worker result first", async () => {
+    const { langgraphWorkerCriticModule } = await import("./langgraph-worker-critic.js");
+
+    await langgraphWorkerCriticModule.start(
+      {
+        input: {
+          task: "Return the final answer",
+          successCriteria: ["exact answer"],
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: { emit: traceEmit },
+      },
+    );
+
+    expect(emitTracedWorkflowReportEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        eventType: "completed",
+        messageText: [
+          "Final result:",
+          "worker result",
+          "",
+          "Critic verdict: APPROVE",
+          "Round: 1/2",
+          "",
+          "Approval reason:",
+          "- Looks good",
+        ].join("\n"),
+        emittingAgentId: "critic",
+      }),
+    );
+    expect(traceEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "run_completed",
+        status: "done",
       }),
     );
   });

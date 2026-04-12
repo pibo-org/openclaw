@@ -1,4 +1,10 @@
-import type { WorkflowModule, WorkflowRunRecord, WorkflowStartRequest } from "../types.js";
+import type {
+  WorkflowModule,
+  WorkflowModuleContext,
+  WorkflowRunRecord,
+  WorkflowStartRequest,
+} from "../types.js";
+import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
 
 function normalizeInput(input: unknown) {
   if (input && typeof input === "object") {
@@ -16,10 +22,32 @@ function toPreview(input: unknown) {
 
 async function start(
   request: WorkflowStartRequest,
-  ctx: { runId: string; nowIso(): string; persist(record: WorkflowRunRecord): void },
+  ctx: WorkflowModuleContext,
 ): Promise<WorkflowRunRecord> {
   const now = ctx.nowIso();
   const normalized = normalizeInput(request.input);
+  ctx.trace.emit({
+    kind: "run_started",
+    stepId: "run",
+    status: "running",
+    summary: "Noop workflow started.",
+    payload: {
+      inputPreview: toPreview(normalized),
+    },
+  });
+  await emitTracedWorkflowReportEvent({
+    trace: ctx.trace,
+    stepId: "run",
+    moduleId: "noop",
+    runId: ctx.runId,
+    phase: "run_started",
+    eventType: "started",
+    messageText: `Noop workflow started.\n\nInput preview:\n${toPreview(normalized)}`,
+    emittingAgentId: "main",
+    origin: request.origin,
+    reporting: request.reporting,
+    status: "running",
+  });
   const record: WorkflowRunRecord = {
     runId: ctx.runId,
     moduleId: "noop",
@@ -34,10 +62,31 @@ async function start(
     latestCriticVerdict: null,
     originalTask: null,
     currentTask: null,
+    ...(request.origin ? { origin: request.origin } : {}),
+    ...(request.reporting ? { reporting: request.reporting } : {}),
     createdAt: now,
     updatedAt: now,
   };
   ctx.persist(record);
+  ctx.trace.emit({
+    kind: "run_completed",
+    stepId: "run",
+    status: "done",
+    summary: record.terminalReason ?? "Noop workflow completed immediately.",
+  });
+  await emitTracedWorkflowReportEvent({
+    trace: ctx.trace,
+    stepId: "run",
+    moduleId: "noop",
+    runId: ctx.runId,
+    phase: "workflow_done",
+    eventType: "completed",
+    messageText: record.latestWorkerOutput ?? "Noop workflow completed immediately.",
+    emittingAgentId: "main",
+    origin: request.origin,
+    reporting: request.reporting,
+    status: "done",
+  });
   return record;
 }
 

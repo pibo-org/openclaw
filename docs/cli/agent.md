@@ -14,6 +14,7 @@ Pass at least one session selector:
 
 - `--to <dest>`
 - `--session-id <id>`
+- `--session-key <key>`
 - `--agent <id>`
 
 Related:
@@ -25,6 +26,7 @@ Related:
 - `-m, --message <text>`: required message body
 - `-t, --to <dest>`: recipient used to derive the session key
 - `--session-id <id>`: explicit session id
+- `--session-key <key>`: explicit session key
 - `--agent <id>`: agent id; overrides routing bindings
 - `--thinking <off|minimal|low|medium|high|xhigh>`: agent thinking level
 - `--verbose <on|off>`: persist verbose level for the session
@@ -43,6 +45,7 @@ Related:
 openclaw agent --to +15555550123 --message "status update" --deliver
 openclaw agent --agent ops --message "Summarize logs"
 openclaw agent --session-id 1234 --message "Summarize inbox" --thinking medium
+openclaw agent --agent ops --session-key agent:ops:workflow:run-1:worker:main --message "Continue"
 openclaw agent --to +15555550123 --message "Trace logs" --verbose on --json
 openclaw agent --agent ops --message "Generate report" --deliver --reply-channel slack --reply-to "#reports"
 openclaw agent --agent ops --message "Run locally" --local
@@ -52,6 +55,7 @@ openclaw agent --agent ops --message "Run locally" --local
 
 - Gateway mode falls back to the embedded agent when the Gateway request fails. Use `--local` to force embedded execution up front.
 - `--local` still preloads the plugin registry first, so plugin-provided providers, tools, and channels stay available during embedded runs.
+- Explicit workflow-style session keys work natively as long as they follow the normal agent session contract (`agent:<agentId>:...`).
 - `--channel`, `--reply-channel`, and `--reply-account` affect reply delivery, not session routing.
 - When this command triggers `models.json` regeneration, SecretRef-managed provider credentials are persisted as non-secret markers (for example env var names, `secretref-env:ENV_VAR_NAME`, or `secretref-managed`), not resolved secret plaintext.
 - Marker writes are source-authoritative: OpenClaw persists markers from the active source config snapshot, not from resolved runtime secret values.

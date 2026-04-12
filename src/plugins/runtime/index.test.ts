@@ -239,30 +239,6 @@ describe("plugin runtime command execution", () => {
       },
     },
     {
-      name: "exposes managedSessions helpers",
-      assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
-        expectFunctionKeys(runtime.managedSessions as Record<string, unknown>, [
-          "buildKey",
-          "buildWorkflowKey",
-          "list",
-          "get",
-          "status",
-          "resolveSelector",
-          "resolve",
-          "create",
-          "add",
-          "patch",
-          "edit",
-          "reset",
-          "delete",
-          "compact",
-          "ensureWorkflowSession",
-          "runOnManagedSession",
-          "runFirstManagedWorkflowTurn",
-        ]);
-      },
-    },
-    {
       name: "exposes piboWorkflows helpers",
       assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
         expectFunctionKeys(runtime.piboWorkflows as Record<string, unknown>, [
@@ -301,33 +277,5 @@ describe("plugin runtime command execution", () => {
       runId: "run-1",
     });
     expect(run).toHaveBeenCalledWith({ sessionKey: "s-2", message: "hello" });
-  });
-
-  it("can run a first managed workflow turn through the gateway-bound runtime", async () => {
-    const { run, runtime } = createGatewaySubagentRunFixture({
-      allowGatewaySubagentBinding: true,
-    });
-
-    const result = await runtime.managedSessions.runFirstManagedWorkflowTurn({
-      flowId: "flow-001",
-      role: "worker",
-      name: "a",
-      agentId: "pibo",
-      policy: "reusable",
-      label: "PIBo Worker A",
-      message: "Analyse this task and produce a first draft.",
-      deliver: false,
-    });
-
-    expect(result.sessionKey).toBe("agent:pibo:pibo:workflow:flow-001:worker:a");
-    expect(result.created).toBe(true);
-    expect(result.runId).toBe("run-1");
-    expect(run).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionKey: "agent:pibo:pibo:workflow:flow-001:worker:a",
-        message: "Analyse this task and produce a first draft.",
-        deliver: false,
-      }),
-    );
   });
 });

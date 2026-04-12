@@ -4,6 +4,7 @@ import * as path from "path";
 import process from "process";
 
 const MODEL = "minimax/MiniMax-M2.7-highspeed";
+const AGENT = "explore";
 const DOCS_PROMPT = `Du bist ein Finder-Agent für das Dokumentenwesen in diesem Arbeitsverzeichnis.
 
 Aufgabe:
@@ -171,7 +172,7 @@ async function runTarget(target: FindTarget, userPrompt: string): Promise<RunRes
   const finalPrompt = `${basePrompt}\n\n${userPrompt}`;
 
   return new Promise<RunResult>((resolve) => {
-    const child = spawn("opencode", ["run", "-m", MODEL, finalPrompt], {
+    const child = spawn("opencode", ["run", "--agent", AGENT, "-m", MODEL, finalPrompt], {
       cwd: resolveTargetWorkdir(target),
       stdio: ["ignore", "pipe", "pipe"],
     });

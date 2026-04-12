@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   statusCommand: vi.fn(),
   healthCommand: vi.fn(),
   sessionsCommand: vi.fn(),
+  sessionsCompactCommand: vi.fn(),
   sessionsCleanupCommand: vi.fn(),
   tasksListCommand: vi.fn(),
   tasksAuditCommand: vi.fn(),
@@ -27,6 +28,7 @@ const mocks = vi.hoisted(() => ({
 const statusCommand = mocks.statusCommand;
 const healthCommand = mocks.healthCommand;
 const sessionsCommand = mocks.sessionsCommand;
+const sessionsCompactCommand = mocks.sessionsCompactCommand;
 const sessionsCleanupCommand = mocks.sessionsCleanupCommand;
 const tasksListCommand = mocks.tasksListCommand;
 const tasksAuditCommand = mocks.tasksAuditCommand;
@@ -50,6 +52,10 @@ vi.mock("../../commands/health.js", () => ({
 
 vi.mock("../../commands/sessions.js", () => ({
   sessionsCommand: mocks.sessionsCommand,
+}));
+
+vi.mock("../../commands/sessions-compact.js", () => ({
+  sessionsCompactCommand: mocks.sessionsCompactCommand,
 }));
 
 vi.mock("../../commands/sessions-cleanup.js", () => ({
@@ -92,6 +98,7 @@ describe("registerStatusHealthSessionsCommands", () => {
     statusCommand.mockResolvedValue(undefined);
     healthCommand.mockResolvedValue(undefined);
     sessionsCommand.mockResolvedValue(undefined);
+    sessionsCompactCommand.mockResolvedValue(undefined);
     sessionsCleanupCommand.mockResolvedValue(undefined);
     tasksListCommand.mockResolvedValue(undefined);
     tasksAuditCommand.mockResolvedValue(undefined);
@@ -232,6 +239,30 @@ describe("registerStatusHealthSessionsCommands", () => {
         enforce: true,
         fixMissing: true,
         activeKey: "agent:main:main",
+        json: true,
+      }),
+      runtime,
+    );
+  });
+
+  it("runs sessions compact subcommand with key forwarding", async () => {
+    await runCli(["sessions", "compact", "main"]);
+
+    expect(sessionsCompactCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "main",
+        json: false,
+      }),
+      runtime,
+    );
+  });
+
+  it("runs sessions compact subcommand with local --json forwarding", async () => {
+    await runCli(["sessions", "compact", "main", "--json"]);
+
+    expect(sessionsCompactCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "main",
         json: true,
       }),
       runtime,

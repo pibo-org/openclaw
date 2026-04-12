@@ -1,5 +1,4 @@
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
-import { ensureWorkflowSessions } from "../managed-session-adapter.js";
 import { writeWorkflowArtifact } from "../store.js";
 import type {
   WorkflowModule,
@@ -7,6 +6,8 @@ import type {
   WorkflowRunRecord,
   WorkflowStartRequest,
 } from "../types.js";
+import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
+import { ensureWorkflowSessions } from "../workflow-session-helper.js";
 
 interface WorkerCriticInput {
   task: string;
@@ -195,6 +196,24 @@ function buildCriticPrompt(params: {
   ].join("\n");
 }
 
+function buildApprovedCompletionMessage(params: {
+  workerOutput: string;
+  verdict: CriticVerdict;
+  round: number;
+  maxRounds: number;
+}): string {
+  return [
+    "Final result:",
+    params.workerOutput,
+    "",
+    `Critic verdict: ${params.verdict.verdict}`,
+    `Round: ${params.round}/${params.maxRounds}`,
+    ...(params.verdict.reason.length
+      ? ["", "Approval reason:", ...params.verdict.reason.map((line) => `- ${line}`)]
+      : []),
+  ].join("\n");
+}
+
 function buildRecord(params: {
   runId: string;
   input: WorkerCriticInput;
@@ -208,6 +227,8 @@ function buildRecord(params: {
   latestCriticVerdict: string | null;
   originalTask: string;
   currentTask: string;
+  origin?: WorkflowRunRecord["origin"];
+  reporting?: WorkflowRunRecord["reporting"];
   createdAt: string;
   updatedAt: string;
 }): WorkflowRunRecord {
@@ -225,9 +246,15 @@ function buildRecord(params: {
     latestCriticVerdict: params.latestCriticVerdict,
     originalTask: params.originalTask,
     currentTask: params.currentTask,
+    ...(params.origin ? { origin: params.origin } : {}),
+    ...(params.reporting ? { reporting: params.reporting } : {}),
     createdAt: params.createdAt,
     updatedAt: params.updatedAt,
   };
+}
+
+function stepIdForRound(round: number): string {
+  return `round-${round}`;
 }
 
 async function start(
@@ -244,6 +271,21 @@ async function start(
   let status: WorkflowRunRecord["status"] = "running";
   let currentTask = input.task;
   let revisionRequest: string[] = [];
+  const emitArtifactWritten = (params: {
+    artifactPath: string;
+    summary: string;
+    round?: number;
+    role?: string;
+  }) => {
+    ctx.trace.emit({
+      kind: "artifact_written",
+      stepId: typeof params.round === "number" ? stepIdForRound(params.round) : "run",
+      ...(typeof params.round === "number" ? { round: params.round } : {}),
+      ...(params.role ? { role: params.role } : {}),
+      artifactPath: params.artifactPath,
+      summary: params.summary,
+    });
+  };
 
   const sessions = await ensureWorkflowSessions({
     runId: ctx.runId,
@@ -287,6 +329,8 @@ async function start(
         latestCriticVerdict,
         originalTask: input.task,
         currentTask,
+        origin: request.origin,
+        reporting: request.reporting,
         createdAt,
         updatedAt: next.updatedAt ?? ctx.nowIso(),
       }),
@@ -294,13 +338,59 @@ async function start(
   };
 
   persist({ currentRound: 0, updatedAt: createdAt });
+  ctx.trace.emit({
+    kind: "run_started",
+    stepId: "run",
+    status: "running",
+    summary: "Worker/critic workflow started.",
+    payload: {
+      maxRounds,
+      workerAgentId: input.workerAgentId,
+      criticAgentId: input.criticAgentId,
+      successCriteriaCount: input.successCriteria.length,
+    },
+  });
 
-  artifacts.push(
-    writeWorkflowArtifact(ctx.runId, "input.json", `${JSON.stringify(input, null, 2)}\n`),
+  const inputArtifact = writeWorkflowArtifact(
+    ctx.runId,
+    "input.json",
+    `${JSON.stringify(input, null, 2)}\n`,
   );
+  artifacts.push(inputArtifact);
+  emitArtifactWritten({
+    artifactPath: inputArtifact,
+    summary: "workflow input written",
+  });
   persist({ currentRound: 0 });
+  await emitTracedWorkflowReportEvent({
+    trace: ctx.trace,
+    stepId: "run",
+    moduleId: "langgraph_worker_critic",
+    runId: ctx.runId,
+    phase: "run_started",
+    eventType: "started",
+    messageText: [
+      `Task: ${input.task}`,
+      `Success criteria: ${input.successCriteria.length}`,
+      ...(input.deliverables.length ? [`Deliverables: ${input.deliverables.join("; ")}`] : []),
+    ].join("\n"),
+    emittingAgentId: input.workerAgentId,
+    origin: request.origin,
+    reporting: request.reporting,
+    status: "running",
+    role: "worker",
+    targetSessionKey: sessions.worker,
+  });
 
   for (let round = 1; round <= maxRounds; round += 1) {
+    const stepId = stepIdForRound(round);
+    ctx.trace.emit({
+      kind: "round_started",
+      stepId,
+      round,
+      status: "running",
+      summary: `Round ${round} started.`,
+    });
     const workerPrompt = buildWorkerPrompt({
       input,
       round,
@@ -309,20 +399,59 @@ async function start(
       currentTask,
       revisionRequest,
     });
-    artifacts.push(
-      writeWorkflowArtifact(ctx.runId, `worker-round-${round}-prompt.md`, `${workerPrompt}\n`),
+    const workerPromptArtifact = writeWorkflowArtifact(
+      ctx.runId,
+      `worker-round-${round}-prompt.md`,
+      `${workerPrompt}\n`,
     );
+    artifacts.push(workerPromptArtifact);
+    emitArtifactWritten({
+      artifactPath: workerPromptArtifact,
+      summary: "worker prompt written",
+      round,
+      role: "worker",
+    });
     persist({ currentRound: round });
 
+    ctx.trace.emit({
+      kind: "role_turn_started",
+      stepId,
+      round,
+      role: "worker",
+      sessionKey: sessions.worker,
+      agentId: input.workerAgentId,
+      summary: "worker turn started",
+    });
     const workerResult = await runWorkflowAgentOnSession({
       sessionKey: sessions.worker ?? "",
       message: workerPrompt,
       idempotencyKey: `${ctx.runId}:worker:${round}`,
     });
     latestWorkerOutput = workerResult.text;
-    artifacts.push(
-      writeWorkflowArtifact(ctx.runId, `worker-round-${round}-output.md`, `${workerResult.text}\n`),
+    const workerOutputArtifact = writeWorkflowArtifact(
+      ctx.runId,
+      `worker-round-${round}-output.md`,
+      `${workerResult.text}\n`,
     );
+    artifacts.push(workerOutputArtifact);
+    emitArtifactWritten({
+      artifactPath: workerOutputArtifact,
+      summary: "worker output written",
+      round,
+      role: "worker",
+    });
+    ctx.trace.emit({
+      kind: "role_turn_completed",
+      stepId,
+      round,
+      role: "worker",
+      sessionKey: sessions.worker,
+      agentId: input.workerAgentId,
+      summary: "worker output captured",
+      payload: {
+        outputLength: workerResult.text.length,
+      },
+    });
     persist({ currentRound: round });
 
     const criticPrompt = buildCriticPrompt({
@@ -333,20 +462,59 @@ async function start(
       currentTask,
       workerOutput: workerResult.text,
     });
-    artifacts.push(
-      writeWorkflowArtifact(ctx.runId, `critic-round-${round}-prompt.md`, `${criticPrompt}\n`),
+    const criticPromptArtifact = writeWorkflowArtifact(
+      ctx.runId,
+      `critic-round-${round}-prompt.md`,
+      `${criticPrompt}\n`,
     );
+    artifacts.push(criticPromptArtifact);
+    emitArtifactWritten({
+      artifactPath: criticPromptArtifact,
+      summary: "critic prompt written",
+      round,
+      role: "critic",
+    });
     persist({ currentRound: round });
 
+    ctx.trace.emit({
+      kind: "role_turn_started",
+      stepId,
+      round,
+      role: "critic",
+      sessionKey: sessions.critic,
+      agentId: input.criticAgentId,
+      summary: "critic turn started",
+    });
     const criticResult = await runWorkflowAgentOnSession({
       sessionKey: sessions.critic ?? "",
       message: criticPrompt,
       idempotencyKey: `${ctx.runId}:critic:${round}`,
     });
     latestCriticVerdict = criticResult.text;
-    artifacts.push(
-      writeWorkflowArtifact(ctx.runId, `critic-round-${round}-output.md`, `${criticResult.text}\n`),
+    const criticOutputArtifact = writeWorkflowArtifact(
+      ctx.runId,
+      `critic-round-${round}-output.md`,
+      `${criticResult.text}\n`,
     );
+    artifacts.push(criticOutputArtifact);
+    emitArtifactWritten({
+      artifactPath: criticOutputArtifact,
+      summary: "critic output written",
+      round,
+      role: "critic",
+    });
+    ctx.trace.emit({
+      kind: "role_turn_completed",
+      stepId,
+      round,
+      role: "critic",
+      sessionKey: sessions.critic,
+      agentId: input.criticAgentId,
+      summary: "critic verdict captured",
+      payload: {
+        outputLength: criticResult.text.length,
+      },
+    });
 
     const verdict = parseCriticVerdict(criticResult.text);
     revisionRequest = verdict.revisionRequest.filter((entry) => entry.toLowerCase() !== "none");
@@ -355,6 +523,38 @@ async function start(
       status = "done";
       terminalReason = verdict.reason[0] || "Critic approved the worker result.";
       persist({ status, terminalReason, currentRound: round });
+      ctx.trace.emit({
+        kind: "run_completed",
+        stepId,
+        round,
+        role: "critic",
+        status: "done",
+        summary: terminalReason,
+        payload: {
+          verdict: verdict.verdict,
+        },
+      });
+      await emitTracedWorkflowReportEvent({
+        trace: ctx.trace,
+        stepId,
+        moduleId: "langgraph_worker_critic",
+        runId: ctx.runId,
+        phase: "workflow_done",
+        eventType: "completed",
+        messageText: buildApprovedCompletionMessage({
+          workerOutput: workerResult.text,
+          verdict,
+          round,
+          maxRounds,
+        }),
+        emittingAgentId: input.criticAgentId,
+        origin: request.origin,
+        reporting: request.reporting,
+        status: "done",
+        role: "critic",
+        round,
+        targetSessionKey: sessions.critic,
+      });
       return buildRecord({
         runId: ctx.runId,
         input,
@@ -368,6 +568,8 @@ async function start(
         latestCriticVerdict,
         originalTask: input.task,
         currentTask,
+        origin: request.origin,
+        reporting: request.reporting,
         createdAt,
         updatedAt: ctx.nowIso(),
       });
@@ -377,6 +579,33 @@ async function start(
       status = "blocked";
       terminalReason = verdict.reason[0] || verdict.gaps[0] || "Critic blocked the run.";
       persist({ status, terminalReason, currentRound: round });
+      ctx.trace.emit({
+        kind: "run_blocked",
+        stepId,
+        round,
+        role: "critic",
+        status: "blocked",
+        summary: terminalReason,
+        payload: {
+          verdict: verdict.verdict,
+        },
+      });
+      await emitTracedWorkflowReportEvent({
+        trace: ctx.trace,
+        stepId,
+        moduleId: "langgraph_worker_critic",
+        runId: ctx.runId,
+        phase: "workflow_blocked",
+        eventType: "blocked",
+        messageText: criticResult.text,
+        emittingAgentId: input.criticAgentId,
+        origin: request.origin,
+        reporting: request.reporting,
+        status: "blocked",
+        role: "critic",
+        round,
+        targetSessionKey: sessions.critic,
+      });
       return buildRecord({
         runId: ctx.runId,
         input,
@@ -390,6 +619,8 @@ async function start(
         latestCriticVerdict,
         originalTask: input.task,
         currentTask,
+        origin: request.origin,
+        reporting: request.reporting,
         createdAt,
         updatedAt: ctx.nowIso(),
       });
@@ -399,6 +630,33 @@ async function start(
       status = "failed";
       terminalReason = "Critic returned REVISE without a usable REVISION_REQUEST payload.";
       persist({ status, terminalReason, currentRound: round });
+      ctx.trace.emit({
+        kind: "run_failed",
+        stepId,
+        round,
+        role: "critic",
+        status: "failed",
+        summary: terminalReason,
+        payload: {
+          verdict: verdict.verdict,
+        },
+      });
+      await emitTracedWorkflowReportEvent({
+        trace: ctx.trace,
+        stepId,
+        moduleId: "langgraph_worker_critic",
+        runId: ctx.runId,
+        phase: "workflow_blocked",
+        eventType: "blocked",
+        messageText: criticResult.text,
+        emittingAgentId: input.criticAgentId,
+        origin: request.origin,
+        reporting: request.reporting,
+        status: "failed",
+        role: "critic",
+        round,
+        targetSessionKey: sessions.critic,
+      });
       return buildRecord({
         runId: ctx.runId,
         input,
@@ -412,6 +670,8 @@ async function start(
         latestCriticVerdict,
         originalTask: input.task,
         currentTask,
+        origin: request.origin,
+        reporting: request.reporting,
         createdAt,
         updatedAt: ctx.nowIso(),
       });
@@ -424,6 +684,14 @@ async function start(
   status = "max_rounds_reached";
   terminalReason = "Critic kept requesting revisions until the round limit was reached.";
   persist({ status, terminalReason, currentRound: maxRounds });
+  ctx.trace.emit({
+    kind: "run_blocked",
+    stepId: stepIdForRound(maxRounds),
+    round: maxRounds,
+    role: "critic",
+    status: "max_rounds_reached",
+    summary: terminalReason,
+  });
   return buildRecord({
     runId: ctx.runId,
     input,
@@ -437,6 +705,8 @@ async function start(
     latestCriticVerdict,
     originalTask: input.task,
     currentTask,
+    origin: request.origin,
+    reporting: request.reporting,
     createdAt,
     updatedAt: ctx.nowIso(),
   });

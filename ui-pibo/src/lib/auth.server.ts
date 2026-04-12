@@ -1,74 +1,57 @@
 import "@tanstack/react-start/server-only";
 import {
-  verifyJwt,
-  createSessionToken,
-  isValidCredential,
-  DEFAULT_SESSION_DURATION,
+  createSessionTokenForConfig,
+  isValidCredentialLogin as isValidCredentialLoginForConfig,
+  resolveAuthConfig,
+  verifySessionToken,
 } from "@pibo/shared-auth";
 import { deleteCookie, getCookie, setCookie } from "@tanstack/react-start/server";
 
-const SESSION_COOKIE = "webapp_session";
-const SESSION_COOKIE_DOMAIN = ".pibo.schottech.de";
-const SESSION_DURATION_SECONDS = DEFAULT_SESSION_DURATION;
-
-type SessionPayload = {
-  sub: string;
-  type: "session";
-  iat: number;
-  exp: number;
-};
-
-function getEnv(name: string, fallback?: string) {
-  const value = process.env[name] ?? fallback;
-  if (!value) {
-    throw new Error(`Missing environment variable: ${name}`);
-  }
-  return value;
-}
-
-function getJwtSecret() {
-  return getEnv("APP_JWT_SECRET", "local-dev-secret-change-me-please");
+function getAuthConfig() {
+  return resolveAuthConfig(process.env);
 }
 
 export function getConfiguredUsername() {
-  return getEnv("APP_USERNAME", "admin");
-}
-
-export function getConfiguredPassword() {
-  return getEnv("APP_PASSWORD", "admin");
+  return getAuthConfig().username;
 }
 
 export function createWebSessionToken(username: string) {
-  return createSessionToken(username, getJwtSecret(), SESSION_DURATION_SECONDS);
+  return createSessionTokenForConfig(username, getAuthConfig());
 }
 
 export function setSessionCookie(username: string) {
-  setCookie(SESSION_COOKIE, createWebSessionToken(username), {
+  const config = getAuthConfig();
+  setCookie(config.sessionCookieName ?? "webapp_session", createWebSessionToken(username), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
-    maxAge: SESSION_DURATION_SECONDS,
+    maxAge: config.sessionDurationSeconds,
     path: "/",
-    domain: SESSION_COOKIE_DOMAIN,
+    ...(config.sessionCookieDomain ? { domain: config.sessionCookieDomain } : {}),
   });
 }
 
 export function clearSessionCookie() {
-  deleteCookie(SESSION_COOKIE, { path: "/", domain: SESSION_COOKIE_DOMAIN });
+  const config = getAuthConfig();
+  deleteCookie(config.sessionCookieName ?? "webapp_session", {
+    path: "/",
+    ...(config.sessionCookieDomain ? { domain: config.sessionCookieDomain } : {}),
+  });
 }
 
 export function getAuthenticatedUsername(): string | null {
-  const token = getCookie(SESSION_COOKIE);
+  const config = getAuthConfig();
+  const token = getCookie(config.sessionCookieName ?? "webapp_session");
   if (!token) {
     return null;
   }
 
-  const payload = verifyJwt(token, getJwtSecret()) as SessionPayload | null;
+  const payload = verifySessionToken(token, config);
   if (!payload) {
     return null;
   }
 
-  if (payload.sub !== getConfiguredUsername()) {
+  if (payload.sub !== config.username) {
     return null;
   }
 
@@ -84,5 +67,5 @@ export function requireAuthenticatedUsername(): string {
 }
 
 export function isValidCredentialLogin(username: string, password: string): boolean {
-  return isValidCredential(username, password, getConfiguredUsername(), getConfiguredPassword());
+  return isValidCredentialLoginForConfig(username, password, getAuthConfig());
 }

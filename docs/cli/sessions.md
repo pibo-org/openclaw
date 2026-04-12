@@ -1,7 +1,7 @@
 ---
-summary: "CLI reference for `openclaw sessions` (list stored sessions + usage)"
+summary: "CLI reference for `openclaw sessions` (list, compact, and maintain sessions)"
 read_when:
-  - You want to list stored sessions and see recent activity
+  - You want to inspect, compact, or maintain stored sessions
 title: "sessions"
 ---
 
@@ -52,6 +52,27 @@ JSON examples:
   ]
 }
 ```
+
+## Manual compaction
+
+Run semantic/manual compaction for a session key:
+
+```bash
+openclaw sessions compact main
+openclaw sessions compact "agent:main:telegram:direct:123"
+openclaw sessions compact main --json
+```
+
+`openclaw sessions compact <key>` calls the existing gateway `sessions.compact`
+path without `maxLines`, so it triggers the embedded semantic compaction flow
+instead of transcript line truncation.
+
+- text mode prints a concise summary such as `Compacted session main.` or
+  `Session main was not compacted: no transcript.`
+- `--json` returns the gateway payload directly, including `compacted`, `reason`,
+  and any result metadata such as `tokensAfter`
+- pass the canonical session key when you want to target a specific non-default
+  session bucket
 
 ## Cleanup maintenance
 

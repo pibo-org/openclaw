@@ -46,7 +46,11 @@ const server = createServer(async (req, res) => {
     });
 
     const fetchHandler =
-      serverEntry.fetch?.bind(serverEntry) ?? serverEntry.default?.fetch?.bind(serverEntry.default);
+      typeof serverEntry.fetch === "function"
+        ? (request) => serverEntry.fetch(request)
+        : typeof serverEntry.default?.fetch === "function"
+          ? (request) => serverEntry.default.fetch(request)
+          : null;
     if (typeof fetchHandler !== "function") {
       throw new TypeError("fetchHandler is not a function");
     }

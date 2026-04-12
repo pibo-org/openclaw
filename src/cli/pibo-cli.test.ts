@@ -27,12 +27,14 @@ describe("pibo cli", () => {
   it("registers representative subcommands", () => {
     const program = createProgram();
     const pibo = program.commands.find((command) => command.name() === "pibo");
+    const workflows = pibo?.commands.find((command) => command.name() === "workflows");
     expect(pibo).toBeTruthy();
     expect(pibo?.commands.some((command) => command.name() === "find")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "todo")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "mcp")).toBe(true);
-    expect(pibo?.commands.some((command) => command.name() === "managed-session")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "workflows")).toBe(true);
+    expect(workflows?.commands.some((command) => command.name() === "start-async")).toBe(true);
+    expect(workflows?.commands.some((command) => command.name() === "wait")).toBe(true);
   });
 
   it("initializes bundled find prompts into the workspace", async () => {

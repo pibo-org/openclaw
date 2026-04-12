@@ -1292,10 +1292,12 @@ Options:
 
 Subcommands:
 
+- `sessions compact <key>` — run semantic/manual compaction for one session
 - `sessions cleanup` — remove expired or orphaned sessions
 
 Notes:
 
+- `sessions compact <key>` calls the gateway `sessions.compact` method without `maxLines`, which triggers semantic compaction rather than transcript truncation.
 - `sessions cleanup` also supports `--fix-missing` to prune entries whose transcript files are gone.
 
 ## Reset / Uninstall

@@ -11,11 +11,28 @@ const STATE_PATH = path.join(
   process.env.HOME || "",
   ".openclaw/workspace/state/twitter/last_check_heartbeat.json",
 );
-const BROWSER_PROFILE_DIR = path.join(
-  process.env.HOME || "",
-  ".openclaw/browser/openclaw/user-data",
-);
-const BROWSER_DEFAULT_DIR = path.join(BROWSER_PROFILE_DIR, "Default");
+function getBrowserProfileDirs(): string[] {
+  const home = process.env.HOME || "";
+  const candidates = [
+    path.join(home, ".openclaw/browser/openclaw/user-data"),
+    path.join(home, ".openclaw/browser-openclaw-profile"),
+  ];
+
+  try {
+    const configPath = path.join(home, ".openclaw/openclaw.json");
+    if (fs.existsSync(configPath)) {
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
+        browser?: { profiles?: Record<string, { userDataDir?: string }> };
+      };
+      const configured = raw.browser?.profiles?.openclaw?.userDataDir;
+      if (typeof configured === "string" && configured.trim()) {
+        candidates.unshift(configured.trim());
+      }
+    }
+  } catch {}
+
+  return [...new Set(candidates)];
+}
 
 // ── Konstanten ─────────────────────────────────────────────────
 
@@ -166,16 +183,18 @@ async function removeBrowserLockFiles(): Promise<number> {
   const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
   let removed = 0;
 
-  for (const dir of [BROWSER_PROFILE_DIR, BROWSER_DEFAULT_DIR]) {
-    for (const lock of lockFiles) {
-      const lockPath = path.join(dir, lock);
-      try {
-        if (fs.existsSync(lockPath)) {
-          fs.unlinkSync(lockPath);
-          removed++;
-          console.log(`   Entfernt: ${lockPath}`);
-        }
-      } catch {}
+  for (const rootDir of getBrowserProfileDirs()) {
+    for (const dir of [rootDir, path.join(rootDir, "Default")]) {
+      for (const lock of lockFiles) {
+        const lockPath = path.join(dir, lock);
+        try {
+          if (fs.existsSync(lockPath)) {
+            fs.unlinkSync(lockPath);
+            removed++;
+            console.log(`   Entfernt: ${lockPath}`);
+          }
+        } catch {}
+      }
     }
   }
 

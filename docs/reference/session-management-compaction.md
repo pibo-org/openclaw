@@ -92,7 +92,12 @@ Run maintenance on demand:
 ```bash
 openclaw sessions cleanup --dry-run
 openclaw sessions cleanup --enforce
+openclaw sessions compact main
 ```
+
+`openclaw sessions compact <key>` triggers the same manual semantic compaction
+path as the gateway `sessions.compact` RPC when `maxLines` is omitted. This is
+separate from brute-force transcript truncation.
 
 ---
 

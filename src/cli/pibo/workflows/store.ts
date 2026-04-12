@@ -27,6 +27,14 @@ export function workflowArtifactPath(runId: string, filename: string) {
   return path.join(workflowArtifactsDir(runId), filename);
 }
 
+export function workflowTraceEventLogPath(runId: string) {
+  return workflowArtifactPath(runId, "trace.jsonl");
+}
+
+export function workflowTraceSummaryPath(runId: string) {
+  return workflowArtifactPath(runId, "trace.summary.json");
+}
+
 export function writeWorkflowArtifact(runId: string, filename: string, content: string) {
   ensureDir(workflowArtifactsDir(runId));
   const fullPath = workflowArtifactPath(runId, filename);

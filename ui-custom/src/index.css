@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans:
+    "IBM Plex Sans",
+    "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "IBM Plex Mono",
+    "SFMono-Regular",
+    monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 8px);
+}
+
+:root {
+  color-scheme: dark;
+  --background: #050911;
+  --foreground: #eef2ff;
+  --card: #0a1220;
+  --card-foreground: #eef2ff;
+  --popover: #0b1323;
+  --popover-foreground: #eef2ff;
+  --primary: #4dd0ff;
+  --primary-foreground: #02131b;
+  --secondary: rgba(255, 255, 255, 0.08);
+  --secondary-foreground: #e5eefb;
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: rgba(230, 238, 251, 0.62);
+  --accent: rgba(77, 208, 255, 0.16);
+  --accent-foreground: #eef2ff;
+  --destructive: #f87171;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: rgba(77, 208, 255, 0.45);
+  --radius: 1.2rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: var(--font-sans);
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  img {
+    display: block;
+  }
+}

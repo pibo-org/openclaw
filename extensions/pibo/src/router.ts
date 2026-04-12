@@ -98,6 +98,24 @@ function parseWorkflowStartArgument(argument: string | undefined): {
   };
 }
 
+function parseWorkflowArtifactArgument(argument: string | undefined): {
+  runId?: string;
+  name?: string;
+} {
+  const trimmed = argument?.trim();
+  if (!trimmed) {
+    return {};
+  }
+  const firstSpace = trimmed.indexOf(" ");
+  if (firstSpace === -1) {
+    return { runId: trimmed };
+  }
+  return {
+    runId: trimmed.slice(0, firstSpace).trim() || undefined,
+    name: trimmed.slice(firstSpace + 1).trim() || undefined,
+  };
+}
+
 const helpAgents = (): string =>
   `Agents — Task-Verwaltung\n\n` +
   `Befehle:\n` +
@@ -119,14 +137,21 @@ const helpWorkflows = (): string =>
   `  list                        Registrierte Workflow-Module anzeigen\n` +
   `  describe <moduleId>         Manifest eines Moduls anzeigen\n` +
   `  start <moduleId> [json]     Workflow-Run starten\n` +
+  `  start-async <moduleId> [json] Workflow-Run asynchron starten\n` +
+  `  wait <runId>                Auf terminalen Status warten\n` +
   `  status <runId>              Status eines Runs anzeigen\n` +
+  `  progress <runId>            Kompakten Laufstatus anzeigen\n` +
+  `  trace-summary <runId>       Trace-Summary anzeigen\n` +
+  `  trace-events <runId>        Gefilterte Trace-Events anzeigen\n` +
+  `  artifacts <runId>           Artefaktliste anzeigen\n` +
+  `  artifact <runId> <name>     Einzelnes Artefakt lesen\n` +
   `  abort <runId>               Run abbrechen, falls unterstützt\n` +
   `  runs                        Letzte Runs anzeigen\n\n` +
   `Beispiele:\n` +
   `  /pibo workflows list\n` +
   `  /pibo workflows describe langgraph_worker_critic\n` +
   `  /pibo workflows start langgraph_worker_critic {"task":"...","successCriteria":["..."]}\n` +
-  `  /pibo workflows status <runId>`;
+  `  /pibo workflows progress <runId>`;
 
 const commandRegistry: Record<string, CommandModule> = {
   agents: {
@@ -209,6 +234,36 @@ const commandRegistry: Record<string, CommandModule> = {
           return handleWorkflowsSubcommand(args);
         },
       },
+      "start-async": {
+        description: "Workflow-Run asynchron starten",
+        usage: "start-async <moduleId> [json] [--max-rounds <n>]",
+        handler: async (_ctx, argument, flags) => {
+          const parsed = parseWorkflowStartArgument(argument);
+          if (!parsed.moduleId) {
+            return "❌ Bitte gib eine moduleId an.\n\nVerwendung: `/pibo workflows start-async <moduleId> [json] [--max-rounds <n>]`";
+          }
+          const args = ["start-async", parsed.moduleId];
+          if (parsed.inputJson) {
+            args.push("--json", parsed.inputJson);
+          }
+          if (flags?.["max-rounds"]) {
+            args.push("--max-rounds", flags["max-rounds"]);
+          }
+          return handleWorkflowsSubcommand(args);
+        },
+      },
+      wait: {
+        description: "Auf terminalen Workflow-Status warten",
+        usage: "wait <runId> [--timeout-ms <n>]",
+        handler: async (_ctx, argument, flags) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand([
+                "wait",
+                argument.trim(),
+                ...(flags?.["timeout-ms"] ? ["--timeout-ms", flags["timeout-ms"]] : []),
+              ])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows wait <runId> [--timeout-ms <n>]`",
+      },
       status: {
         description: "Status eines Workflow-Runs anzeigen",
         usage: "status <runId>",
@@ -216,6 +271,63 @@ const commandRegistry: Record<string, CommandModule> = {
           argument?.trim()
             ? handleWorkflowsSubcommand(["status", argument.trim()])
             : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows status <runId>`",
+      },
+      progress: {
+        description: "Kompakten Workflow-Status anzeigen",
+        usage: "progress <runId>",
+        handler: async (_ctx, argument) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand(["progress", argument.trim()])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows progress <runId>`",
+      },
+      "trace-summary": {
+        description: "Trace-Summary eines Workflow-Runs anzeigen",
+        usage: "trace-summary <runId>",
+        handler: async (_ctx, argument) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand(["trace-summary", argument.trim()])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows trace-summary <runId>`",
+      },
+      "trace-events": {
+        description: "Gefilterte Trace-Events eines Workflow-Runs anzeigen",
+        usage:
+          "trace-events <runId> [--limit <n>] [--since-seq <n>] [--role <name>] [--kind <kind>]",
+        handler: async (_ctx, argument, flags) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand([
+                "trace-events",
+                argument.trim(),
+                ...(flags?.limit ? ["--limit", flags.limit] : []),
+                ...(flags?.["since-seq"] ? ["--since-seq", flags["since-seq"]] : []),
+                ...(flags?.role ? ["--role", flags.role] : []),
+                ...(flags?.kind ? ["--kind", flags.kind] : []),
+              ])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows trace-events <runId> [--limit <n>] [--since-seq <n>] [--role <name>] [--kind <kind>]`",
+      },
+      artifacts: {
+        description: "Artefaktliste eines Workflow-Runs anzeigen",
+        usage: "artifacts <runId>",
+        handler: async (_ctx, argument) =>
+          argument?.trim()
+            ? handleWorkflowsSubcommand(["artifacts", argument.trim()])
+            : "❌ Bitte gib eine runId an.\n\nVerwendung: `/pibo workflows artifacts <runId>`",
+      },
+      artifact: {
+        description: "Ein einzelnes Workflow-Artefakt lesen",
+        usage: "artifact <runId> <name> [--head-lines <n>] [--tail-lines <n>]",
+        handler: async (_ctx, argument, flags) => {
+          const parsed = parseWorkflowArtifactArgument(argument);
+          if (!parsed.runId || !parsed.name) {
+            return "❌ Bitte gib runId und Artefaktnamen an.\n\nVerwendung: `/pibo workflows artifact <runId> <name> [--head-lines <n>] [--tail-lines <n>]`";
+          }
+          return handleWorkflowsSubcommand([
+            "artifact",
+            parsed.runId,
+            parsed.name,
+            ...(flags?.["head-lines"] ? ["--head-lines", flags["head-lines"]] : []),
+            ...(flags?.["tail-lines"] ? ["--tail-lines", flags["tail-lines"]] : []),
+          ]);
+        },
       },
       abort: {
         description: "Workflow-Run abbrechen",

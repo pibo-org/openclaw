@@ -316,12 +316,50 @@ export function registerPiboCli(program: Command) {
       },
     );
   workflows
+    .command("start-async <moduleId>")
+    .description("Workflow-Run asynchron starten")
+    .option("--json <json>", "JSON-Input inline oder als @datei.json")
+    .option("--stdin", "JSON-Input von stdin lesen")
+    .option("--max-rounds <n>", "Maximale Rundenzahl")
+    .option("--output-json", "Initialen Run-Record als JSON ausgeben")
+    .action(
+      async (
+        moduleId: string,
+        opts: {
+          json?: string;
+          stdin?: boolean;
+          maxRounds?: string;
+          outputJson?: boolean;
+        },
+      ) => {
+        const { workflowsStartAsync } = await loadWorkflowModule();
+        await workflowsStartAsync(moduleId, opts);
+      },
+    );
+  workflows
+    .command("wait <runId>")
+    .description("Auf terminalen Workflow-Status warten")
+    .option("--timeout-ms <n>", "Wartezeit in Millisekunden")
+    .option("--json", "JSON-Ausgabe")
+    .action(async (runId: string, opts: { timeoutMs?: string; json?: boolean }) => {
+      const { workflowsWait } = await loadWorkflowModule();
+      await workflowsWait(runId, opts);
+    });
+  workflows
     .command("status <runId>")
     .description("Workflow-Run Status anzeigen")
     .option("--json", "JSON-Ausgabe")
     .action(async (runId: string, opts: { json?: boolean }) => {
       const { workflowsStatus } = await loadWorkflowModule();
       workflowsStatus(runId, { json: opts.json });
+    });
+  workflows
+    .command("progress <runId>")
+    .description("Kompakten Workflow-Status anzeigen")
+    .option("--json", "JSON-Ausgabe")
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const { workflowsProgress } = await loadWorkflowModule();
+      workflowsProgress(runId, { json: opts.json });
     });
   workflows
     .command("abort <runId>")
@@ -340,6 +378,72 @@ export function registerPiboCli(program: Command) {
       const { workflowsRuns } = await loadWorkflowModule();
       workflowsRuns({ limit: opts.limit, json: opts.json });
     });
+  const workflowTrace = workflows.command("trace").description("Workflow-Trace inspizieren");
+  workflowTrace
+    .command("summary <runId>")
+    .description("Trace-Summary fuer einen Run anzeigen")
+    .option("--json", "JSON-Ausgabe")
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const { workflowsTraceSummary } = await loadWorkflowModule();
+      workflowsTraceSummary(runId, { json: opts.json });
+    });
+  workflowTrace
+    .command("events <runId>")
+    .description("Trace-Events fuer einen Run anzeigen")
+    .option("--limit <n>", "Nur die letzten n passenden Events ausgeben")
+    .option("--since-seq <n>", "Nur Events nach dieser Sequenznummer ausgeben")
+    .option("--role <name>", "Nur Events fuer eine Rolle ausgeben")
+    .option("--kind <kind>", "Nur einen Event-Typ ausgeben")
+    .option("--json", "JSON-Ausgabe")
+    .action(
+      async (
+        runId: string,
+        opts: {
+          limit?: string;
+          sinceSeq?: string;
+          role?: string;
+          kind?: string;
+          json?: boolean;
+        },
+      ) => {
+        const { workflowsTraceEvents } = await loadWorkflowModule();
+        workflowsTraceEvents(runId, {
+          json: opts.json,
+          limit: opts.limit,
+          sinceSeq: opts.sinceSeq,
+          role: opts.role,
+          kind: opts.kind,
+        });
+      },
+    );
+  workflows
+    .command("artifacts <runId>")
+    .description("Artefakte eines Workflow-Runs anzeigen")
+    .option("--json", "JSON-Ausgabe")
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const { workflowsArtifacts } = await loadWorkflowModule();
+      workflowsArtifacts(runId, { json: opts.json });
+    });
+  workflows
+    .command("artifact <runId> <name>")
+    .description("Ein einzelnes Workflow-Artefakt lesen")
+    .option("--head-lines <n>", "Nur die ersten n Zeilen ausgeben")
+    .option("--tail-lines <n>", "Nur die letzten n Zeilen ausgeben")
+    .option("--json", "JSON-Ausgabe")
+    .action(
+      async (
+        runId: string,
+        name: string,
+        opts: { headLines?: string; tailLines?: string; json?: boolean },
+      ) => {
+        const { workflowsArtifact } = await loadWorkflowModule();
+        workflowsArtifact(runId, name, {
+          json: opts.json,
+          headLines: opts.headLines,
+          tailLines: opts.tailLines,
+        });
+      },
+    );
 
   const samba = pibo.command("samba").description("Samba-Tools");
   samba

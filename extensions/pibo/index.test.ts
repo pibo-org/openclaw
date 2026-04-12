@@ -16,6 +16,10 @@ type RegisteredTool = {
   name?: string;
 };
 
+type RegisteredHook = {
+  hookName: string;
+};
+
 const originalHome = process.env.HOME;
 
 function withTempHome(): string {
@@ -59,6 +63,7 @@ describe("bundled pibo extension", () => {
     const { default: piboPlugin } = await import("./index.js");
     const commands: RegisteredCommand[] = [];
     const tools: RegisteredTool[] = [];
+    const hooks: RegisteredHook[] = [];
     const api = buildPluginApi({
       id: "pibo",
       name: "PIBo",
@@ -81,24 +86,35 @@ describe("bundled pibo extension", () => {
             typeof tool === "function" ? tool({ config: {}, sessionKey: "test" } as never) : tool;
           tools.push({ name: (resolved as { name?: string }).name });
         },
+        on(hookName) {
+          hooks.push({ hookName });
+        },
       },
     });
 
     piboPlugin.register(api);
 
     expect(commands.map((command) => command.name)).toEqual(
-      expect.arrayContaining(["pibo", "autonomy-high", "tldr"]),
+      expect.arrayContaining(["pibo", "tldr"]),
     );
-    expect(commands.find((command) => command.name === "autonomy-high")?.nativeNames).toEqual({
-      default: "autonomy_high",
-    });
     expect(tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
+        "pibo_delegate_start",
+        "pibo_delegate_continue",
+        "pibo_delegate_status",
         "pibo_workflow_start",
+        "pibo_workflow_start_async",
+        "pibo_workflow_wait",
         "pibo_workflow_status",
+        "pibo_workflow_progress",
         "pibo_workflow_abort",
         "pibo_workflow_describe",
+        "pibo_workflow_trace_summary",
+        "pibo_workflow_trace_events",
+        "pibo_workflow_artifacts",
+        "pibo_workflow_artifact",
       ]),
     );
+    expect(hooks).toEqual(expect.arrayContaining([{ hookName: "before_tool_call" }]));
   });
 });

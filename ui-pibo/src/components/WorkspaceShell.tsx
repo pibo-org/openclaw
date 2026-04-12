@@ -727,6 +727,10 @@ export const WorkspaceShell = memo(function WorkspaceShellComponent({
         void handleRefreshEditorRef.current(pathToRefresh);
       }, 250);
     });
+<<<<<<< HEAD
+=======
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+>>>>>>> 88722a5931 (refactor(repo): clean openclaw working tree)
   }, [fileSync]);
 
   const handleCopyContent = useCallback(async () => {

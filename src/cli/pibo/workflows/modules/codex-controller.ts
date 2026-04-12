@@ -10,9 +10,15 @@ import { loadConfig } from "../../../../config/config.js";
 import { getActivePluginRegistry } from "../../../../plugins/runtime.js";
 import { startPluginServices, type PluginServicesHandle } from "../../../../plugins/services.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
-import { ensureWorkflowSessions } from "../managed-session-adapter.js";
 import { writeWorkflowArtifact } from "../store.js";
-import type { WorkflowModule, WorkflowRunRecord, WorkflowStartRequest } from "../types.js";
+import type {
+  WorkflowModule,
+  WorkflowModuleContext,
+  WorkflowRunRecord,
+  WorkflowStartRequest,
+} from "../types.js";
+import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
+import { buildAcpWorkflowSessionKey, ensureWorkflowSessions } from "../workflow-session-helper.js";
 
 type WorkerCompactionMode = "off" | "acp_control_command";
 
@@ -281,6 +287,11 @@ function buildCodexPrompt(params: {
     "",
     "CONSTRAINTS:",
     toBulletLines(params.input.constraints),
+    "",
+    "FINISH_QUALITY:",
+    "- Before claiming done, remove avoidable transient artifacts created only during verification, such as __pycache__/ and .pytest_cache/, unless the task explicitly wants them kept.",
+    "- Keep README usage aligned with the commands that actually work in this repository.",
+    "- If you run tests or smoke checks, make sure the repository is left in a tidy post-verification state.",
   ].join("\n");
 }
 
@@ -330,6 +341,54 @@ function buildControllerPrompt(params: {
   ].join("\n");
 }
 
+function buildWorkflowStartedMessage(input: Required<CodexControllerInput>): string {
+  return [
+    `Task: ${input.task}`,
+    `Round budget: ${input.maxRetries}`,
+    ...(input.successCriteria.length
+      ? [`Success criteria: ${input.successCriteria.join("; ")}`]
+      : []),
+    ...(input.constraints.length ? [`Constraints: ${input.constraints.join("; ")}`] : []),
+  ].join("\n");
+}
+
+function buildControllerTerminalMessage(params: {
+  decision: ControllerDecision;
+  round: number;
+  maxRounds: number;
+  blocked?: boolean;
+}): string {
+  const lines = [
+    params.blocked ? "Controller reported a blocker." : "Controller approved completion.",
+    `Round: ${params.round}/${params.maxRounds}`,
+    ...(params.decision.reason.length
+      ? ["", "Reason:", ...params.decision.reason.map((line) => `- ${line}`)]
+      : []),
+    ...(params.blocked && params.decision.blocker.length
+      ? ["", "Blocker:", ...params.decision.blocker.map((line) => `- ${line}`)]
+      : []),
+  ];
+  return lines.join("\n");
+}
+
+function buildControllerCompletionMessage(params: {
+  finalResult: string;
+  decision: ControllerDecision;
+  round: number;
+  maxRounds: number;
+}): string {
+  return [
+    "Final result:",
+    params.finalResult,
+    "",
+    "Controller approved completion.",
+    `Round: ${params.round}/${params.maxRounds}`,
+    ...(params.decision.reason.length
+      ? ["", "Reason:", ...params.decision.reason.map((line) => `- ${line}`)]
+      : []),
+  ].join("\n");
+}
+
 function buildRecord(params: {
   runId: string;
   input: Required<CodexControllerInput>;
@@ -344,6 +403,8 @@ function buildRecord(params: {
   createdAt: string;
   updatedAt: string;
   currentTask: string | null;
+  origin?: WorkflowRunRecord["origin"];
+  reporting?: WorkflowRunRecord["reporting"];
 }): WorkflowRunRecord {
   return {
     runId: params.runId,
@@ -359,9 +420,15 @@ function buildRecord(params: {
     latestCriticVerdict: params.latestCriticVerdict,
     originalTask: params.input.task,
     currentTask: params.currentTask,
+    ...(params.origin ? { origin: params.origin } : {}),
+    ...(params.reporting ? { reporting: params.reporting } : {}),
     createdAt: params.createdAt,
     updatedAt: params.updatedAt,
   };
+}
+
+function stepIdForRound(round: number): string {
+  return `round-${round}`;
 }
 
 async function ensureCliAcpRuntimeReady(cfg: ReturnType<typeof loadConfig>): Promise<void> {
@@ -500,7 +567,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       "run-summary.txt: terminal summary with final status, reason, and session keys.",
     ],
   },
-  async start(request, ctx) {
+  async start(request, ctx: WorkflowModuleContext) {
     const input = normalizeInput(request);
     const createdAt = ctx.nowIso();
     const controllerPrompt = loadControllerPrompt(input.controllerPromptPath);
@@ -514,7 +581,12 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         },
       ],
     });
-    const codexSessionKey = `agent:${input.codexAgentId}:acp:pibo:workflow:${ctx.runId}:worker:codex`;
+    const codexSessionKey = buildAcpWorkflowSessionKey({
+      agentId: input.codexAgentId,
+      runId: ctx.runId,
+      role: "worker",
+      name: "codex",
+    });
     sessions.worker = codexSessionKey;
     sessions.extras = {
       ...sessions.extras,
@@ -540,12 +612,64 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       createdAt,
       updatedAt: createdAt,
       currentTask: input.task,
+      origin: request.origin,
+      reporting: request.reporting,
     });
     ctx.persist(record);
+    ctx.trace.emit({
+      kind: "run_started",
+      stepId: "run",
+      status: "running",
+      summary: "Codex/controller workflow started.",
+      payload: {
+        maxRounds: input.maxRetries,
+        workingDirectory: input.workingDirectory,
+        codexAgentId: input.codexAgentId,
+        controllerAgentId: input.controllerAgentId,
+      },
+    });
+    await emitTracedWorkflowReportEvent({
+      trace: ctx.trace,
+      stepId: "run",
+      moduleId: "codex_controller",
+      runId: ctx.runId,
+      phase: "run_started",
+      eventType: "started",
+      messageText: buildWorkflowStartedMessage(input),
+      emittingAgentId: input.controllerAgentId,
+      origin: request.origin,
+      reporting: request.reporting,
+      status: "running",
+      role: "orchestrator",
+      targetSessionKey: sessions.orchestrator,
+    });
 
     let nextInstruction: string[] = [];
+    const emitArtifactWritten = (params: {
+      artifactPath: string;
+      summary: string;
+      round?: number;
+      role?: string;
+    }) => {
+      ctx.trace.emit({
+        kind: "artifact_written",
+        stepId: typeof params.round === "number" ? stepIdForRound(params.round) : "run",
+        ...(typeof params.round === "number" ? { round: params.round } : {}),
+        ...(params.role ? { role: params.role } : {}),
+        artifactPath: params.artifactPath,
+        summary: params.summary,
+      });
+    };
 
     for (let round = 1; round <= input.maxRetries; round += 1) {
+      const stepId = stepIdForRound(round);
+      ctx.trace.emit({
+        kind: "round_started",
+        stepId,
+        round,
+        status: "running",
+        summary: `Round ${round} started.`,
+      });
       if (round > 1) {
         const compacted = await maybeCompactCodexSession({
           input,
@@ -563,6 +687,15 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         maxRounds: input.maxRetries,
         nextInstruction,
       });
+      ctx.trace.emit({
+        kind: "role_turn_started",
+        stepId,
+        round,
+        role: "worker",
+        sessionKey: codexSessionKey,
+        agentId: input.codexAgentId,
+        summary: "codex worker turn started",
+      });
       const codexResult = await runCodexTurn({
         sessionKey: codexSessionKey,
         workingDirectory: input.workingDirectory,
@@ -575,6 +708,24 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         `round-${round}-codex.txt`,
         `${codexResult.text}\n`,
       );
+      emitArtifactWritten({
+        artifactPath: workerArtifact,
+        summary: "codex worker output written",
+        round,
+        role: "worker",
+      });
+      ctx.trace.emit({
+        kind: "role_turn_completed",
+        stepId,
+        round,
+        role: "worker",
+        sessionKey: codexSessionKey,
+        agentId: input.codexAgentId,
+        summary: "codex worker output captured",
+        payload: {
+          outputLength: codexResult.text.length,
+        },
+      });
 
       record = buildRecord({
         runId: record.runId,
@@ -590,6 +741,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         createdAt: record.createdAt,
         updatedAt: ctx.nowIso(),
         currentTask: round === 1 ? input.task : nextInstruction.join(" ").trim() || input.task,
+        origin: request.origin,
+        reporting: request.reporting,
       });
       ctx.persist(record);
 
@@ -599,6 +752,15 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         round,
         maxRounds: input.maxRetries,
         workerOutput: codexResult.text,
+      });
+      ctx.trace.emit({
+        kind: "role_turn_started",
+        stepId,
+        round,
+        role: "controller",
+        sessionKey: sessions.orchestrator,
+        agentId: input.controllerAgentId,
+        summary: "controller turn started",
       });
       const controllerRun = await runWorkflowAgentOnSession({
         sessionKey: sessions.orchestrator!,
@@ -610,6 +772,24 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         `round-${round}-controller.txt`,
         `${controllerRun.text}\n`,
       );
+      emitArtifactWritten({
+        artifactPath: controllerArtifact,
+        summary: "controller output written",
+        round,
+        role: "controller",
+      });
+      ctx.trace.emit({
+        kind: "role_turn_completed",
+        stepId,
+        round,
+        role: "controller",
+        sessionKey: sessions.orchestrator,
+        agentId: input.controllerAgentId,
+        summary: "controller decision captured",
+        payload: {
+          outputLength: controllerRun.text.length,
+        },
+      });
       const decision = parseControllerDecision(controllerRun.text);
 
       record = buildRecord({
@@ -626,6 +806,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         createdAt: record.createdAt,
         updatedAt: ctx.nowIso(),
         currentTask: decision.nextInstruction.join(" ").trim() || input.task,
+        origin: request.origin,
+        reporting: request.reporting,
       });
       ctx.persist(record);
 
@@ -642,6 +824,41 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             `controller-session: ${sessions.orchestrator}`,
           ].join("\n") + "\n",
         );
+        emitArtifactWritten({
+          artifactPath: summaryArtifact,
+          summary: "run summary written",
+          round,
+          role: "controller",
+        });
+        ctx.trace.emit({
+          kind: "run_completed",
+          stepId,
+          round,
+          role: "controller",
+          status: "done",
+          summary: finalReason,
+        });
+        await emitTracedWorkflowReportEvent({
+          trace: ctx.trace,
+          stepId,
+          moduleId: "codex_controller",
+          runId: ctx.runId,
+          phase: "workflow_done",
+          eventType: "completed",
+          messageText: buildControllerCompletionMessage({
+            finalResult: codexResult.text,
+            decision,
+            round,
+            maxRounds: input.maxRetries,
+          }),
+          emittingAgentId: input.controllerAgentId,
+          origin: request.origin,
+          reporting: request.reporting,
+          status: "done",
+          role: "orchestrator",
+          round,
+          targetSessionKey: sessions.orchestrator,
+        });
         return buildRecord({
           runId: record.runId,
           input,
@@ -656,6 +873,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           createdAt: record.createdAt,
           updatedAt: ctx.nowIso(),
           currentTask: decision.nextInstruction.join(" ").trim() || input.task,
+          origin: request.origin,
+          reporting: request.reporting,
         });
       }
 
@@ -674,6 +893,41 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             `controller-session: ${sessions.orchestrator}`,
           ].join("\n") + "\n",
         );
+        emitArtifactWritten({
+          artifactPath: summaryArtifact,
+          summary: "run summary written",
+          round,
+          role: "controller",
+        });
+        ctx.trace.emit({
+          kind: "run_blocked",
+          stepId,
+          round,
+          role: "controller",
+          status: "blocked",
+          summary: blockedReason,
+        });
+        await emitTracedWorkflowReportEvent({
+          trace: ctx.trace,
+          stepId,
+          moduleId: "codex_controller",
+          runId: ctx.runId,
+          phase: "workflow_blocked",
+          eventType: "blocked",
+          messageText: buildControllerTerminalMessage({
+            decision,
+            round,
+            maxRounds: input.maxRetries,
+            blocked: true,
+          }),
+          emittingAgentId: input.controllerAgentId,
+          origin: request.origin,
+          reporting: request.reporting,
+          status: "blocked",
+          role: "orchestrator",
+          round,
+          targetSessionKey: sessions.orchestrator,
+        });
         return buildRecord({
           runId: record.runId,
           input,
@@ -688,6 +942,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           createdAt: record.createdAt,
           updatedAt: ctx.nowIso(),
           currentTask: decision.blocker.join(" ").trim() || input.task,
+          origin: request.origin,
+          reporting: request.reporting,
         });
       }
 
@@ -710,6 +966,39 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         `controller-session: ${sessions.orchestrator}`,
       ].join("\n") + "\n",
     );
+    emitArtifactWritten({
+      artifactPath: summaryArtifact,
+      summary: "run summary written",
+      round: input.maxRetries,
+      role: "controller",
+    });
+    ctx.trace.emit({
+      kind: "run_blocked",
+      stepId: stepIdForRound(input.maxRetries),
+      round: input.maxRetries,
+      role: "controller",
+      status: "max_rounds_reached",
+      summary: "Controller retry budget exhausted.",
+    });
+    await emitTracedWorkflowReportEvent({
+      trace: ctx.trace,
+      stepId: stepIdForRound(input.maxRetries),
+      moduleId: "codex_controller",
+      runId: ctx.runId,
+      phase: "workflow_blocked",
+      eventType: "blocked",
+      messageText: [
+        "Controller retry budget exhausted.",
+        `Round: ${input.maxRetries}/${input.maxRetries}`,
+      ].join("\n"),
+      emittingAgentId: input.controllerAgentId,
+      origin: request.origin,
+      reporting: request.reporting,
+      status: "max_rounds_reached",
+      role: "orchestrator",
+      round: input.maxRetries,
+      targetSessionKey: sessions.orchestrator,
+    });
     return buildRecord({
       runId: record.runId,
       input,
@@ -724,6 +1013,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       createdAt: record.createdAt,
       updatedAt: ctx.nowIso(),
       currentTask: record.currentTask,
+      origin: request.origin,
+      reporting: request.reporting,
     });
   },
 };

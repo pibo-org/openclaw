@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { flowsCancelCommand, flowsListCommand, flowsShowCommand } from "../../commands/flows.js";
 import { healthCommand } from "../../commands/health.js";
 import { sessionsCleanupCommand } from "../../commands/sessions-cleanup.js";
+import { sessionsCompactCommand } from "../../commands/sessions-compact.js";
 import { sessionsCommand } from "../../commands/sessions.js";
 import { statusCommand } from "../../commands/status.js";
 import {
@@ -163,6 +164,36 @@ export function registerStatusHealthSessionsCommands(program: Command) {
       );
     });
   sessionsCmd.enablePositionalOptions();
+
+  sessionsCmd
+    .command("compact")
+    .description("Run semantic session compaction now")
+    .argument("<key>", "Session key")
+    .option("--json", "Output JSON", false)
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.heading("Examples:")}\n${formatHelpExamples([
+          ["openclaw sessions compact main", "Run semantic compaction for session main."],
+          ["openclaw sessions compact main --json", "Machine-readable output."],
+        ])}`,
+    )
+    .action(async (key, opts, command) => {
+      const parentOpts = command.parent?.opts() as
+        | {
+            json?: boolean;
+          }
+        | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await sessionsCompactCommand(
+          {
+            key: String(key),
+            json: Boolean(opts.json || parentOpts?.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
 
   sessionsCmd
     .command("cleanup")

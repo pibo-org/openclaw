@@ -13,14 +13,23 @@ const getActivePluginRegistry = vi.fn(() => ({ services: [] }));
 const startPluginServices = vi.fn(async () => ({ stop: async () => {} }));
 const getAcpRuntimeBackend = vi.fn();
 const requireAcpRuntimeBackend = vi.fn();
+const emitTracedWorkflowReportEvent = vi.fn(async () => ({ attempted: true, delivered: true }));
+const traceEmit = vi.fn();
 
 vi.mock("node:fs", () => ({
   existsSync,
   readFileSync,
 }));
 
-vi.mock("../managed-session-adapter.js", () => ({
+vi.mock("../workflow-session-helper.js", () => ({
   ensureWorkflowSessions,
+  buildAcpWorkflowSessionKey: (params: {
+    agentId: string;
+    runId: string;
+    role: string;
+    name?: string;
+  }) =>
+    `agent:${params.agentId}:acp:workflow:${params.runId}:${params.role}:${params.name ?? "main"}`,
 }));
 
 vi.mock("../agent-runtime.js", () => ({
@@ -59,6 +68,10 @@ vi.mock("../../../../acp/control-plane/manager.js", () => ({
   }),
 }));
 
+vi.mock("../workflow-reporting.js", () => ({
+  emitTracedWorkflowReportEvent,
+}));
+
 describe("codex_controller module", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -66,7 +79,7 @@ describe("codex_controller module", () => {
     existsSync.mockReturnValue(true);
     readFileSync.mockReturnValue("controller prompt template");
     ensureWorkflowSessions.mockResolvedValue({
-      orchestrator: "agent:langgraph:pibo:workflow:run-1:orchestrator:main",
+      orchestrator: "agent:langgraph:workflow:run-1:orchestrator:main",
     });
     const backend = {
       id: "acpx",
@@ -128,14 +141,42 @@ describe("codex_controller module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
+        trace: { emit: traceEmit },
       },
     );
 
     expect(record.status).toBe("done");
     expect(record.terminalReason).toContain("complete and verified");
-    expect(record.sessions.worker).toBe("agent:codex:acp:pibo:workflow:run-1:worker:codex");
+    expect(record.sessions.worker).toBe("agent:codex:acp:workflow:run-1:worker:codex");
+    expect(runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("FINISH_QUALITY:"),
+      }),
+    );
     expect(ensureCliPluginRegistryLoaded).toHaveBeenCalledWith({ scope: "all" });
     expect(startPluginServices).toHaveBeenCalledTimes(1);
+    expect(emitTracedWorkflowReportEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        eventType: "completed",
+        messageText: [
+          "Final result:",
+          "codex worker result",
+          "",
+          "Controller approved completion.",
+          "Round: 1/6",
+          "",
+          "Reason:",
+          "- Requested implementation is complete and verified.",
+        ].join("\n"),
+      }),
+    );
+    expect(traceEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "run_completed",
+        status: "done",
+      }),
+    );
   });
 
   it("maps legacy ASK_USER controller output to blocked without silent format break", async () => {
@@ -165,6 +206,7 @@ describe("codex_controller module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
+        trace: { emit: traceEmit },
       },
     );
 
@@ -218,6 +260,7 @@ describe("codex_controller module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
+        trace: { emit: traceEmit },
       },
     );
 
@@ -229,7 +272,7 @@ describe("codex_controller module", () => {
     expect(compactCalls).toHaveLength(1);
     expect(runTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: "agent:codex:acp:pibo:workflow:run-1:worker:codex",
+        sessionKey: "agent:codex:acp:workflow:run-1:worker:codex",
         mode: "prompt",
       }),
     );
