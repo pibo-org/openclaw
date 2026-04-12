@@ -1,6 +1,8 @@
 packages:
   - .
+  - apps/chat
   - ui
+  - ui-custom
   - ui-pibo
   - packages/*
   - extensions/*

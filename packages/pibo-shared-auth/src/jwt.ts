@@ -1,11 +1,10 @@
-import { Buffer } from "node:buffer";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { SessionPayload } from "./types.js";
 import { DEFAULT_SESSION_DURATION } from "./types.js";
 
 // --- Base64URL Helpers ---
 
-export function base64UrlEncode(input: string | Uint8Array): string {
+export function base64UrlEncode(input: string | Buffer): string {
   return Buffer.from(input)
     .toString("base64")
     .replaceAll("+", "-")
