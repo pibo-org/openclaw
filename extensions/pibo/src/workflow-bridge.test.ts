@@ -1,12 +1,30 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import type {
+  WorkflowTraceEvent,
+  WorkflowTraceEventQuery,
+} from "../../../src/cli/pibo/workflows/tracing/types.js";
+import type {
+  WorkflowArtifactContent,
+  WorkflowProgressSnapshot,
+} from "../../../src/cli/pibo/workflows/types.js";
 
 const runPiboWorkflows = vi.fn(async (_api: unknown, _args: string[]) => "");
 const runtimeStart = vi.fn(async (_moduleId: string, _request: unknown) => ({}));
 const runtimeStartAsync = vi.fn(async (_moduleId: string, _request: unknown) => ({}));
 const runtimeWait = vi.fn(async (_runId: string, _timeoutMs?: number) => ({}));
-const runtimeProgress = vi.fn(async (_runId: string) => ({}));
-const runtimeTraceEvents = vi.fn(async (_runId: string, _query?: unknown) => []);
-const runtimeReadArtifact = vi.fn(async (_runId: string, _name: string, _opts?: unknown) => ({}));
+const runtimeProgress = vi.fn(
+  async (_runId: string): Promise<WorkflowProgressSnapshot> => ({}) as WorkflowProgressSnapshot,
+);
+const runtimeTraceEvents = vi.fn(
+  async (_runId: string, _query?: WorkflowTraceEventQuery): Promise<WorkflowTraceEvent[]> => [],
+);
+const runtimeReadArtifact = vi.fn(
+  async (
+    _runId: string,
+    _name: string,
+    _opts?: { headLines?: number; tailLines?: number },
+  ): Promise<WorkflowArtifactContent> => ({}) as WorkflowArtifactContent,
+);
 
 vi.mock("./workflow-runtime.js", () => ({
   runPiboWorkflows,
@@ -164,7 +182,27 @@ describe("pibo workflow bridge", () => {
   it("exposes pibo_workflow_progress as a compact workflow status tool", async () => {
     runtimeProgress.mockResolvedValueOnce({
       runId: "run-1",
+      moduleId: "test-workflow",
       status: "running",
+      isTerminal: false,
+      currentRound: 1,
+      maxRounds: 3,
+      traceLevel: 1,
+      eventCount: 0,
+      artifactCount: 0,
+      startedAt: "2026-04-10T00:00:00.000Z",
+      updatedAt: "2026-04-10T00:00:00.000Z",
+      terminalReason: null,
+      currentStepId: null,
+      activeRole: "worker",
+      lastCompletedRole: null,
+      lastArtifactPath: null,
+      lastArtifactName: null,
+      lastEventSeq: null,
+      lastEventKind: null,
+      lastEventAt: null,
+      lastEventSummary: null,
+      sessions: {},
       humanSummary: "Run laeuft; aktive Rolle: worker.",
     });
     const { createPiboWorkflowProgressTool } = await import("./workflow-tools.js");
@@ -190,6 +228,10 @@ describe("pibo workflow bridge", () => {
   it("exposes filtered trace events and artifact reads for workflows", async () => {
     runtimeTraceEvents.mockResolvedValueOnce([
       {
+        eventId: "evt-1",
+        runId: "run-1",
+        moduleId: "test-workflow",
+        ts: "2026-04-10T00:00:00.000Z",
         seq: 3,
         kind: "role_turn_started",
         role: "controller",
@@ -197,6 +239,12 @@ describe("pibo workflow bridge", () => {
     ]);
     runtimeReadArtifact.mockResolvedValueOnce({
       name: "round-1-controller.txt",
+      path: "/tmp/run-1/round-1-controller.txt",
+      sizeBytes: 21,
+      updatedAt: "2026-04-10T00:00:00.000Z",
+      mode: "full",
+      totalLines: 1,
+      truncated: false,
       content: "MODULE_DECISION: DONE",
     });
     const { createPiboWorkflowArtifactTool, createPiboWorkflowTraceEventsTool } =

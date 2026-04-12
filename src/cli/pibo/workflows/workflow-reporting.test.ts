@@ -94,12 +94,11 @@ describe("workflow reporting", () => {
         }),
       }),
     );
-    expect(
-      String(
-        (deliverOutboundPayloads.mock.calls[0]?.[0] as { payloads?: Array<{ text?: string }> })
-          .payloads?.[0]?.text ?? "",
-      ),
-    ).toContain("VERDICT: APPROVE");
+    const firstDeliverCall = deliverOutboundPayloads.mock.calls.at(0) as unknown[] | undefined;
+    const firstDeliverRequest = (firstDeliverCall?.at(0) ?? null) as unknown as {
+      payloads?: Array<{ text?: string }>;
+    } | null;
+    expect(String(firstDeliverRequest?.payloads?.[0]?.text ?? "")).toContain("VERDICT: APPROVE");
   });
 
   it("falls back to origin account when emitting agent account is not configured", async () => {

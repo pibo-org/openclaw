@@ -13,7 +13,9 @@ import {
   startWorkflowRunAsync,
   waitForWorkflowRun,
 } from "../../cli/pibo/workflows/index.js";
+import type { WorkflowTraceEventQuery } from "../../cli/pibo/workflows/tracing/types.js";
 import type {
+  WorkflowArtifactContent,
   WorkflowRunRecord,
   WorkflowStartRequest,
   WorkflowWaitResult,
@@ -51,13 +53,17 @@ export function createRuntimePiboWorkflows() {
     async traceSummary(runId: string) {
       return getWorkflowTraceSummary(runId);
     },
-    async traceEvents(runId: string, query) {
+    async traceEvents(runId: string, query?: WorkflowTraceEventQuery) {
       return getWorkflowTraceEvents(runId, query);
     },
     async artifacts(runId: string) {
       return listWorkflowArtifacts(runId);
     },
-    async readArtifact(runId: string, name: string, opts) {
+    async readArtifact(
+      runId: string,
+      name: string,
+      opts?: { headLines?: number; tailLines?: number },
+    ): Promise<WorkflowArtifactContent> {
       return readWorkflowArtifact(runId, name, opts);
     },
   };

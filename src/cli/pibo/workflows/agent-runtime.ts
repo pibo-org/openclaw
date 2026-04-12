@@ -3,24 +3,23 @@ import {
   readLatestAssistantReplySnapshot,
   type AssistantReplySnapshot,
 } from "../../../agents/run-wait.js";
+import type { callGateway, CallGatewayOptions } from "../../../gateway/call.js";
 import { callWorkflowGatewayMethod } from "./workflow-gateway.js";
 
 const WORKFLOW_HISTORY_LIMIT = 100;
 const TRANSCRIPT_SETTLE_WAIT_MS = 1_500;
 const TRANSCRIPT_SETTLE_INTERVAL_MS = 100;
 
-type GatewayCaller = <T = unknown>(params: {
-  method: string;
-  params?: Record<string, unknown>;
-  timeoutMs?: number;
-}) => Promise<T>;
+type GatewayCaller = typeof callGateway;
 
 function createWorkflowGatewayCaller(): GatewayCaller {
-  return async <T = unknown>(request: {
-    method: string;
-    params?: Record<string, unknown>;
-    timeoutMs?: number;
-  }) => await callWorkflowGatewayMethod<T>(request.method, request.params ?? {});
+  return async <T = unknown>(request: CallGatewayOptions) =>
+    await callWorkflowGatewayMethod<T>(
+      request.method,
+      request.params && typeof request.params === "object" && !Array.isArray(request.params)
+        ? (request.params as Record<string, unknown>)
+        : {},
+    );
 }
 
 async function readUpdatedAssistantReplyWithRetry(params: {
@@ -73,7 +72,7 @@ export async function runWorkflowAgentOnSession(params: {
     deliver: false,
     suppressRuntimeOutput: true,
     runId,
-    timeout: Math.max(1, Math.ceil((params.timeoutMs ?? 120_000) / 1_000)),
+    timeout: String(Math.max(1, Math.ceil((params.timeoutMs ?? 120_000) / 1_000))),
   });
 
   const settledReply =

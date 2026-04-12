@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkflowTraceRuntime } from "../tracing/runtime.js";
+import type { WorkflowTraceSummary } from "../tracing/types.js";
+import type { WorkflowRunRecord } from "../types.js";
 
 const ensureWorkflowSessions = vi.fn();
 const runWorkflowAgentOnSession = vi.fn();
@@ -15,6 +18,35 @@ const getAcpRuntimeBackend = vi.fn();
 const requireAcpRuntimeBackend = vi.fn();
 const emitTracedWorkflowReportEvent = vi.fn(async () => ({ attempted: true, delivered: true }));
 const traceEmit = vi.fn();
+
+function createTraceMock(runId: string): WorkflowTraceRuntime {
+  return {
+    runId,
+    moduleId: "codex_controller",
+    level: 1,
+    emit: traceEmit,
+    attachToRunRecord: (record: WorkflowRunRecord) => record,
+    getRef: () => ({
+      version: "v1",
+      level: 1,
+      eventLogPath: `/tmp/${runId}.trace.jsonl`,
+      summaryPath: `/tmp/${runId}.trace.summary.json`,
+      eventCount: 0,
+      updatedAt: "2026-04-10T00:00:00.000Z",
+    }),
+    getSummary: () =>
+      ({
+        runId,
+        moduleId: "codex_controller",
+        traceLevel: 1,
+        eventCount: 0,
+        stepCount: 0,
+        roundCount: 0,
+        rolesSeen: [],
+        artifactCount: 0,
+      }) satisfies WorkflowTraceSummary,
+  };
+}
 
 vi.mock("node:fs", () => ({
   existsSync,
@@ -141,7 +173,7 @@ describe("codex_controller module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
-        trace: { emit: traceEmit },
+        trace: createTraceMock("run-1"),
       },
     );
 
@@ -206,7 +238,7 @@ describe("codex_controller module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
-        trace: { emit: traceEmit },
+        trace: createTraceMock("run-1"),
       },
     );
 
@@ -260,7 +292,7 @@ describe("codex_controller module", () => {
         runId: "run-1",
         nowIso: () => "2026-04-10T00:00:00.000Z",
         persist: () => {},
-        trace: { emit: traceEmit },
+        trace: createTraceMock("run-1"),
       },
     );
 
