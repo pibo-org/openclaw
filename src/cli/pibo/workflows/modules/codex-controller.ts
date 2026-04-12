@@ -43,10 +43,37 @@ type ControllerDecision = {
   raw: string;
 };
 
+type WorkerRoundSummary = {
+  round: number;
+  excerpt: string;
+  claims: string[];
+  evidence: string[];
+  blockers: string[];
+  questions: string[];
+  statusHint: string;
+  narrativeOnly: boolean;
+};
+
+type ControllerRoundSummary = {
+  round: number;
+  decision: ControllerDecision["decision"];
+  reason: string[];
+  nextInstruction: string[];
+  blocker: string[];
+};
+
+type DriftAssessment = {
+  repetitiveNarrative: boolean;
+  repeatedClaim: boolean;
+  evidenceThin: boolean;
+  signals: string[];
+  recommendation: "normal_continue" | "corrective_continue_required" | "escalate_or_correct";
+};
+
 const DEFAULT_MAX_ROUNDS = 6;
 const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
-const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "acp_control_command";
+const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "off";
 const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
 let cliPluginServicesHandlePromise: Promise<PluginServicesHandle> | null = null;
 type ProbeableAcpRuntime = {
@@ -71,7 +98,10 @@ function normalizePositiveInteger(value: unknown): number | undefined {
 }
 
 function normalizeCompactionMode(value: unknown): WorkerCompactionMode {
-  return value === "off" ? "off" : DEFAULT_WORKER_COMPACTION_MODE;
+  if (value === "acp_control_command") {
+    return "acp_control_command";
+  }
+  return DEFAULT_WORKER_COMPACTION_MODE;
 }
 
 function normalizeInput(request: WorkflowStartRequest): Required<CodexControllerInput> {
@@ -105,7 +135,7 @@ function normalizeInput(request: WorkflowStartRequest): Required<CodexController
     controllerAgentId:
       typeof record.controllerAgentId === "string" && record.controllerAgentId.trim()
         ? record.controllerAgentId.trim()
-        : "langgraph",
+        : "codex-controller",
     controllerPromptPath:
       typeof record.controllerPromptPath === "string" && record.controllerPromptPath.trim()
         ? record.controllerPromptPath.trim()
@@ -167,6 +197,277 @@ function splitMessageIntoInstructions(messageLines: string[]): string[] {
     .filter(Boolean)
     .map((line) => line.replace(/^[-*+]\s*/, "").trim())
     .filter(Boolean);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function uniqueLimited(values: string[], limit: number): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, limit);
+}
+
+function summarizeLineCandidates(text: string): string[] {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*+]\s*/, "").trim());
+}
+
+function extractEvidence(text: string): string[] {
+  const candidates = summarizeLineCandidates(text);
+  const evidence = candidates.filter((line) =>
+    /(\[tool\]|\b(test|tests|tested|verify|verified|verification|reproduce|reproduced|ran|run|running|diff|grep|rg|git|pnpm|npm|yarn|vitest|jest|pytest|cargo|go test|changed|updated|edited|patched|created|deleted|removed|file|files)\b|`[^`]+`|\b\w+[./-]\w+)/i.test(
+      line,
+    ),
+  );
+  return uniqueLimited(
+    evidence.map((line) => truncateText(line, 140)),
+    4,
+  );
+}
+
+function extractClaims(text: string): string[] {
+  const candidates = summarizeLineCandidates(text);
+  const claims = candidates.filter((line) =>
+    /\b(done|complete|completed|fixed|implemented|finished|resolved|working on|progress|verified|ready)\b/i.test(
+      line,
+    ),
+  );
+  return uniqueLimited(
+    claims.map((line) => truncateText(line, 140)),
+    4,
+  );
+}
+
+function extractBlockers(text: string): string[] {
+  const candidates = summarizeLineCandidates(text);
+  const blockers = candidates.filter((line) =>
+    /\b(blocked|blocker|cannot|can't|unable|missing|failed|error|permission|approval|credential|login|outage)\b/i.test(
+      line,
+    ),
+  );
+  return uniqueLimited(
+    blockers.map((line) => truncateText(line, 140)),
+    3,
+  );
+}
+
+function extractQuestions(text: string): string[] {
+  return uniqueLimited(
+    summarizeLineCandidates(text)
+      .filter((line) => line.includes("?"))
+      .map((line) => truncateText(line, 140)),
+    2,
+  );
+}
+
+function summarizeWorkerRound(round: number, workerOutput: string): WorkerRoundSummary {
+  const claims = extractClaims(workerOutput);
+  const evidence = extractEvidence(workerOutput);
+  const blockers = extractBlockers(workerOutput);
+  const questions = extractQuestions(workerOutput);
+  const lowered = workerOutput.toLowerCase();
+  const doneClaim = /\b(done|complete|completed|ready|verified)\b/.test(lowered);
+  const statusHint = blockers.length
+    ? "blocked"
+    : questions.length
+      ? "needs_reply"
+      : doneClaim
+        ? "claims_done"
+        : evidence.length
+          ? "working_with_evidence"
+          : claims.length
+            ? "working_narrative"
+            : "unclear";
+  return {
+    round,
+    excerpt: truncateText(workerOutput, 240),
+    claims,
+    evidence,
+    blockers,
+    questions,
+    statusHint,
+    narrativeOnly: claims.length > 0 && evidence.length === 0,
+  };
+}
+
+function summarizeControllerRound(
+  round: number,
+  decision: ControllerDecision,
+): ControllerRoundSummary {
+  return {
+    round,
+    decision: decision.decision,
+    reason: uniqueLimited(
+      decision.reason.map((line) => truncateText(line, 140)),
+      3,
+    ),
+    nextInstruction: uniqueLimited(
+      decision.nextInstruction.map((line) => truncateText(line, 140)),
+      3,
+    ),
+    blocker: uniqueLimited(
+      decision.blocker.map((line) => truncateText(line, 140)),
+      2,
+    ),
+  };
+}
+
+function normalizeForComparison(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`'".,:;!?()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function claimsLookRepeated(currentClaims: string[], priorClaims: string[]): boolean {
+  if (currentClaims.length === 0 || priorClaims.length === 0) {
+    return false;
+  }
+  const prior = new Set(priorClaims.map(normalizeForComparison));
+  return currentClaims.some((claim) => prior.has(normalizeForComparison(claim)));
+}
+
+function assessDrift(params: {
+  current: WorkerRoundSummary;
+  priorWorkers: WorkerRoundSummary[];
+  priorControllers: ControllerRoundSummary[];
+}): DriftAssessment {
+  const previousWorker = params.priorWorkers.at(-1);
+  const previousController = params.priorControllers.at(-1);
+  const repeatedClaim = previousWorker
+    ? claimsLookRepeated(params.current.claims, previousWorker.claims)
+    : false;
+  const repetitiveNarrative =
+    params.current.narrativeOnly && Boolean(previousWorker?.narrativeOnly || repeatedClaim);
+  const evidenceThin = params.current.evidence.length === 0;
+  const signals: string[] = [];
+  if (repeatedClaim) {
+    signals.push("worker repeated prior progress/completion claims");
+  }
+  if (repetitiveNarrative) {
+    signals.push("worker stayed narrative without fresh concrete evidence");
+  }
+  if (evidenceThin) {
+    signals.push("visible output lacks concrete implementation or verification evidence");
+  }
+  if (params.current.questions.length && previousController?.decision === "CONTINUE") {
+    signals.push("worker is asking again after a prior continue");
+  }
+  const recommendation =
+    repetitiveNarrative || (repeatedClaim && evidenceThin)
+      ? "escalate_or_correct"
+      : evidenceThin || params.current.questions.length
+        ? "corrective_continue_required"
+        : "normal_continue";
+  return {
+    repetitiveNarrative,
+    repeatedClaim,
+    evidenceThin,
+    signals: uniqueLimited(signals, 4),
+    recommendation,
+  };
+}
+
+function formatWorkerHistory(history: WorkerRoundSummary[]): string {
+  if (history.length === 0) {
+    return "- none";
+  }
+  return history
+    .map((entry) =>
+      [
+        `- round ${entry.round}: status=${entry.statusHint}`,
+        ...(entry.claims.length ? [`  claims: ${entry.claims.join(" | ")}`] : []),
+        ...(entry.evidence.length ? [`  evidence: ${entry.evidence.join(" | ")}`] : []),
+        ...(!entry.evidence.length ? ["  evidence: none visible"] : []),
+        ...(entry.blockers.length ? [`  blockers: ${entry.blockers.join(" | ")}`] : []),
+      ].join("\n"),
+    )
+    .join("\n");
+}
+
+function formatControllerHistory(history: ControllerRoundSummary[]): string {
+  if (history.length === 0) {
+    return "- none";
+  }
+  return history
+    .map((entry) =>
+      [
+        `- round ${entry.round}: decision=${entry.decision}`,
+        ...(entry.reason.length ? [`  reason: ${entry.reason.join(" | ")}`] : []),
+        ...(entry.nextInstruction.length
+          ? [`  next_instruction: ${entry.nextInstruction.join(" | ")}`]
+          : []),
+        ...(entry.blocker.length ? [`  blocker: ${entry.blocker.join(" | ")}`] : []),
+      ].join("\n"),
+    )
+    .join("\n");
+}
+
+function buildProgressEvidence(worker: WorkerRoundSummary): string {
+  if (worker.evidence.length === 0) {
+    return "- none visible in worker output";
+  }
+  return worker.evidence.map((line) => `- ${line}`).join("\n");
+}
+
+function buildStatusHints(worker: WorkerRoundSummary, drift: DriftAssessment): string {
+  const hints = [`worker_status=${worker.statusHint}`];
+  if (worker.narrativeOnly) {
+    hints.push("narrative_only_claims=true");
+  }
+  if (drift.repeatedClaim) {
+    hints.push("repeated_claim=true");
+  }
+  if (drift.evidenceThin) {
+    hints.push("evidence_thin=true");
+  }
+  return hints.map((line) => `- ${line}`).join("\n");
+}
+
+function buildDriftSignals(drift: DriftAssessment): string {
+  if (drift.signals.length === 0) {
+    return "- none";
+  }
+  return drift.signals.map((line) => `- ${line}`).join("\n");
+}
+
+function nextInstructionIsCorrective(nextInstruction: string[]): boolean {
+  const joined = nextInstruction.join(" ").toLowerCase();
+  return /(verify|test|inspect|check|diff|implement|edit|change|update|reproduce|confirm|prove|show|run|compare|report|summari)/.test(
+    joined,
+  );
+}
+
+function enforceContinueGuardrails(params: {
+  round: number;
+  decision: ControllerDecision;
+  drift: DriftAssessment;
+}): void {
+  if (params.decision.decision !== "CONTINUE") {
+    return;
+  }
+  if (params.decision.nextInstruction.length === 0) {
+    throw new Error(
+      `Controller returned CONTINUE without actionable NEXT_INSTRUCTION in round ${params.round}.`,
+    );
+  }
+  if (
+    params.drift.recommendation !== "normal_continue" &&
+    !nextInstructionIsCorrective(params.decision.nextInstruction)
+  ) {
+    throw new Error(
+      `Controller returned CONTINUE without corrective guidance despite drift/evidence warnings in round ${params.round}.`,
+    );
+  }
 }
 
 function looksLikeDoneSignal(text: string): boolean {
@@ -301,6 +602,10 @@ function buildControllerPrompt(params: {
   round: number;
   maxRounds: number;
   workerOutput: string;
+  recentWorkerHistory: WorkerRoundSummary[];
+  controllerHistory: ControllerRoundSummary[];
+  currentWorkerSummary: WorkerRoundSummary;
+  drift: DriftAssessment;
 }): string {
   return [
     params.controllerPrompt,
@@ -323,9 +628,26 @@ function buildControllerPrompt(params: {
     "- CONTINUE or GUIDE from the base prompt map to MODULE_DECISION: CONTINUE.",
     "- ASK_USER or STOP_BLOCKED from the base prompt map to MODULE_DECISION: ESCALATE_BLOCKED.",
     "- Use MODULE_DECISION: DONE only when the worker output is already sufficiently complete against the original task and success criteria.",
-    "- If MODULE_DECISION is CONTINUE, NEXT_INSTRUCTION must be concrete and actionable.",
+    "- If MODULE_DECISION is CONTINUE, NEXT_INSTRUCTION must be concrete, actionable, and evidence-seeking when drift signals exist.",
+    "- If worker progress claims repeat without fresh concrete evidence, do not issue a bare continue. Provide corrective guidance that forces concrete implementation or verification evidence, or escalate if no viable next move remains.",
+    "- Judge only from visible worker output, compact visible-history summaries, your own prior controller history, and runtime hints. Do not assume access to hidden reasoning.",
     "- If MODULE_DECISION is DONE or ESCALATE_BLOCKED, NEXT_INSTRUCTION may be empty.",
     "- Do not silently omit the normalized block.",
+    "",
+    "RECENT_VISIBLE_WORKER_HISTORY:",
+    formatWorkerHistory(params.recentWorkerHistory),
+    "",
+    "CONTROLLER_HISTORY:",
+    formatControllerHistory(params.controllerHistory),
+    "",
+    "CURRENT_WORKER_STATUS_HINTS:",
+    buildStatusHints(params.currentWorkerSummary, params.drift),
+    "",
+    "CURRENT_PROGRESS_EVIDENCE:",
+    buildProgressEvidence(params.currentWorkerSummary),
+    "",
+    "CURRENT_DRIFT_SIGNALS:",
+    buildDriftSignals(params.drift),
     "",
     "ORIGINAL_TASK:",
     params.input.task,
@@ -470,7 +792,11 @@ async function runCodexTurn(params: {
   agentId: string;
   text: string;
   requestId: string;
-}): Promise<{ text: string; outputEvents: string[]; rawEvents: AcpRuntimeEvent[] }> {
+}): Promise<{
+  text: string;
+  outputEvents: string[];
+  rawEvents: AcpRuntimeEvent[];
+}> {
   const cfg = loadConfig();
   await ensureCliAcpRuntimeReady(cfg);
   const manager = getAcpSessionManager();
@@ -548,7 +874,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       "Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
     kind: "agent_workflow",
     version: "0.2.0",
-    requiredAgents: ["codex", "langgraph"],
+    requiredAgents: ["codex", "codex-controller"],
     terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
     supportsAbort: false,
     inputSchemaSummary: [
@@ -558,8 +884,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       "successCriteria (string[], optional): additional completion criteria.",
       "constraints (string[], optional): extra constraints to keep in every turn.",
       `controllerPromptPath (string, optional): defaults to ${DEFAULT_CONTROLLER_PROMPT_PATH}.`,
-      'workerCompactionMode ("off"|"acp_control_command", optional): semantic ACP-thread compaction strategy; defaults to acp_control_command.',
-      `workerCompactionAfterRound (number, optional): first round that may trigger ACP-thread compaction; defaults to ${DEFAULT_WORKER_COMPACTION_AFTER_ROUND}.`,
+      'workerCompactionMode ("off"|"acp_control_command", optional): semantic ACP-thread compaction strategy; defaults to off. Use acp_control_command only as an explicit debugging or specialized exception path.',
+      `workerCompactionAfterRound (number, optional): first round that may trigger manual ACP-thread compaction when workerCompactionMode is set to acp_control_command; defaults to ${DEFAULT_WORKER_COMPACTION_AFTER_ROUND}.`,
     ],
     artifactContract: [
       "round-<n>-codex.txt: raw Codex worker output per round.",
@@ -645,6 +971,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     });
 
     let nextInstruction: string[] = [];
+    const workerHistory: WorkerRoundSummary[] = [];
+    const controllerHistory: ControllerRoundSummary[] = [];
     const emitArtifactWritten = (params: {
       artifactPath: string;
       summary: string;
@@ -677,7 +1005,10 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           round,
         });
         if (compacted) {
-          sessions.extras = { ...sessions.extras, lastCompactedBeforeRound: String(round) };
+          sessions.extras = {
+            ...sessions.extras,
+            lastCompactedBeforeRound: String(round),
+          };
         }
       }
 
@@ -746,12 +1077,24 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       });
       ctx.persist(record);
 
+      const currentWorkerSummary = summarizeWorkerRound(round, codexResult.text);
+      const recentWorkerHistory = [...workerHistory.slice(-2), currentWorkerSummary];
+      const recentControllerHistory = controllerHistory.slice(-3);
+      const drift = assessDrift({
+        current: currentWorkerSummary,
+        priorWorkers: workerHistory,
+        priorControllers: controllerHistory,
+      });
       const controllerMessage = buildControllerPrompt({
         controllerPrompt,
         input,
         round,
         maxRounds: input.maxRetries,
         workerOutput: codexResult.text,
+        recentWorkerHistory,
+        controllerHistory: recentControllerHistory,
+        currentWorkerSummary,
+        drift,
       });
       ctx.trace.emit({
         kind: "role_turn_started",
@@ -791,6 +1134,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         },
       });
       const decision = parseControllerDecision(controllerRun.text);
+      enforceContinueGuardrails({ round, decision, drift });
+      workerHistory.push(currentWorkerSummary);
+      controllerHistory.push(summarizeControllerRound(round, decision));
 
       record = buildRecord({
         runId: record.runId,
@@ -948,11 +1294,6 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       }
 
       nextInstruction = decision.nextInstruction;
-      if (nextInstruction.length === 0) {
-        throw new Error(
-          `Controller returned CONTINUE without actionable NEXT_INSTRUCTION in round ${round}.`,
-        );
-      }
     }
 
     const summaryArtifact = writeWorkflowArtifact(
@@ -1023,4 +1364,7 @@ export const __testing = {
   resetCliPluginServicesHandleForTests() {
     cliPluginServicesHandlePromise = null;
   },
+  summarizeWorkerRound,
+  assessDrift,
+  enforceContinueGuardrails,
 };

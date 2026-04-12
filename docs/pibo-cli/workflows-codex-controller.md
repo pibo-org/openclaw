@@ -40,7 +40,7 @@ The controller itself runs on a normal native OpenClaw workflow session key, but
 
 - persistent ACP thread reuse
 - explicit ACP `cwd`
-- ACP control-command steering such as `/compact`
+- optional ACP control-command steering such as `/compact` when explicitly requested for debugging or specialized cases
 
 This is deliberate, not accidental.
 
@@ -75,15 +75,18 @@ This avoids silent breakage when the underlying prompt template is still on the 
 
 ## Compaction behavior
 
-`workerCompactionMode` defaults to `acp_control_command`.
+`workerCompactionMode` defaults to `off`.
 
-That means the module may send `/compact ...` into the persistent Codex ACP thread after `workerCompactionAfterRound`.
+That means the normal workflow path does **not** send `/compact ...` into the persistent Codex ACP thread.
+
+Codex should normally manage its own context and compaction behavior inside the worker session. Workflow-driven manual ACP compaction remains available only as an explicit exception path for debugging or specialized cases.
+
+If manual ACP compaction is explicitly wanted, set:
+
+- `workerCompactionMode: "acp_control_command"`
+- optionally `workerCompactionAfterRound` to delay the first manual `/compact`
 
 This is intentionally **not** wired to the generic OpenClaw session-compaction path such as `openclaw sessions compact`, because normal session compaction is not the same thing as semantic Codex ACP thread compaction.
-
-If manual ACP compaction is not wanted, set:
-
-- `workerCompactionMode: "off"`
 
 ## Verification checklist
 

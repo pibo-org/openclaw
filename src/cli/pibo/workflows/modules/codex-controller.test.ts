@@ -16,7 +16,10 @@ const getActivePluginRegistry = vi.fn(() => ({ services: [] }));
 const startPluginServices = vi.fn(async () => ({ stop: async () => {} }));
 const getAcpRuntimeBackend = vi.fn();
 const requireAcpRuntimeBackend = vi.fn();
-const emitTracedWorkflowReportEvent = vi.fn(async () => ({ attempted: true, delivered: true }));
+const emitTracedWorkflowReportEvent = vi.fn(async () => ({
+  attempted: true,
+  delivered: true,
+}));
 const traceEmit = vi.fn();
 
 function createTraceMock(runId: string): WorkflowTraceRuntime {
@@ -129,7 +132,11 @@ describe("codex_controller module", () => {
         if (typeof params.text === "string" && params.text.startsWith("/compact")) {
           return;
         }
-        params.onEvent?.({ type: "text_delta", stream: "output", text: "codex worker result" });
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "codex worker result",
+        });
       },
     );
   });
@@ -143,6 +150,7 @@ describe("codex_controller module", () => {
     const manifest = describeWorkflowModule("codex_controller");
     expect(manifest.moduleId).toBe("codex_controller");
     expect(manifest.description).toContain("Codex");
+    expect(manifest.requiredAgents).toEqual(["codex", "langgraph"]);
   });
 
   it("maps normalized controller DONE output to a done terminal state", async () => {
@@ -180,12 +188,15 @@ describe("codex_controller module", () => {
     expect(record.status).toBe("done");
     expect(record.terminalReason).toContain("complete and verified");
     expect(record.sessions.worker).toBe("agent:codex:acp:workflow:run-1:worker:codex");
+    expect(record.sessions.orchestrator).toBe("agent:langgraph:workflow:run-1:orchestrator:main");
     expect(runTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("FINISH_QUALITY:"),
       }),
     );
-    expect(ensureCliPluginRegistryLoaded).toHaveBeenCalledWith({ scope: "all" });
+    expect(ensureCliPluginRegistryLoaded).toHaveBeenCalledWith({
+      scope: "all",
+    });
     expect(startPluginServices).toHaveBeenCalledTimes(1);
     expect(emitTracedWorkflowReportEvent).toHaveBeenNthCalledWith(
       2,
@@ -247,7 +258,7 @@ describe("codex_controller module", () => {
     expect(record.terminalReason).toContain("architecture A and B");
   });
 
-  it("continues on legacy GUIDE output and triggers ACP compaction only after the configured round", async () => {
+  it("keeps manual ACP compaction off by default", async () => {
     runWorkflowAgentOnSession
       .mockResolvedValueOnce({
         runId: "controller-run-1",
@@ -301,6 +312,65 @@ describe("codex_controller module", () => {
       ([params]: Array<{ text?: string }>) =>
         typeof params.text === "string" && params.text.startsWith("/compact"),
     );
+    expect(compactCalls).toHaveLength(0);
+    expect(startPluginServices).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues on legacy GUIDE output and triggers ACP compaction only after the configured round when explicitly enabled", async () => {
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce({
+        runId: "controller-run-1",
+        text: [
+          "DECISION: GUIDE",
+          "RATIONALE:",
+          "- Continue with tighter verification.",
+          "CONTROLLER_MESSAGE:",
+          "- Proceed with the implementation, then verify end-to-end.",
+          "CONFIDENCE: high",
+        ].join("\n"),
+        wait: { status: "ok" },
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        runId: "controller-run-2",
+        text: [
+          "MODULE_DECISION: DONE",
+          "MODULE_REASON:",
+          "- Task is complete.",
+          "NEXT_INSTRUCTION:",
+          "- none",
+          "BLOCKER:",
+          "- none",
+        ].join("\n"),
+        wait: { status: "ok" },
+        messages: [],
+      });
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          workerCompactionMode: "acp_control_command",
+          workerCompactionAfterRound: 2,
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    expect(record.status).toBe("done");
+    const compactCalls = runTurn.mock.calls.filter(
+      ([params]: Array<{ text?: string }>) =>
+        typeof params.text === "string" && params.text.startsWith("/compact"),
+    );
     expect(compactCalls).toHaveLength(1);
     expect(runTurn).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -309,5 +379,167 @@ describe("codex_controller module", () => {
       }),
     );
     expect(startPluginServices).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes compact visible history, controller history, and drift signals into round-2 controller input", async () => {
+    runTurn.mockImplementationOnce(
+      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "Implemented parser changes in src/foo.ts and ran pnpm vitest.",
+        });
+      },
+    );
+    runTurn.mockImplementationOnce(
+      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "Progress update: implementation is complete. Progress update: implementation is complete.",
+        });
+      },
+    );
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce({
+        runId: "controller-run-1",
+        text: [
+          "MODULE_DECISION: CONTINUE",
+          "MODULE_REASON:",
+          "- First round made concrete repo changes.",
+          "NEXT_INSTRUCTION:",
+          "- Continue, verify the changed files, and summarize the diff.",
+          "BLOCKER:",
+          "- none",
+        ].join("\n"),
+        wait: { status: "ok" },
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        runId: "controller-run-2",
+        text: [
+          "MODULE_DECISION: DONE",
+          "MODULE_REASON:",
+          "- Enough context for prompt-shape verification.",
+          "NEXT_INSTRUCTION:",
+          "- none",
+          "BLOCKER:",
+          "- none",
+        ].join("\n"),
+        wait: { status: "ok" },
+        messages: [],
+      });
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          maxRetries: 2,
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(2);
+    expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        message: expect.stringContaining("RECENT_VISIBLE_WORKER_HISTORY:"),
+      }),
+    );
+    const secondPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    expect(secondPrompt).toContain("round 1: status=working_with_evidence");
+    expect(secondPrompt).toContain("round 2: status=claims_done");
+    expect(secondPrompt).toContain("CONTROLLER_HISTORY:");
+    expect(secondPrompt).toContain("decision=CONTINUE");
+    expect(secondPrompt).toContain("CURRENT_PROGRESS_EVIDENCE:");
+    expect(secondPrompt).toContain("- none visible in worker output");
+    expect(secondPrompt).toContain("CURRENT_DRIFT_SIGNALS:");
+    expect(secondPrompt).toContain(
+      "visible output lacks concrete implementation or verification evidence",
+    );
+    expect(secondPrompt).not.toContain("stream: thought");
+  });
+
+  it("rejects blind CONTINUE when drift warnings exist but next instruction is not corrective", async () => {
+    runTurn.mockImplementationOnce(
+      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "Progress update: implementation is complete.",
+        });
+      },
+    );
+    runTurn.mockImplementationOnce(
+      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "Progress update: implementation is complete.",
+        });
+      },
+    );
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce({
+        runId: "controller-run-1",
+        text: [
+          "MODULE_DECISION: CONTINUE",
+          "MODULE_REASON:",
+          "- Keep going.",
+          "NEXT_INSTRUCTION:",
+          "- Continue.",
+          "BLOCKER:",
+          "- none",
+        ].join("\n"),
+        wait: { status: "ok" },
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        runId: "controller-run-2",
+        text: [
+          "MODULE_DECISION: CONTINUE",
+          "MODULE_REASON:",
+          "- Keep going.",
+          "NEXT_INSTRUCTION:",
+          "- Continue.",
+          "BLOCKER:",
+          "- none",
+        ].join("\n"),
+        wait: { status: "ok" },
+        messages: [],
+      });
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    await expect(
+      codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+            maxRetries: 2,
+          },
+        },
+        {
+          runId: "run-1",
+          nowIso: () => "2026-04-10T00:00:00.000Z",
+          persist: () => {},
+          trace: createTraceMock("run-1"),
+        },
+      ),
+    ).rejects.toThrow(
+      "Controller returned CONTINUE without corrective guidance despite drift/evidence warnings in round 1.",
+    );
   });
 });
