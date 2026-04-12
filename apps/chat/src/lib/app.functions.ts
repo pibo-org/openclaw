@@ -2,15 +2,16 @@ import { createServerFn } from '@tanstack/react-start'
 import { setResponseStatus } from '@tanstack/react-start/server'
 import {
   clearSessionCookie,
-  getConfiguredGatewayToken,
   getAuthenticatedUsername,
   isValidCredentialLoginAttempt,
+  issueChatGatewayBootstrapToken,
+  issueChatGatewayBootstrapTokenForUsername,
   setSessionCookie,
 } from './auth.server'
 
 export type ChatBootstrapData = {
   authenticated: boolean
-  gatewayToken: string | null
+  gatewayBootstrapToken: string | null
   username: string | null
 }
 
@@ -31,7 +32,7 @@ async function buildBootstrap(): Promise<ChatBootstrapData> {
   const username = getAuthenticatedUsername()
   return {
     authenticated: Boolean(username),
-    gatewayToken: username ? getConfiguredGatewayToken() : null,
+    gatewayBootstrapToken: username ? await issueChatGatewayBootstrapToken() : null,
     username,
   }
 }
@@ -54,7 +55,7 @@ export const loginWithCredentials = createServerFn({ method: 'POST' })
     setSessionCookie(data.username)
     return {
       authenticated: true,
-      gatewayToken: getConfiguredGatewayToken(),
+      gatewayBootstrapToken: await issueChatGatewayBootstrapTokenForUsername(data.username),
       username: data.username,
     } satisfies ChatBootstrapData
   })
@@ -63,7 +64,7 @@ export const logout = createServerFn({ method: 'POST' }).handler(async () => {
   clearSessionCookie()
   return {
     authenticated: false,
-    gatewayToken: null,
+    gatewayBootstrapToken: null,
     username: null,
   } satisfies ChatBootstrapData
 })

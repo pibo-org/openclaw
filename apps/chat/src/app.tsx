@@ -229,18 +229,19 @@ function MessageCard({ message, assistantAvatar }: { message: RenderableMessage;
   );
 }
 
-export function App({ initialGatewayToken }: { initialGatewayToken: string | null }) {
+export function App({
+  initialGatewayBootstrapToken,
+}: {
+  initialGatewayBootstrapToken: string | null
+}) {
   const initialSettings = useMemo(() => {
-    const settings = loadCustomUiSettings();
-    if (initialGatewayToken && !settings.token) {
-      return { ...settings, token: initialGatewayToken };
-    }
-    return settings;
-  }, [initialGatewayToken]);
+    return loadCustomUiSettings();
+  }, []);
   const hostRef = useRef(createGatewayChatHost(initialSettings.sessionKey));
   const clientRef = useRef<GatewayBrowserClient | null>(null);
   const sessionDefaultsRef = useRef<SessionDefaultsSnapshot | null>(null);
   const [settings, setSettings] = useState(initialSettings);
+  const [gatewayBootstrapToken, setGatewayBootstrapToken] = useState(initialGatewayBootstrapToken);
   const [connectionRequest, setConnectionRequest] = useState({
     ...initialSettings,
     nonce: 1,
@@ -264,6 +265,10 @@ export function App({ initialGatewayToken }: { initialGatewayToken: string | nul
       setChatSnapshot(next);
     });
   }
+
+  useEffect(() => {
+    setGatewayBootstrapToken(initialGatewayBootstrapToken);
+  }, [initialGatewayBootstrapToken]);
 
   useEffect(() => {
     void loadBootstrapConfig().then((nextBootstrap) => {
@@ -329,9 +334,11 @@ export function App({ initialGatewayToken }: { initialGatewayToken: string | nul
     const client = new GatewayBrowserClient({
       clientName: "openclaw-control-ui",
       clientVersion: hello?.server?.version ?? "custom-ui",
+      bootstrapToken: requestedSettings.token ? undefined : (gatewayBootstrapToken ?? undefined),
       instanceId: "openclaw-custom-ui",
       mode: "webchat",
       password: requestedSettings.password,
+      requestedScopes: ["operator.read", "operator.write"],
       token: requestedSettings.token,
       url: requestedSettings.gatewayUrl,
       onGap: () => {
@@ -350,6 +357,7 @@ export function App({ initialGatewayToken }: { initialGatewayToken: string | nul
         host.client = client;
         host.lastError = null;
         host.sessionKey = resolveSessionKeyWithDefaults(host.sessionKey, sessionDefaultsRef.current);
+        setGatewayBootstrapToken(null);
         setConnectionState("connected");
         setHello(nextHello);
         persistCustomUiSettings({
@@ -431,6 +439,7 @@ export function App({ initialGatewayToken }: { initialGatewayToken: string | nul
     connectionRequest.nonce,
     connectionRequest.password,
     connectionRequest.token,
+    gatewayBootstrapToken,
     hello?.server?.version,
   ]);
 

@@ -1,6 +1,7 @@
 import '@tanstack/react-start/server-only'
 
 import { deleteCookie, getCookie, setCookie } from '@tanstack/react-start/server'
+import { issueDeviceBootstrapToken } from '../../../../src/infra/device-bootstrap.js'
 import {
   createSessionTokenForConfig,
   isValidCredentialLogin,
@@ -19,10 +20,6 @@ function getAuthConfig() {
 
 export function getConfiguredUsername() {
   return getAuthConfig().username
-}
-
-export function getConfiguredGatewayToken(): string | null {
-  return trimToNull(process.env.OPENCLAW_GATEWAY_TOKEN)
 }
 
 export function createWebSessionToken(username: string) {
@@ -78,4 +75,24 @@ export function requireAuthenticatedUsername(): string {
 
 export function isValidCredentialLoginAttempt(username: string, password: string): boolean {
   return isValidCredentialLogin(username, password, getAuthConfig())
+}
+
+export async function issueChatGatewayBootstrapTokenForUsername(
+  username: string,
+): Promise<string | null> {
+  if (username !== getConfiguredUsername()) {
+    throw new Error('UNAUTHORIZED')
+  }
+  const issued = await issueDeviceBootstrapToken({
+    profile: {
+      roles: ['operator'],
+      scopes: ['operator.read', 'operator.write'],
+    },
+  })
+  return trimToNull(issued.token)
+}
+
+export async function issueChatGatewayBootstrapToken(): Promise<string | null> {
+  const username = requireAuthenticatedUsername()
+  return issueChatGatewayBootstrapTokenForUsername(username)
 }

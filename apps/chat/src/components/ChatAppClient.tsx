@@ -9,10 +9,10 @@ function LoadingChat() {
   )
 }
 
-export function ChatAppClient({ gatewayToken }: { gatewayToken: string | null }) {
+export function ChatAppClient({ gatewayBootstrapToken }: { gatewayBootstrapToken: string | null }) {
   return (
     <ClientOnly fallback={<LoadingChat />}>
-      <App initialGatewayToken={gatewayToken} />
+      <App initialGatewayBootstrapToken={gatewayBootstrapToken} />
     </ClientOnly>
   )
 }

@@ -141,6 +141,7 @@ export const CONTROL_UI_OPERATOR_SCOPES = [
 
 export type GatewayConnectAuth = {
   token?: string;
+  bootstrapToken?: string;
   deviceToken?: string;
   password?: string;
 };
@@ -198,7 +199,9 @@ type DeviceTokenRetryDecision = {
 export type GatewayBrowserClientOptions = {
   url: string;
   token?: string;
+  bootstrapToken?: string;
   password?: string;
+  requestedScopes?: string[];
   clientName?: GatewayClientName;
   clientVersion?: string;
   platform?: string;
@@ -215,13 +218,16 @@ const CONNECT_FAILED_CLOSE_CODE = 4008;
 
 function buildGatewayConnectAuth(
   selectedAuth: SelectedConnectAuth,
+  opts: Pick<GatewayBrowserClientOptions, "bootstrapToken">,
 ): GatewayConnectAuth | undefined {
   const authToken = selectedAuth.authToken;
-  if (!(authToken || selectedAuth.authPassword)) {
+  const bootstrapToken = normalizeOptionalString(opts.bootstrapToken);
+  if (!(authToken || selectedAuth.authPassword || bootstrapToken || selectedAuth.authDeviceToken || selectedAuth.resolvedDeviceToken)) {
     return undefined;
   }
   return {
     token: authToken,
+    bootstrapToken,
     deviceToken: selectedAuth.authDeviceToken ?? selectedAuth.resolvedDeviceToken,
     password: selectedAuth.authPassword,
   };
@@ -385,7 +391,9 @@ export class GatewayBrowserClient {
 
   private async buildConnectPlan(): Promise<ConnectPlan> {
     const role = CONTROL_UI_OPERATOR_ROLE;
-    const scopes = [...CONTROL_UI_OPERATOR_SCOPES];
+    const scopes = this.opts.requestedScopes?.length
+      ? [...this.opts.requestedScopes]
+      : [...CONTROL_UI_OPERATOR_SCOPES];
     const client = this.buildConnectClient();
     const explicitGatewayToken = normalizeOptionalString(this.opts.token);
     const explicitPassword = normalizeOptionalString(this.opts.password);
@@ -418,7 +426,7 @@ export class GatewayBrowserClient {
       client,
       explicitGatewayToken,
       selectedAuth,
-      auth: buildGatewayConnectAuth(selectedAuth),
+      auth: buildGatewayConnectAuth(selectedAuth, this.opts),
       deviceIdentity,
       device: await buildGatewayConnectDevice({
         deviceIdentity,

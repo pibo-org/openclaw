@@ -135,10 +135,6 @@ function ChatIndexPage() {
     )
   }
 
-  const gatewayBootstrapScript = appState.gatewayToken
-    ? `window.__OPENCLAW_BOOTSTRAP_GATEWAY_TOKEN__ = ${JSON.stringify(appState.gatewayToken)};`
-    : ''
-
   return (
     <div className="relative">
       <div className="pointer-events-none fixed inset-x-0 top-0 z-50 px-3 pt-3">
@@ -160,14 +156,7 @@ function ChatIndexPage() {
           </button>
         </div>
       </div>
-      {gatewayBootstrapScript ? (
-        <script
-          dangerouslySetInnerHTML={{
-            __html: gatewayBootstrapScript,
-          }}
-        />
-      ) : null}
-      <ChatAppClient gatewayToken={appState.gatewayToken} />
+      <ChatAppClient gatewayBootstrapToken={appState.gatewayBootstrapToken} />
     </div>
   )
 }

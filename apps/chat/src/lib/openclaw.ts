@@ -5,11 +5,6 @@ import { type ToolStreamEntry } from "../../../../ui/src/ui/app-tool-stream.ts";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../../src/gateway/control-ui-contract.ts";
 
 declare const __OPENCLAW_DEV_GATEWAY_TOKEN__: string | undefined;
-declare global {
-  interface Window {
-    __OPENCLAW_BOOTSTRAP_GATEWAY_TOKEN__?: string;
-  }
-}
 
 export type CustomUiSettings = {
   gatewayUrl: string;
@@ -140,15 +135,8 @@ function resolveDefaultDevToken(): string {
   return trimToNull(__OPENCLAW_DEV_GATEWAY_TOKEN__) ?? "";
 }
 
-function resolveBootstrapGatewayToken(): string {
-  if (typeof window === "undefined") {
-    return "";
-  }
-  return trimToNull(window.__OPENCLAW_BOOTSTRAP_GATEWAY_TOKEN__) ?? "";
-}
-
 function resolveSessionTokenWithDevFallback(gatewayUrl: string): string {
-  return loadSessionToken(gatewayUrl) || resolveBootstrapGatewayToken() || resolveDefaultDevToken();
+  return loadSessionToken(gatewayUrl) || resolveDefaultDevToken();
 }
 
 function persistSessionToken(gatewayUrl: string, token: string) {
