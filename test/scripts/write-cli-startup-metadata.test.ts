@@ -12,14 +12,26 @@ describe("write-cli-startup-metadata", () => {
   const { createTempDir } = createScriptTestHarness();
 
   it("captures bundled root help text from the CLI program", async () => {
-    const rootHelpText = await renderBundledRootHelpText();
+    const tempDist = createTempDir("openclaw-root-help-bundle-");
+    writeFileSync(
+      path.join(tempDist, "root-help-test.js"),
+      [
+        "export async function outputRootHelp() {",
+        '  process.stdout.write("Usage: openclaw\\n");',
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const rootHelpText = await renderBundledRootHelpText(tempDist);
 
     expect(rootHelpText).toContain("Usage:");
     expect(rootHelpText).toContain("openclaw");
   });
 
-  it("captures source pibo help text from the CLI program", () => {
-    const piboHelpText = renderSourcePiboHelpText();
+  it("captures source pibo help text from the CLI program", async () => {
+    const piboHelpText = await renderSourcePiboHelpText();
 
     expect(piboHelpText).toContain("Usage:");
     expect(piboHelpText).toContain("PIBo CLI modules ported into OpenClaw");

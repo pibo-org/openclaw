@@ -598,14 +598,27 @@ export function normalizeCronJobInput(
       }
     }
 
+    // Resolve "current" sessionTarget to the actual sessionKey from context
+    if (next.sessionTarget === "current") {
+      if (options.sessionContext?.sessionKey) {
+        const sessionKey = options.sessionContext.sessionKey.trim();
+        if (sessionKey) {
+          // Store as session:customId format for persistence
+          next.sessionTarget = `session:${assertSafeCronSessionTargetId(sessionKey)}`;
+        }
+      }
+      // If "current" wasn't resolved, fall back to "isolated" behavior
+      // This handles CLI/headless usage where no session context exists
+      if (next.sessionTarget === "current") {
+        next.sessionTarget = "isolated";
+      }
+    }
     if (next.sessionTarget === "current") {
       const sessionKey = options.sessionContext?.sessionKey?.trim();
       if (sessionKey) {
         next.sessionTarget = `session:${assertSafeCronSessionTargetId(sessionKey)}`;
-      } else if (isRecord(next.payload) && next.payload.kind !== "workflowStart") {
-        next.sessionTarget = "isolated";
       } else {
-        // Keep workflowStart + current intact so the service layer can reject it clearly.
+        next.sessionTarget = "isolated";
       }
     }
     if (

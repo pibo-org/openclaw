@@ -583,22 +583,6 @@ describe("normalizeCronJobCreate", () => {
     expect(normalized.sessionTarget).toBe("isolated");
   });
 
-  it("preserves workflowStart current sessionTarget without context for explicit rejection", () => {
-    const normalized = normalizeCronJobCreate({
-      name: "workflow-current-without-context",
-      schedule: { kind: "cron", expr: "* * * * *" },
-      sessionTarget: "current",
-      payload: { kind: "workflowStart", moduleId: "codex_controller" },
-    }) as unknown as Record<string, unknown>;
-
-    expect(normalized.sessionTarget).toBe("current");
-    expect(normalized.payload).toEqual({
-      kind: "workflowStart",
-      moduleId: "codex_controller",
-      asyncStart: true,
-    });
-  });
-
   it("preserves custom session ids with a session: prefix", () => {
     const normalized = normalizeCronJobCreate({
       name: "custom-session",

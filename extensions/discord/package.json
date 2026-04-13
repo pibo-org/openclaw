@@ -5,7 +5,7 @@
   "type": "module",
   "dependencies": {
     "@buape/carbon": "0.14.0",
-    "@discordjs/voice": "^0.19.2",
+    "@discordjs/voice": "^0.19.0",
     "@snazzah/davey": "^0.1.11",
     "discord-api-types": "^0.38.44",
     "https-proxy-agent": "^9.0.0",

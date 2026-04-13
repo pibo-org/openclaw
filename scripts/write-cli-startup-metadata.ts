@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { tsImport } from "tsx/esm/api";
 import type { RootHelpRenderOptions } from "../src/cli/program/root-help.js";
 import type { OpenClawConfig } from "../src/config/config.js";
 
@@ -25,7 +25,6 @@ const rootDir = path.resolve(scriptDir, "..");
 const distDir = path.join(rootDir, "dist");
 const outputPath = path.join(distDir, "cli-startup-metadata.json");
 const extensionsDir = path.join(rootDir, "extensions");
-const ROOT_HELP_RENDER_TIMEOUT_MS = 60_000;
 const PIBO_HELP_SOURCE_PATHS = [
   path.join("src", "cli", "pibo-cli.ts"),
   path.join("src", "cli", "pibo", "docs-sync", "index.ts"),
@@ -193,120 +192,63 @@ export async function renderBundledRootHelpText(
     config: renderContext.config,
     env: renderContext.env,
   } satisfies RootHelpRenderOptions;
-  const inlineModule = [
-    `const mod = await import(${JSON.stringify(moduleUrl)});`,
-    "if (typeof mod.outputRootHelp !== 'function') {",
-    `  throw new Error(${JSON.stringify(`Bundle ${bundleIdentity.bundleName} does not export outputRootHelp.`)});`,
-    "}",
-    `await mod.outputRootHelp(${JSON.stringify(renderOptions)});`,
-    "process.exit(0);",
-  ].join("\n");
-  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", inlineModule], {
-    cwd: _distDirOverride,
-    encoding: "utf8",
-    env: renderContext.env,
-    timeout: ROOT_HELP_RENDER_TIMEOUT_MS,
+  const mod = await import(moduleUrl);
+  if (typeof mod.outputRootHelp !== "function") {
+    throw new Error(`Bundle ${bundleIdentity.bundleName} does not export outputRootHelp.`);
+  }
+  return await captureStdoutAsync(async () => {
+    await mod.outputRootHelp(renderOptions);
   });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim();
-    throw new Error(
-      `Failed to render bundled root help from ${bundleIdentity.bundleName}` +
-        (stderr ? `: ${stderr}` : result.signal ? `: terminated by ${result.signal}` : ""),
-    );
-  }
-  return result.stdout ?? "";
 }
 
-function renderSourceRootHelpText(
+async function renderSourceRootHelpText(
   renderContext: RootHelpRenderContext = createIsolatedRootHelpRenderContext(),
-): string {
+): Promise<string> {
   const moduleUrl = pathToFileURL(path.join(rootDir, "src/cli/program/root-help.ts")).href;
   const renderOptions = {
     pluginSdkResolution: "src",
     config: renderContext.config,
     env: renderContext.env,
   } satisfies RootHelpRenderOptions;
-  const inlineModule = [
-    `const mod = await import(${JSON.stringify(moduleUrl)});`,
-    "if (typeof mod.renderRootHelpText !== 'function') {",
-    `  throw new Error(${JSON.stringify("Source root-help module does not export renderRootHelpText.")});`,
-    "}",
-    `const output = await mod.renderRootHelpText(${JSON.stringify(renderOptions)});`,
-    "process.stdout.write(output);",
-    "process.exit(0);",
-  ].join("\n");
-  const result = spawnSync(
-    process.execPath,
-    ["--import", "tsx", "--input-type=module", "--eval", inlineModule],
-    {
-      cwd: rootDir,
-      encoding: "utf8",
-      env: renderContext.env,
-      timeout: ROOT_HELP_RENDER_TIMEOUT_MS,
-    },
-  );
-  if (result.error) {
-    throw result.error;
+  const mod = await tsImport(moduleUrl, import.meta.url);
+  if (typeof mod.renderRootHelpText !== "function") {
+    throw new Error("Source root-help module does not export renderRootHelpText.");
   }
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim();
-    throw new Error(
-      "Failed to render source root help" +
-        (stderr ? `: ${stderr}` : result.signal ? `: terminated by ${result.signal}` : ""),
-    );
-  }
-  return result.stdout ?? "";
+  return await mod.renderRootHelpText(renderOptions);
 }
 
-export function renderSourcePiboHelpText(rootDirOverride: string = rootDir): string {
+export async function renderSourcePiboHelpText(rootDirOverride: string = rootDir): Promise<string> {
   const moduleUrl = pathToFileURL(path.join(rootDirOverride, "src/cli/pibo-cli.ts")).href;
-  const inlineModule = [
-    "const { Command } = await import('commander');",
-    `const mod = await import(${JSON.stringify(moduleUrl)});`,
-    "if (typeof mod.registerPiboCli !== 'function') {",
-    `  throw new Error(${JSON.stringify("Source pibo-cli module does not export registerPiboCli.")});`,
-    "}",
-    "const program = new Command();",
-    "mod.registerPiboCli(program);",
-    "const pibo = program.commands.find((command) => command.name() === 'pibo');",
-    "if (!pibo) {",
-    `  throw new Error(${JSON.stringify("Failed to register the pibo command while rendering help text.")});`,
-    "}",
-    "let output = '';",
-    "const originalWrite = process.stdout.write.bind(process.stdout);",
-    "process.stdout.write = ((chunk) => { output += String(chunk); return true; });",
-    "try {",
-    "  pibo.outputHelp();",
-    "} finally {",
-    "  process.stdout.write = originalWrite;",
-    "}",
-    "process.stdout.write(output);",
-    "process.exit(0);",
-  ].join("\n");
-  const result = spawnSync(
-    process.execPath,
-    ["--import", "tsx", "--input-type=module", "--eval", inlineModule],
-    {
-      cwd: rootDirOverride,
-      encoding: "utf8",
-      env: process.env,
-      timeout: ROOT_HELP_RENDER_TIMEOUT_MS,
-    },
-  );
-  if (result.error) {
-    throw result.error;
+  const { Command } = await import("commander");
+  const mod = await tsImport(moduleUrl, import.meta.url);
+  if (typeof mod.registerPiboCli !== "function") {
+    throw new Error("Source pibo-cli module does not export registerPiboCli.");
   }
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim();
-    throw new Error(
-      "Failed to render source pibo help" +
-        (stderr ? `: ${stderr}` : result.signal ? `: terminated by ${result.signal}` : ""),
-    );
+  const program = new Command();
+  mod.registerPiboCli(program);
+  const pibo = program.commands.find((command) => command.name() === "pibo");
+  if (!pibo) {
+    throw new Error("Failed to register the pibo command while rendering help text.");
   }
-  return result.stdout ?? "";
+  return await captureStdoutAsync(async () => {
+    pibo.outputHelp();
+  });
+}
+
+async function captureStdoutAsync(work: () => Promise<void> | void): Promise<string> {
+  let output = "";
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const captureWrite: typeof process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  process.stdout.write = captureWrite;
+  try {
+    await work();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return output;
 }
 
 export async function writeCliStartupMetadata(options?: {
@@ -348,9 +290,9 @@ export async function writeCliStartupMetadata(options?: {
   try {
     rootHelpText = await renderBundledRootHelpText(resolvedDistDir, renderContext);
   } catch {
-    rootHelpText = renderSourceRootHelpText(renderContext);
+    rootHelpText = await renderSourceRootHelpText(renderContext);
   }
-  const piboHelpText = renderSourcePiboHelpText();
+  const piboHelpText = await renderSourcePiboHelpText();
 
   mkdirSync(resolvedDistDir, { recursive: true });
   writeFileSync(

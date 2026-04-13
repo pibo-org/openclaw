@@ -311,21 +311,6 @@ describe("cron cli", () => {
     ]);
   });
 
-  it("rejects --session current on workflow cron add", async () => {
-    await expectCronCommandExit([
-      "cron",
-      "add",
-      "--name",
-      "workflow job",
-      "--cron",
-      "0 * * * *",
-      "--workflow",
-      "codex_controller",
-      "--session",
-      "current",
-    ]);
-  });
-
   it("defaults isolated cron add to announce delivery", async () => {
     await runCronCommand([
       "cron",

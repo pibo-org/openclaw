@@ -14,12 +14,7 @@ import {
   waitForWorkflowRun,
 } from "../../cli/pibo/workflows/index.js";
 import type { WorkflowTraceEventQuery } from "../../cli/pibo/workflows/tracing/types.js";
-import type {
-  WorkflowArtifactContent,
-  WorkflowRunRecord,
-  WorkflowStartRequest,
-  WorkflowWaitResult,
-} from "../../cli/pibo/workflows/types.js";
+import type { WorkflowRunRecord, WorkflowStartRequest } from "../../cli/pibo/workflows/types.js";
 
 export function createRuntimePiboWorkflows() {
   return {
@@ -32,10 +27,10 @@ export function createRuntimePiboWorkflows() {
     async start(moduleId: string, request: WorkflowStartRequest): Promise<WorkflowRunRecord> {
       return await startWorkflowRun(moduleId, request);
     },
-    async startAsync(moduleId: string, request: WorkflowStartRequest): Promise<WorkflowRunRecord> {
+    async startAsync(moduleId: string, request: WorkflowStartRequest) {
       return await startWorkflowRunAsync(moduleId, request);
     },
-    async wait(runId: string, timeoutMs?: number): Promise<WorkflowWaitResult> {
+    async wait(runId: string, timeoutMs?: number) {
       return await waitForWorkflowRun(runId, timeoutMs);
     },
     async status(runId: string): Promise<WorkflowRunRecord> {
@@ -46,9 +41,6 @@ export function createRuntimePiboWorkflows() {
     },
     async abort(runId: string): Promise<WorkflowRunRecord> {
       return abortWorkflowRun(runId);
-    },
-    async runs(limit?: number) {
-      return listWorkflowRuns(limit);
     },
     async traceSummary(runId: string) {
       return getWorkflowTraceSummary(runId);
@@ -63,8 +55,11 @@ export function createRuntimePiboWorkflows() {
       runId: string,
       name: string,
       opts?: { headLines?: number; tailLines?: number },
-    ): Promise<WorkflowArtifactContent> {
+    ) {
       return readWorkflowArtifact(runId, name, opts);
+    },
+    async runs(limit?: number) {
+      return listWorkflowRuns(limit);
     },
   };
 }

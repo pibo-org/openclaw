@@ -141,8 +141,8 @@ export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "pay
     assertSafeCronSessionTargetId(job.sessionTarget.slice(8));
   }
   if (job.payload.kind === "workflowStart") {
-    if (job.sessionTarget !== "main" && !job.sessionTarget.startsWith("session:")) {
-      throw new Error('workflowStart cron jobs require sessionTarget="main" or "session:<id>"');
+    if (job.sessionTarget === "isolated") {
+      throw new Error('workflowStart cron jobs do not support sessionTarget="isolated"');
     }
     return;
   }

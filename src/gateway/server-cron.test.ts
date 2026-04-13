@@ -396,34 +396,4 @@ describe("buildGatewayCronService", () => {
       state.cron.stop();
     }
   });
-
-  it("rejects workflow cron jobs with sessionTarget current before persistence", async () => {
-    const cfg = createCronConfig("server-cron-workflow-current");
-    loadConfigMock.mockReturnValue(cfg);
-
-    const state = buildGatewayCronService({
-      cfg,
-      deps: {} as CliDeps,
-      broadcast: () => {},
-    });
-    try {
-      await expect(
-        state.cron.add({
-          name: "workflow-current",
-          enabled: true,
-          schedule: { kind: "at", at: new Date(1).toISOString() },
-          sessionTarget: "current",
-          wakeMode: "next-heartbeat",
-          payload: {
-            kind: "workflowStart",
-            moduleId: "codex_controller",
-          },
-        }),
-      ).rejects.toThrow(
-        'workflowStart cron jobs require sessionTarget="main" or "session:<id>"',
-      );
-    } finally {
-      state.cron.stop();
-    }
-  });
 });

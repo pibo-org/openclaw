@@ -231,11 +231,6 @@ export function registerCronAddCommand(cron: Command) {
               "Isolated jobs require --message; workflow jobs do not support --session isolated.",
             );
           }
-          if (sessionTarget === "current" && payload.kind === "workflowStart") {
-            throw new Error(
-              "Workflow jobs require --session main or --session session:<id>; --session current is not supported here.",
-            );
-          }
           if (
             (sessionTarget === "current" || isCustomSessionTarget) &&
             payload.kind !== "agentTurn" &&
