@@ -243,12 +243,67 @@ function stageInstalledRootRuntimeDeps(params) {
   }
 }
 
+function stageInstalledDirectRuntimeDeps(params) {
+  const { fingerprint, packageJson, pluginDir, repoRoot } = params;
+  const dependencySpecs = {
+    ...packageJson.dependencies,
+    ...packageJson.optionalDependencies,
+  };
+  const rootNodeModulesDir = path.join(repoRoot, "node_modules");
+  if (Object.keys(dependencySpecs).length === 0 || !fs.existsSync(rootNodeModulesDir)) {
+    return false;
+  }
+
+  for (const [depName, spec] of Object.entries(dependencySpecs)) {
+    const installedVersion = readInstalledDependencyVersion(rootNodeModulesDir, depName);
+    if (installedVersion === null || !dependencyVersionSatisfied(spec, installedVersion)) {
+      return false;
+    }
+  }
+
+  const nodeModulesDir = path.join(pluginDir, "node_modules");
+  const stampPath = resolveRuntimeDepsStampPath(pluginDir);
+  const stagedNodeModulesDir = path.join(
+    makeTempDir(
+      os.tmpdir(),
+      `openclaw-runtime-deps-${sanitizeTempPrefixSegment(path.basename(pluginDir))}-`,
+    ),
+    "node_modules",
+  );
+
+  try {
+    for (const depName of Object.keys(dependencySpecs)) {
+      const sourcePath = dependencyNodeModulesPath(rootNodeModulesDir, depName);
+      const targetPath = dependencyNodeModulesPath(stagedNodeModulesDir, depName);
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.cpSync(sourcePath, targetPath, { recursive: true, force: true, dereference: true });
+    }
+    pruneStagedRuntimeDependencyCargo(stagedNodeModulesDir);
+
+    replaceDir(nodeModulesDir, stagedNodeModulesDir);
+    writeJson(stampPath, {
+      fingerprint,
+      generatedAt: new Date().toISOString(),
+    });
+    return true;
+  } finally {
+    removePathIfExists(path.dirname(stagedNodeModulesDir));
+  }
+}
+
 function installPluginRuntimeDeps(params) {
   const { fingerprint, packageJson, pluginDir, pluginId, repoRoot } = params;
+  if (params.trace) {
+    console.error(`[runtime-deps] ${pluginId}: staging from npm install`);
+  }
   if (
     repoRoot &&
-    stageInstalledRootRuntimeDeps({ fingerprint, packageJson, pluginDir, repoRoot })
+    (stageInstalledRootRuntimeDeps({ fingerprint, packageJson, pluginDir, repoRoot }) ||
+      stageInstalledDirectRuntimeDeps({ fingerprint, packageJson, pluginDir, repoRoot }))
   ) {
+    if (params.trace) {
+      console.error(`[runtime-deps] ${pluginId}: staged from installed workspace deps`);
+    }
     return;
   }
   const nodeModulesDir = path.join(pluginDir, "node_modules");
@@ -325,19 +380,29 @@ export function stageBundledPluginRuntimeDeps(params = {}) {
   const installPluginRuntimeDepsImpl =
     params.installPluginRuntimeDepsImpl ?? installPluginRuntimeDeps;
   const installAttempts = params.installAttempts ?? 3;
+  const trace = params.trace ?? process.env.OPENCLAW_RUNTIME_POSTBUILD_TRACE === "1";
   for (const pluginDir of listBundledPluginRuntimeDirs(repoRoot)) {
     const pluginId = path.basename(pluginDir);
+    if (trace) {
+      console.error(`[runtime-deps] ${pluginId}: checking`);
+    }
     const packageJson = sanitizeBundledManifestForRuntimeInstall(pluginDir);
     const nodeModulesDir = path.join(pluginDir, "node_modules");
     const stampPath = resolveRuntimeDepsStampPath(pluginDir);
     if (!hasRuntimeDeps(packageJson) || !shouldStageRuntimeDeps(packageJson)) {
       removePathIfExists(nodeModulesDir);
       removePathIfExists(stampPath);
+      if (trace) {
+        console.error(`[runtime-deps] ${pluginId}: skipped`);
+      }
       continue;
     }
     const fingerprint = createRuntimeDepsFingerprint(packageJson);
     const stamp = readRuntimeDepsStamp(stampPath);
     if (fs.existsSync(nodeModulesDir) && stamp?.fingerprint === fingerprint) {
+      if (trace) {
+        console.error(`[runtime-deps] ${pluginId}: up to date`);
+      }
       continue;
     }
     installPluginRuntimeDepsWithRetries({
@@ -349,6 +414,7 @@ export function stageBundledPluginRuntimeDeps(params = {}) {
         pluginDir,
         pluginId,
         repoRoot,
+        trace,
       },
     });
   }

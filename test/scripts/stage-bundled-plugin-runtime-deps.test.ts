@@ -189,6 +189,48 @@ describe("stageBundledPluginRuntimeDeps", () => {
     ).toBe("module.exports = 'transitive';\n");
   });
 
+  it("stages direct runtime deps from root installs when transitives live under the package tree", () => {
+    const { pluginDir, repoRoot } = createBundledPluginFixture({
+      packageJson: {
+        name: "@openclaw/fixture-plugin",
+        version: "1.0.0",
+        dependencies: { direct: "1.0.0" },
+        openclaw: { bundle: { stageRuntimeDependencies: true } },
+      },
+    });
+    const directDir = path.join(repoRoot, "node_modules", "direct");
+    const nestedTransitiveDir = path.join(directDir, "node_modules", "transitive");
+    fs.mkdirSync(nestedTransitiveDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(directDir, "package.json"),
+      '{ "name": "direct", "version": "1.0.0", "dependencies": { "transitive": "^1.2.0" } }\n',
+      "utf8",
+    );
+    fs.writeFileSync(path.join(directDir, "index.js"), "module.exports = 'direct';\n", "utf8");
+    fs.writeFileSync(
+      path.join(nestedTransitiveDir, "package.json"),
+      '{ "name": "transitive", "version": "1.2.3" }\n',
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(nestedTransitiveDir, "index.js"),
+      "module.exports = 'transitive-nested';\n",
+      "utf8",
+    );
+
+    stageBundledPluginRuntimeDeps({ cwd: repoRoot });
+
+    expect(
+      fs.readFileSync(path.join(pluginDir, "node_modules", "direct", "index.js"), "utf8"),
+    ).toBe("module.exports = 'direct';\n");
+    expect(
+      fs.readFileSync(
+        path.join(pluginDir, "node_modules", "direct", "node_modules", "transitive", "index.js"),
+        "utf8",
+      ),
+    ).toBe("module.exports = 'transitive-nested';\n");
+  });
+
   it("falls back to staging installs when the root dependency version is incompatible", () => {
     const { pluginDir, repoRoot } = createBundledPluginFixture({
       packageJson: {

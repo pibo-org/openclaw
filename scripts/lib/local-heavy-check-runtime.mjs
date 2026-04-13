@@ -96,8 +96,7 @@ export function acquireLocalHeavyCheckLockSync(params) {
     return () => {};
   }
 
-  const commonDir = resolveGitCommonDir(params.cwd);
-  const locksDir = path.join(commonDir, "openclaw-local-checks");
+  const locksDir = resolveLocalHeavyCheckLocksDir(params.cwd);
   const lockDir = path.join(locksDir, `${params.lockName ?? "heavy-check"}.lock`);
   const ownerPath = path.join(lockDir, "owner.json");
   const timeoutMs = readPositiveInt(
@@ -116,8 +115,6 @@ export function acquireLocalHeavyCheckLockSync(params) {
   const startedAt = Date.now();
   let waitingLogged = false;
   let lastProgressAt = 0;
-
-  fs.mkdirSync(locksDir, { recursive: true });
 
   for (;;) {
     try {
@@ -195,6 +192,20 @@ export function resolveGitCommonDir(cwd) {
   return path.join(cwd, ".git");
 }
 
+export function resolveLocalHeavyCheckLocksDir(cwd) {
+  const commonDir = resolveGitCommonDir(cwd);
+  const preferredDir = path.join(commonDir, "openclaw-local-checks");
+
+  if (canWriteDirectory(preferredDir)) {
+    return preferredDir;
+  }
+
+  const repoKey = Buffer.from(path.resolve(cwd)).toString("hex").slice(0, 40);
+  const fallbackDir = path.join(os.tmpdir(), "openclaw-local-checks", repoKey);
+  fs.mkdirSync(fallbackDir, { recursive: true });
+  return fallbackDir;
+}
+
 function insertBeforeSeparator(args, ...items) {
   if (items.length > 0 && hasFlag(args, items[0])) {
     return;
@@ -203,6 +214,19 @@ function insertBeforeSeparator(args, ...items) {
   const separatorIndex = args.indexOf("--");
   const insertIndex = separatorIndex === -1 ? args.length : separatorIndex;
   args.splice(insertIndex, 0, ...items);
+}
+
+function canWriteDirectory(dirPath) {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    fs.accessSync(dirPath, fs.constants.W_OK);
+    return true;
+  } catch (error) {
+    if (isReadOnlyOrPermissionError(error)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function readLocalCheckMode(env) {
@@ -247,6 +271,13 @@ function readOwnerFile(ownerPath) {
 
 function isAlreadyExistsError(error) {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "EEXIST");
+}
+
+function isReadOnlyOrPermissionError(error) {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return false;
+  }
+  return error.code === "EACCES" || error.code === "EPERM" || error.code === "EROFS";
 }
 
 function shouldReclaimLock({ owner, lockDir, staleLockMs }) {

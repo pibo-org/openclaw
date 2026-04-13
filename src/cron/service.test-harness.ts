@@ -252,6 +252,10 @@ export function createMockCronStateForJobs(params: {
       enqueueSystemEvent: () => {},
       requestHeartbeatNow: () => {},
       runIsolatedAgentJob: async () => ({ status: "ok" }),
+      runWorkflowJob: async () => ({
+        status: "error",
+        error: "workflowStart cron jobs are unavailable in tests",
+      }),
       log: {
         debug: () => {},
         info: () => {},

@@ -150,7 +150,30 @@ describe("codex_controller module", () => {
     const manifest = describeWorkflowModule("codex_controller");
     expect(manifest.moduleId).toBe("codex_controller");
     expect(manifest.description).toContain("Codex");
-    expect(manifest.requiredAgents).toEqual(["codex", "langgraph"]);
+    expect(manifest.requiredAgents).toEqual(["codex", "codex-controller"]);
+  });
+
+  it("rejects missing workingDirectory with repoPath-specific guidance", async () => {
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+
+    await expect(
+      codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            repoPath: "/repo",
+          },
+        },
+        {
+          runId: "run-1",
+          nowIso: () => "2026-04-10T00:00:00.000Z",
+          persist: () => {},
+          trace: createTraceMock("run-1"),
+        },
+      ),
+    ).rejects.toThrow(
+      "codex_controller benötigt `input.workingDirectory`. Falls `repoPath` übergeben wurde, bitte in `workingDirectory` umbenennen.",
+    );
   });
 
   it("maps normalized controller DONE output to a done terminal state", async () => {
@@ -207,7 +230,7 @@ describe("codex_controller module", () => {
           "codex worker result",
           "",
           "Controller approved completion.",
-          "Round: 1/6",
+          "Round: 1/10",
           "",
           "Reason:",
           "- Requested implementation is complete and verified.",
@@ -468,6 +491,72 @@ describe("codex_controller module", () => {
       "visible output lacks concrete implementation or verification evidence",
     );
     expect(secondPrompt).not.toContain("stream: thought");
+  });
+
+  it("filters hidden thinking and generic tool-call placeholders from visible worker output but keeps named tool calls", async () => {
+    runTurn.mockImplementationOnce(
+      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "thought",
+          text: "hidden reasoning",
+        });
+        params.onEvent?.({
+          type: "tool_call",
+          text: "tool call",
+        });
+        params.onEvent?.({
+          type: "tool_call",
+          text: "tool call (completed)",
+        });
+        params.onEvent?.({
+          type: "tool_call",
+          text: "Run pnpm vitest run src/foo.test.ts (completed)",
+        });
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "Implemented the fix and verified it.",
+        });
+      },
+    );
+    runWorkflowAgentOnSession.mockResolvedValueOnce({
+      runId: "controller-run-1",
+      text: [
+        "MODULE_DECISION: DONE",
+        "MODULE_REASON:",
+        "- Requested implementation is complete and verified.",
+        "NEXT_INSTRUCTION:",
+        "- none",
+        "BLOCKER:",
+        "- none",
+      ].join("\n"),
+      wait: { status: "ok" },
+      messages: [],
+    });
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    expect(record.latestWorkerOutput).toContain(
+      "[tool] Run pnpm vitest run src/foo.test.ts (completed)",
+    );
+    expect(record.latestWorkerOutput).toContain("Implemented the fix and verified it.");
+    expect(record.latestWorkerOutput).not.toContain("hidden reasoning");
+    expect(record.latestWorkerOutput).not.toContain("[tool] tool call");
   });
 
   it("rejects blind CONTINUE when drift warnings exist but next instruction is not corrective", async () => {

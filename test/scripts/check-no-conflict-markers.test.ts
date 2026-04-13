@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,10 +12,15 @@ import { createScriptTestHarness } from "./test-helpers.js";
 const { createTempDir } = createScriptTestHarness();
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, {
+  const result = spawnSync("git", args, {
     cwd,
     encoding: "utf8",
-  }).trim();
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    throw result.error ?? new Error(result.stderr);
+  }
+  return result.stdout.trim();
 }
 
 describe("check-no-conflict-markers", () => {

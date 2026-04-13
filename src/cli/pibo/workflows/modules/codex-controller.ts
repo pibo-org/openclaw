@@ -70,7 +70,7 @@ type DriftAssessment = {
   recommendation: "normal_continue" | "corrective_continue_required" | "escalate_or_correct";
 };
 
-const DEFAULT_MAX_ROUNDS = 6;
+const DEFAULT_MAX_ROUNDS = 10;
 const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
 const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "off";
@@ -116,7 +116,9 @@ function normalizeInput(request: WorkflowStartRequest): Required<CodexController
     throw new Error("codex_controller benötigt ein nicht-leeres Feld `task`.");
   }
   if (!workingDirectory) {
-    throw new Error("codex_controller benötigt ein nicht-leeres Feld `workingDirectory`.");
+    throw new Error(
+      "codex_controller benötigt `input.workingDirectory`. Falls `repoPath` übergeben wurde, bitte in `workingDirectory` umbenennen.",
+    );
   }
   const maxRetries =
     normalizePositiveInteger(record.maxRetries) ??
@@ -326,6 +328,11 @@ function normalizeForComparison(value: string): string {
     .replace(/[`'".,:;!?()[\]{}]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isLowSignalToolCallText(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return /^tool call(?:\s+\((?:in_progress|completed|failed)\))?$/.test(normalized);
 }
 
 function claimsLookRepeated(currentClaims: string[], priorClaims: string[]): boolean {
@@ -821,7 +828,7 @@ async function runCodexTurn(params: {
       if (event.type === "text_delta" && event.stream !== "thought" && event.text) {
         outputEvents.push(event.text);
       }
-      if (event.type === "tool_call" && event.text) {
+      if (event.type === "tool_call" && event.text && !isLowSignalToolCallText(event.text)) {
         outputEvents.push(`[tool] ${event.text}`);
       }
     },
@@ -880,7 +887,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     inputSchemaSummary: [
       "task (string, required): original coding task passed directly to Codex.",
       "workingDirectory (string, required): absolute workspace path for the persistent Codex ACP session.",
-      "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 6.",
+      "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 10.",
       "successCriteria (string[], optional): additional completion criteria.",
       "constraints (string[], optional): extra constraints to keep in every turn.",
       `controllerPromptPath (string, optional): defaults to ${DEFAULT_CONTROLLER_PROMPT_PATH}.`,
@@ -1109,6 +1116,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         sessionKey: sessions.orchestrator!,
         message: controllerMessage,
         idempotencyKey: `${ctx.runId}:controller:${round}`,
+        timeoutMs: 60 * 60 * 1000,
       });
       const controllerArtifact = writeWorkflowArtifact(
         ctx.runId,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,10 +26,15 @@ export function findConflictMarkerLines(content) {
 }
 
 export function listTrackedFiles(cwd = process.cwd()) {
-  const output = execFileSync("git", ["ls-files", "-z"], {
+  const result = spawnSync("git", ["ls-files", "-z"], {
     cwd,
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  if (result.status !== 0) {
+    throw result.error ?? new Error(result.stderr || "git ls-files failed");
+  }
+  const output = result.stdout;
   return output
     .split("\0")
     .filter(Boolean)

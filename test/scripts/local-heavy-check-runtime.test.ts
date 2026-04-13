@@ -1,10 +1,12 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   acquireLocalHeavyCheckLockSync,
   applyLocalOxlintPolicy,
   applyLocalTsgoPolicy,
+  resolveLocalHeavyCheckLocksDir,
 } from "../../scripts/lib/local-heavy-check-runtime.mjs";
 import { createScriptTestHarness } from "./test-helpers.js";
 
@@ -126,5 +128,22 @@ describe("local-heavy-check-runtime", () => {
 
     release();
     expect(fs.existsSync(lockDir)).toBe(false);
+  });
+
+  it("falls back to a tmp lock directory when the git common dir is not writable", () => {
+    const cwd = createTempDir("openclaw-local-heavy-check-readonly-");
+    const commonDir = path.join(cwd, ".git");
+    const preferredLocksDir = path.join(commonDir, "openclaw-local-checks");
+    fs.mkdirSync(preferredLocksDir, { recursive: true });
+    fs.chmodSync(preferredLocksDir, 0o555);
+
+    try {
+      const locksDir = resolveLocalHeavyCheckLocksDir(cwd);
+
+      expect(locksDir).not.toBe(preferredLocksDir);
+      expect(locksDir.startsWith(path.join(os.tmpdir(), "openclaw-local-checks"))).toBe(true);
+    } finally {
+      fs.chmodSync(preferredLocksDir, 0o755);
+    }
   });
 });
