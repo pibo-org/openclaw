@@ -45,6 +45,15 @@ function hasAgentTurnPayloadHint(payload: UnknownRecord) {
   );
 }
 
+function hasWorkflowStartPayloadHint(payload: UnknownRecord) {
+  return (
+    hasTrimmedStringValue(payload.moduleId) ||
+    typeof payload.maxRounds === "number" ||
+    typeof payload.asyncStart === "boolean" ||
+    "input" in payload
+  );
+}
+
 function normalizeTrimmedStringArray(
   value: unknown,
   options?: { allowNull?: boolean },
@@ -151,16 +160,21 @@ function coercePayload(payload: UnknownRecord) {
     next.kind = "agentTurn";
   } else if (kindRaw === "systemevent") {
     next.kind = "systemEvent";
+  } else if (kindRaw === "workflowstart") {
+    next.kind = "workflowStart";
   } else if (kindRaw) {
     next.kind = kindRaw;
   }
   if (!next.kind) {
     const hasMessage = Boolean(normalizeOptionalString(next.message));
     const hasText = Boolean(normalizeOptionalString(next.text));
+    const hasModuleId = Boolean(normalizeOptionalString(next.moduleId));
     if (hasMessage) {
       next.kind = "agentTurn";
     } else if (hasText) {
       next.kind = "systemEvent";
+    } else if (hasModuleId || hasWorkflowStartPayloadHint(next)) {
+      next.kind = "workflowStart";
     } else if (hasAgentTurnPayloadHint(next)) {
       // Accept partial agentTurn payload patches that only tweak agent-turn-only fields.
       next.kind = "agentTurn";
@@ -224,6 +238,25 @@ function coercePayload(payload: UnknownRecord) {
   ) {
     delete next.allowUnsafeExternalContent;
   }
+  if ("moduleId" in next) {
+    const moduleId = parseOptionalField(TrimmedNonEmptyStringFieldSchema, next.moduleId);
+    if (moduleId !== undefined) {
+      next.moduleId = moduleId;
+    } else {
+      delete next.moduleId;
+    }
+  }
+  if ("maxRounds" in next) {
+    const value = Number(next.maxRounds);
+    if (Number.isFinite(value) && value > 0) {
+      next.maxRounds = Math.floor(value);
+    } else {
+      delete next.maxRounds;
+    }
+  }
+  if ("asyncStart" in next && typeof next.asyncStart !== "boolean") {
+    delete next.asyncStart;
+  }
   if (next.kind === "systemEvent") {
     delete next.message;
     delete next.model;
@@ -233,8 +266,26 @@ function coercePayload(payload: UnknownRecord) {
     delete next.lightContext;
     delete next.allowUnsafeExternalContent;
     delete next.toolsAllow;
+    delete next.moduleId;
+    delete next.input;
+    delete next.maxRounds;
+    delete next.asyncStart;
   } else if (next.kind === "agentTurn") {
     delete next.text;
+    delete next.moduleId;
+    delete next.input;
+    delete next.maxRounds;
+    delete next.asyncStart;
+  } else if (next.kind === "workflowStart") {
+    delete next.text;
+    delete next.message;
+    delete next.model;
+    delete next.fallbacks;
+    delete next.thinking;
+    delete next.timeoutSeconds;
+    delete next.lightContext;
+    delete next.allowUnsafeExternalContent;
+    delete next.toolsAllow;
   }
   if ("deliver" in next) {
     delete next.deliver;
@@ -297,6 +348,14 @@ function inferTopLevelPayload(next: UnknownRecord) {
   const text = normalizeOptionalString(next.text) ?? "";
   if (text) {
     return { kind: "systemEvent", text } satisfies UnknownRecord;
+  }
+
+  const moduleId = normalizeOptionalString(next.moduleId) ?? "";
+  if (moduleId || hasWorkflowStartPayloadHint(next)) {
+    return {
+      kind: "workflowStart",
+      ...(moduleId ? { moduleId } : {}),
+    } satisfies UnknownRecord;
   }
 
   if (hasAgentTurnPayloadHint(next)) {
@@ -525,39 +584,28 @@ export function normalizeCronJobInput(
       }
     }
     if (!next.sessionTarget && isRecord(next.payload)) {
-      const kind = typeof next.payload.kind === "string" ? next.payload.kind : "";
+      const payloadKind = typeof next.payload.kind === "string" ? next.payload.kind : "";
       // Keep default behavior unchanged for backward compatibility:
       // - systemEvent defaults to "main"
       // - agentTurn defaults to "isolated" (NOT "current", to avoid token accumulation)
       // Users must explicitly specify "current" or "session:xxx" for custom session binding
-      if (kind === "systemEvent") {
+      if (payloadKind === "systemEvent") {
         next.sessionTarget = "main";
-      } else if (kind === "agentTurn") {
+      } else if (payloadKind === "agentTurn") {
         next.sessionTarget = "isolated";
+      } else if (payloadKind === "workflowStart") {
+        next.sessionTarget = "main";
       }
     }
 
-    // Resolve "current" sessionTarget to the actual sessionKey from context
-    if (next.sessionTarget === "current") {
-      if (options.sessionContext?.sessionKey) {
-        const sessionKey = options.sessionContext.sessionKey.trim();
-        if (sessionKey) {
-          // Store as session:customId format for persistence
-          next.sessionTarget = `session:${assertSafeCronSessionTargetId(sessionKey)}`;
-        }
-      }
-      // If "current" wasn't resolved, fall back to "isolated" behavior
-      // This handles CLI/headless usage where no session context exists
-      if (next.sessionTarget === "current") {
-        next.sessionTarget = "isolated";
-      }
-    }
     if (next.sessionTarget === "current") {
       const sessionKey = options.sessionContext?.sessionKey?.trim();
       if (sessionKey) {
         next.sessionTarget = `session:${assertSafeCronSessionTargetId(sessionKey)}`;
-      } else {
+      } else if (isRecord(next.payload) && next.payload.kind !== "workflowStart") {
         next.sessionTarget = "isolated";
+      } else {
+        // Keep workflowStart + current intact so the service layer can reject it clearly.
       }
     }
     if (
@@ -593,6 +641,9 @@ export function normalizeCronJobInput(
     const hasDelivery = "delivery" in next && next.delivery !== undefined;
     if (!hasDelivery && isIsolatedAgentTurn && payloadKind === "agentTurn") {
       next.delivery = { mode: "announce" };
+    }
+    if (payload && payload.kind === "workflowStart" && typeof payload.asyncStart !== "boolean") {
+      payload.asyncStart = true;
     }
   }
 

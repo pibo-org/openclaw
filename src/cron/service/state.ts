@@ -36,6 +36,9 @@ export type CronEvent = {
   sessionId?: string;
   sessionKey?: string;
   nextRunAtMs?: number;
+  workflowRunId?: string;
+  workflowModuleId?: string;
+  workflowStartMode?: "async";
 } & CronRunTelemetry;
 
 export type CronServiceDeps = {
@@ -90,6 +93,10 @@ export type CronServiceDeps = {
     } & CronRunOutcome &
       CronRunTelemetry
   >;
+  runWorkflowJob?: (params: {
+    job: CronJob;
+    abortSignal?: AbortSignal;
+  }) => Promise<CronRunOutcome & CronRunTelemetry>;
   sendCronFailureAlert?: (params: {
     job: CronJob;
     text: string;
@@ -101,8 +108,9 @@ export type CronServiceDeps = {
   onEvent?: (evt: CronEvent) => void;
 };
 
-export type CronServiceDepsInternal = Omit<CronServiceDeps, "nowMs"> & {
+export type CronServiceDepsInternal = Omit<CronServiceDeps, "nowMs" | "runWorkflowJob"> & {
   nowMs: () => number;
+  runWorkflowJob: NonNullable<CronServiceDeps["runWorkflowJob"]>;
 };
 
 export type CronServiceState = {
@@ -118,7 +126,16 @@ export type CronServiceState = {
 
 export function createCronServiceState(deps: CronServiceDeps): CronServiceState {
   return {
-    deps: { ...deps, nowMs: deps.nowMs ?? (() => Date.now()) },
+    deps: {
+      ...deps,
+      nowMs: deps.nowMs ?? (() => Date.now()),
+      runWorkflowJob:
+        deps.runWorkflowJob ??
+        (async () => ({
+          status: "error" as const,
+          error: "workflowStart cron jobs are unavailable in this runtime",
+        })),
+    },
     store: null,
     timer: null,
     running: false,

@@ -673,6 +673,9 @@ async function finishPreparedManualRun(
       model: coreResult.model,
       provider: coreResult.provider,
       usage: coreResult.usage,
+      workflowRunId: coreResult.workflowRunId,
+      workflowModuleId: coreResult.workflowModuleId,
+      workflowStartMode: coreResult.workflowStartMode,
     });
 
     if (shouldDelete && state.store) {

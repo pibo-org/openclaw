@@ -18,6 +18,19 @@ function cronAgentTurnPayloadSchema(params: { message: TSchema; toolsAllow: TSch
   );
 }
 
+function cronWorkflowStartPayloadSchema(params: { moduleId: TSchema }) {
+  return Type.Object(
+    {
+      kind: Type.Literal("workflowStart"),
+      moduleId: params.moduleId,
+      input: Type.Optional(Type.Unknown()),
+      maxRounds: Type.Optional(Type.Integer({ minimum: 1 })),
+      asyncStart: Type.Optional(Type.Boolean()),
+    },
+    { additionalProperties: false },
+  );
+}
+
 const CronSessionTargetSchema = Type.Union([
   Type.Literal("main"),
   Type.Literal("isolated"),
@@ -139,6 +152,9 @@ export const CronPayloadSchema = Type.Union([
     message: NonEmptyString,
     toolsAllow: Type.Array(Type.String()),
   }),
+  cronWorkflowStartPayloadSchema({
+    moduleId: NonEmptyString,
+  }),
 ]);
 
 export const CronPayloadPatchSchema = Type.Union([
@@ -152,6 +168,9 @@ export const CronPayloadPatchSchema = Type.Union([
   cronAgentTurnPayloadSchema({
     message: Type.Optional(NonEmptyString),
     toolsAllow: Type.Union([Type.Array(Type.String()), Type.Null()]),
+  }),
+  cronWorkflowStartPayloadSchema({
+    moduleId: Type.Optional(NonEmptyString),
   }),
 ]);
 
@@ -360,6 +379,9 @@ export const CronRunLogEntrySchema = Type.Object(
     nextRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     model: Type.Optional(Type.String()),
     provider: Type.Optional(Type.String()),
+    workflowRunId: Type.Optional(NonEmptyString),
+    workflowModuleId: Type.Optional(NonEmptyString),
+    workflowStartMode: Type.Optional(Type.Literal("async")),
     usage: Type.Optional(
       Type.Object(
         {

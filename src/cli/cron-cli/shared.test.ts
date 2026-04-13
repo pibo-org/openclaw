@@ -106,7 +106,7 @@ describe("printCronList", () => {
     expect(dataLine).not.toContain("default");
   });
 
-  it("shows Model column with payload.model for agentTurn jobs", () => {
+  it("shows Action column with payload.model for agentTurn jobs", () => {
     const { logs, runtime } = createRuntimeLogCapture();
     const job = createBaseJob({
       id: "model-job",
@@ -117,12 +117,12 @@ describe("printCronList", () => {
     });
 
     printCronList([job], runtime);
-    expect(logs[0]).toContain("Model");
+    expect(logs[0]).toContain("Action");
     const dataLine = logs[1] ?? "";
     expect(dataLine).toContain("sonnet");
   });
 
-  it("shows dash in Model column for systemEvent jobs", () => {
+  it("shows systemEvent in Action column for systemEvent jobs", () => {
     const { logs, runtime } = createRuntimeLogCapture();
     const job = createBaseJob({
       id: "sys-event-job",
@@ -132,10 +132,11 @@ describe("printCronList", () => {
     });
 
     printCronList([job], runtime);
-    expect(logs[0]).toContain("Model");
+    expect(logs[0]).toContain("Action");
+    expect(logs[1]).toContain("systemEvent");
   });
 
-  it("shows dash in Model column for agentTurn jobs without model override", () => {
+  it("shows agentTurn in Action column for agentTurn jobs without model override", () => {
     const { logs, runtime } = createRuntimeLogCapture();
     const job = createBaseJob({
       id: "no-model-job",
@@ -146,7 +147,7 @@ describe("printCronList", () => {
 
     printCronList([job], runtime);
     const dataLine = logs[1] ?? "";
-    expect(dataLine).not.toContain("undefined");
+    expect(dataLine).toContain("agentTurn");
   });
 
   it("shows explicit agentId when set", () => {
@@ -163,6 +164,20 @@ describe("printCronList", () => {
     const dataLine = logs[1] ?? "";
     expect(dataLine).toContain("ops");
     expect(dataLine).toContain("opus");
+  });
+
+  it("shows workflow module in Action column for workflowStart jobs", () => {
+    const { logs, runtime } = createRuntimeLogCapture();
+    const job = createBaseJob({
+      id: "workflow-job",
+      name: "Workflow",
+      sessionTarget: "main",
+      payload: { kind: "workflowStart", moduleId: "codex_controller", asyncStart: true },
+    });
+
+    printCronList([job], runtime);
+    expect(logs[0]).toContain("Action");
+    expect(logs[1]).toContain("workflow:codex_co...");
   });
 
   it("shows exact label for cron schedules with stagger disabled", () => {

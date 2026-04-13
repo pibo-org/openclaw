@@ -137,7 +137,7 @@ const CRON_LAST_PAD = 10;
 const CRON_STATUS_PAD = 9;
 const CRON_TARGET_PAD = 9;
 const CRON_AGENT_PAD = 10;
-const CRON_MODEL_PAD = 20;
+const CRON_ACTION_PAD = 20;
 
 const pad = (value: string, width: number) => value.padEnd(width);
 
@@ -224,7 +224,7 @@ export function printCronList(jobs: CronJob[], runtime: RuntimeEnv = defaultRunt
     pad("Status", CRON_STATUS_PAD),
     pad("Target", CRON_TARGET_PAD),
     pad("Agent ID", CRON_AGENT_PAD),
-    pad("Model", CRON_MODEL_PAD),
+    pad("Action", CRON_ACTION_PAD),
   ].join(" ");
 
   runtime.log(rich ? theme.heading(header) : header);
@@ -246,12 +246,16 @@ export function printCronList(jobs: CronJob[], runtime: RuntimeEnv = defaultRunt
     const statusLabel = pad(statusRaw, CRON_STATUS_PAD);
     const targetLabel = pad(job.sessionTarget ?? "-", CRON_TARGET_PAD);
     const agentLabel = pad(truncate(job.agentId ?? "-", CRON_AGENT_PAD), CRON_AGENT_PAD);
-    const modelLabel = pad(
+    const actionLabel = pad(
       truncate(
-        (job.payload.kind === "agentTurn" ? job.payload.model : undefined) ?? "-",
-        CRON_MODEL_PAD,
+        job.payload.kind === "agentTurn"
+          ? (job.payload.model ?? "agentTurn")
+          : job.payload.kind === "workflowStart"
+            ? `workflow:${job.payload.moduleId}`
+            : "systemEvent",
+        CRON_ACTION_PAD,
       ),
-      CRON_MODEL_PAD,
+      CRON_ACTION_PAD,
     );
 
     const coloredStatus = (() => {
@@ -287,9 +291,10 @@ export function printCronList(jobs: CronJob[], runtime: RuntimeEnv = defaultRunt
       coloredStatus,
       coloredTarget,
       coloredAgent,
-      job.payload.kind === "agentTurn" && job.payload.model
-        ? colorize(rich, theme.info, modelLabel)
-        : colorize(rich, theme.muted, modelLabel),
+      job.payload.kind === "workflowStart" ||
+      (job.payload.kind === "agentTurn" && job.payload.model)
+        ? colorize(rich, theme.info, actionLabel)
+        : colorize(rich, theme.muted, actionLabel),
     ].join(" ");
 
     runtime.log(line.trimEnd());

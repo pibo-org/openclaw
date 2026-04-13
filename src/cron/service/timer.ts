@@ -1144,11 +1144,41 @@ export async function executeJobCore(
   if (abortSignal?.aborted) {
     return resolveAbortError();
   }
+  if (job.payload.kind === "workflowStart") {
+    return await executeWorkflowStartCronJob(state, job, abortSignal, resolveAbortError);
+  }
   if (job.sessionTarget === "main") {
     return await executeMainSessionCronJob(state, job, abortSignal, waitWithAbort);
   }
 
   return await executeDetachedCronJob(state, job, abortSignal, resolveAbortError);
+}
+
+async function executeWorkflowStartCronJob(
+  state: CronServiceState,
+  job: CronJob,
+  abortSignal: AbortSignal | undefined,
+  resolveAbortError: () => { status: "error"; error: string },
+): Promise<
+  CronRunOutcome & CronRunTelemetry & { delivered?: boolean; deliveryAttempted?: boolean }
+> {
+  if (job.payload.kind !== "workflowStart") {
+    return { status: "skipped", error: 'workflow start requires payload.kind="workflowStart"' };
+  }
+  if (job.payload.asyncStart === false) {
+    return {
+      status: "error",
+      error: "workflowStart cron jobs currently require asyncStart=true",
+    };
+  }
+  if (abortSignal?.aborted) {
+    return resolveAbortError();
+  }
+  const res = await state.deps.runWorkflowJob({ job, abortSignal });
+  if (abortSignal?.aborted) {
+    return resolveAbortError();
+  }
+  return res;
 }
 
 async function executeMainSessionCronJob(
@@ -1358,6 +1388,9 @@ function emitJobFinished(
     model: result.model,
     provider: result.provider,
     usage: result.usage,
+    workflowRunId: result.workflowRunId,
+    workflowModuleId: result.workflowModuleId,
+    workflowStartMode: result.workflowStartMode,
   });
 }
 

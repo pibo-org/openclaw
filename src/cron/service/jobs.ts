@@ -135,17 +135,24 @@ function resolveEveryAnchorMs(params: {
 }
 
 export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "payload">) {
-  const isIsolatedLike =
-    job.sessionTarget === "isolated" ||
-    job.sessionTarget === "current" ||
-    job.sessionTarget.startsWith("session:");
+  const isSessionBoundTarget =
+    job.sessionTarget === "current" || job.sessionTarget.startsWith("session:");
   if (job.sessionTarget.startsWith("session:")) {
     assertSafeCronSessionTargetId(job.sessionTarget.slice(8));
+  }
+  if (job.payload.kind === "workflowStart") {
+    if (job.sessionTarget !== "main" && !job.sessionTarget.startsWith("session:")) {
+      throw new Error('workflowStart cron jobs require sessionTarget="main" or "session:<id>"');
+    }
+    return;
   }
   if (job.sessionTarget === "main" && job.payload.kind !== "systemEvent") {
     throw new Error('main cron jobs require payload.kind="systemEvent"');
   }
-  if (isIsolatedLike && job.payload.kind !== "agentTurn") {
+  if (
+    (job.sessionTarget === "isolated" || isSessionBoundTarget) &&
+    job.payload.kind !== "agentTurn"
+  ) {
     throw new Error('isolated/current/session cron jobs require payload.kind="agentTurn"');
   }
 }
@@ -169,7 +176,15 @@ function assertMainSessionAgentId(
   }
 }
 
-function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery">) {
+function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery" | "payload">) {
+  if (job.payload.kind === "workflowStart") {
+    if (job.delivery && job.delivery.mode && job.delivery.mode !== "none") {
+      throw new Error(
+        "workflowStart cron jobs do not support delivery.mode; workflow reporting owns visible success delivery",
+      );
+    }
+    return;
+  }
   // No delivery object or mode is "none" -- nothing to validate.
   if (!job.delivery || job.delivery.mode === "none") {
     return;
@@ -192,12 +207,18 @@ function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery">)
   }
 }
 
-function assertFailureDestinationSupport(job: Pick<CronJob, "sessionTarget" | "delivery">) {
+function assertFailureDestinationSupport(
+  job: Pick<CronJob, "sessionTarget" | "delivery" | "payload">,
+) {
   const failureDestination = job.delivery?.failureDestination;
   if (!failureDestination) {
     return;
   }
-  if (job.sessionTarget === "main" && job.delivery?.mode !== "webhook") {
+  if (
+    job.payload.kind !== "workflowStart" &&
+    job.sessionTarget === "main" &&
+    job.delivery?.mode !== "webhook"
+  ) {
     throw new Error(
       'cron delivery.failureDestination is only supported for sessionTarget="isolated" unless delivery.mode="webhook"',
     );
@@ -620,6 +641,7 @@ export function applyJobPatch(
     job.failureAlert = mergeCronFailureAlert(job.failureAlert, patch.failureAlert);
   }
   if (
+    job.payload.kind !== "workflowStart" &&
     job.sessionTarget === "main" &&
     job.delivery?.mode !== "webhook" &&
     job.delivery?.failureDestination
@@ -628,7 +650,11 @@ export function applyJobPatch(
       'cron delivery.failureDestination is only supported for sessionTarget="isolated" unless delivery.mode="webhook"',
     );
   }
-  if (job.sessionTarget === "main" && job.delivery?.mode !== "webhook") {
+  if (
+    job.payload.kind !== "workflowStart" &&
+    job.sessionTarget === "main" &&
+    job.delivery?.mode !== "webhook"
+  ) {
     job.delivery = undefined;
   }
   if (patch.state) {
@@ -659,36 +685,61 @@ function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch): CronP
     return { kind: "systemEvent", text };
   }
 
+  if (existing.kind === "workflowStart") {
+    const next: Extract<CronPayload, { kind: "workflowStart" }> = { ...existing };
+    if (patch.kind && patch.kind !== "workflowStart") {
+      return buildPayloadFromPatch(patch);
+    }
+    if ("moduleId" in patch && typeof patch.moduleId === "string") {
+      next.moduleId = patch.moduleId;
+    }
+    if ("input" in patch) {
+      next.input = patch.input;
+    }
+    if ("maxRounds" in patch && typeof patch.maxRounds === "number") {
+      next.maxRounds = patch.maxRounds;
+    }
+    if ("asyncStart" in patch && typeof patch.asyncStart === "boolean") {
+      next.asyncStart = patch.asyncStart;
+    }
+    return next;
+  }
+
   if (existing.kind !== "agentTurn") {
     return buildPayloadFromPatch(patch);
   }
 
+  if (patch.kind && patch.kind !== "agentTurn") {
+    return buildPayloadFromPatch(patch);
+  }
+
   const next: Extract<CronPayload, { kind: "agentTurn" }> = { ...existing };
-  if (typeof patch.message === "string") {
-    next.message = patch.message;
+  const agentPatch = patch;
+  if (typeof agentPatch.message === "string") {
+    next.message = agentPatch.message;
   }
-  if (typeof patch.model === "string") {
-    next.model = patch.model;
+  if (typeof agentPatch.model === "string") {
+    next.model = agentPatch.model;
   }
-  if (Array.isArray(patch.fallbacks)) {
-    next.fallbacks = patch.fallbacks;
+  if (Array.isArray(agentPatch.fallbacks)) {
+    next.fallbacks = agentPatch.fallbacks;
   }
-  if (Array.isArray(patch.toolsAllow)) {
-    next.toolsAllow = patch.toolsAllow;
-  } else if (patch.toolsAllow === null) {
+  if (Array.isArray(agentPatch.toolsAllow)) {
+    next.toolsAllow = agentPatch.toolsAllow;
+  } else if (agentPatch.toolsAllow === null) {
     delete next.toolsAllow;
   }
-  if (typeof patch.thinking === "string") {
-    next.thinking = patch.thinking;
+  if (typeof agentPatch.thinking === "string") {
+    next.thinking = agentPatch.thinking;
   }
-  if (typeof patch.timeoutSeconds === "number") {
-    next.timeoutSeconds = patch.timeoutSeconds;
+  if (typeof agentPatch.timeoutSeconds === "number") {
+    next.timeoutSeconds = agentPatch.timeoutSeconds;
   }
-  if (typeof patch.lightContext === "boolean") {
-    next.lightContext = patch.lightContext;
+  if (typeof agentPatch.lightContext === "boolean") {
+    next.lightContext = agentPatch.lightContext;
   }
-  if (typeof patch.allowUnsafeExternalContent === "boolean") {
-    next.allowUnsafeExternalContent = patch.allowUnsafeExternalContent;
+  if (typeof agentPatch.allowUnsafeExternalContent === "boolean") {
+    next.allowUnsafeExternalContent = agentPatch.allowUnsafeExternalContent;
   }
   return next;
 }
@@ -701,20 +752,34 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
     return { kind: "systemEvent", text: patch.text };
   }
 
-  if (typeof patch.message !== "string" || patch.message.length === 0) {
+  if (patch.kind === "workflowStart") {
+    if (typeof patch.moduleId !== "string" || patch.moduleId.length === 0) {
+      throw new Error('cron.update payload.kind="workflowStart" requires moduleId');
+    }
+    return {
+      kind: "workflowStart",
+      moduleId: patch.moduleId,
+      input: patch.input,
+      maxRounds: patch.maxRounds,
+      asyncStart: patch.asyncStart,
+    };
+  }
+
+  const agentPatch = patch;
+  if (typeof agentPatch.message !== "string" || agentPatch.message.length === 0) {
     throw new Error('cron.update payload.kind="agentTurn" requires message');
   }
 
   return {
     kind: "agentTurn",
-    message: patch.message,
-    model: patch.model,
-    fallbacks: patch.fallbacks,
-    toolsAllow: Array.isArray(patch.toolsAllow) ? patch.toolsAllow : undefined,
-    thinking: patch.thinking,
-    timeoutSeconds: patch.timeoutSeconds,
-    lightContext: patch.lightContext,
-    allowUnsafeExternalContent: patch.allowUnsafeExternalContent,
+    message: agentPatch.message,
+    model: agentPatch.model,
+    fallbacks: agentPatch.fallbacks,
+    toolsAllow: Array.isArray(agentPatch.toolsAllow) ? agentPatch.toolsAllow : undefined,
+    thinking: agentPatch.thinking,
+    timeoutSeconds: agentPatch.timeoutSeconds,
+    lightContext: agentPatch.lightContext,
+    allowUnsafeExternalContent: agentPatch.allowUnsafeExternalContent,
   };
 }
 

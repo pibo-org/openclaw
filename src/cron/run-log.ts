@@ -292,6 +292,15 @@ function parseAllRunLogEntries(raw: string, opts?: { jobId?: string }): CronRunL
         model: typeof obj.model === "string" && obj.model.trim() ? obj.model : undefined,
         provider:
           typeof obj.provider === "string" && obj.provider.trim() ? obj.provider : undefined,
+        workflowRunId:
+          typeof obj.workflowRunId === "string" && obj.workflowRunId.trim()
+            ? obj.workflowRunId
+            : undefined,
+        workflowModuleId:
+          typeof obj.workflowModuleId === "string" && obj.workflowModuleId.trim()
+            ? obj.workflowModuleId
+            : undefined,
+        workflowStartMode: obj.workflowStartMode === "async" ? obj.workflowStartMode : undefined,
         usage: usage
           ? {
               input_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : undefined,

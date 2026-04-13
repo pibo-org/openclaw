@@ -2,6 +2,7 @@ import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../browser-lifecycle-cleanup.js";
 import type { CliDeps } from "../cli/deps.js";
 import { createOutboundSendDeps } from "../cli/outbound-send-deps.js";
+import { buildTrustedWorkflowContext } from "../cli/pibo/workflows/trusted-context.js";
 import { loadConfig } from "../config/config.js";
 import {
   canonicalizeMainSessionAlias,
@@ -33,6 +34,7 @@ import { SsrFBlockedError } from "../infra/net/ssrf.js";
 import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getChildLogger } from "../logging.js";
+import { createRuntimePiboWorkflows } from "../plugins/runtime/runtime-pibo-workflows.js";
 import { normalizeAgentId, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import {
@@ -229,6 +231,31 @@ export function buildGatewayCronService(params: {
     });
   const sessionStorePath = resolveSessionStorePath(defaultAgentId);
   const warnedLegacyWebhookJobs = new Set<string>();
+  const runtime = { piboWorkflows: createRuntimePiboWorkflows() };
+
+  const resolveWorkflowOwnerSessionKey = (params: {
+    runtimeConfig: ReturnType<typeof loadConfig>;
+    agentId: string;
+    job: { sessionTarget: string; sessionKey?: string };
+  }) => {
+    if (params.job.sessionTarget === "main") {
+      return resolveCronSessionKey({
+        runtimeConfig: params.runtimeConfig,
+        agentId: params.agentId,
+        requestedSessionKey: params.job.sessionKey,
+      });
+    }
+    if (params.job.sessionTarget.startsWith("session:")) {
+      return resolveCronSessionKey({
+        runtimeConfig: params.runtimeConfig,
+        agentId: params.agentId,
+        requestedSessionKey: params.job.sessionTarget.slice(8),
+      });
+    }
+    throw new Error(
+      `workflowStart cron jobs require a session-bound owner context, got ${params.job.sessionTarget}`,
+    );
+  };
 
   const cron = new CronService({
     storePath,
@@ -307,6 +334,63 @@ export function buildGatewayCronService(params: {
           onWarn: (msg) => cronLogger.warn({ jobId: job.id }, msg),
         });
       }
+    },
+    runWorkflowJob: async ({ job, abortSignal }) => {
+      if (job.payload.kind !== "workflowStart") {
+        return { status: "skipped", error: 'workflow start requires payload.kind="workflowStart"' };
+      }
+      if (job.payload.asyncStart === false) {
+        return {
+          status: "error",
+          error: "workflowStart cron jobs currently require asyncStart=true",
+        };
+      }
+      if (abortSignal?.aborted) {
+        return { status: "error", error: "cron: job execution timed out" };
+      }
+
+      const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
+      const ownerSessionKey = resolveWorkflowOwnerSessionKey({
+        runtimeConfig,
+        agentId,
+        job,
+      });
+      const deliveryTarget = await resolveDeliveryTarget(runtimeConfig, agentId, {
+        channel: job.delivery?.channel,
+        to: job.delivery?.to,
+        threadId: job.delivery?.threadId,
+        accountId: job.delivery?.accountId,
+        sessionKey: ownerSessionKey,
+      });
+      if (!deliveryTarget.ok) {
+        return {
+          status: "error",
+          error: `workflowStart requires a trusted origin/reporting target: ${formatErrorMessage(deliveryTarget.error)}`,
+        };
+      }
+
+      const trustedContext = buildTrustedWorkflowContext({
+        ownerSessionKey,
+        channel: deliveryTarget.channel,
+        to: deliveryTarget.to,
+        accountId: deliveryTarget.accountId,
+        threadId: deliveryTarget.threadId,
+      });
+      const workflowRun = await runtime.piboWorkflows.startAsync(job.payload.moduleId, {
+        input: job.payload.input ?? {},
+        ...(typeof job.payload.maxRounds === "number" && Number.isFinite(job.payload.maxRounds)
+          ? { maxRounds: job.payload.maxRounds }
+          : {}),
+        origin: trustedContext.origin,
+        reporting: trustedContext.reporting,
+      });
+
+      return {
+        status: "ok",
+        workflowRunId: workflowRun.runId,
+        workflowModuleId: workflowRun.moduleId,
+        workflowStartMode: "async",
+      };
     },
     sendCronFailureAlert: async ({ job, text, channel, to, mode, accountId }) => {
       const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
@@ -524,6 +608,9 @@ export function buildGatewayCronService(params: {
             model: evt.model,
             provider: evt.provider,
             usage: evt.usage,
+            workflowRunId: evt.workflowRunId,
+            workflowModuleId: evt.workflowModuleId,
+            workflowStartMode: evt.workflowStartMode,
           },
           runLogPrune,
         ).catch((err) => {

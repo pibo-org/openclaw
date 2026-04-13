@@ -73,7 +73,16 @@ type CronUpdatePatch = {
 
 type CronAddParams = {
   schedule?: { kind?: string; staggerMs?: number };
-  payload?: { model?: string; thinking?: string; lightContext?: boolean };
+  payload?: {
+    kind?: string;
+    model?: string;
+    thinking?: string;
+    lightContext?: boolean;
+    moduleId?: string;
+    input?: unknown;
+    maxRounds?: number;
+    asyncStart?: boolean;
+  };
   delivery?: { mode?: string; accountId?: string };
   deleteAfterRun?: boolean;
   agentId?: string;
@@ -262,6 +271,59 @@ describe("cron cli", () => {
 
     expect(params?.payload?.model).toBe("opus");
     expect(params?.payload?.thinking).toBe("low");
+  });
+
+  it("builds workflowStart payload on cron add", async () => {
+    const params = await runCronAddAndGetParams([
+      "--name",
+      "workflow job",
+      "--cron",
+      "0 * * * *",
+      "--workflow",
+      "codex_controller",
+      "--input-json",
+      '{"task":"ship"}',
+      "--max-rounds",
+      "5",
+    ]);
+
+    expect(params.payload).toEqual({
+      kind: "workflowStart",
+      moduleId: "codex_controller",
+      input: { task: "ship" },
+      maxRounds: 5,
+      asyncStart: undefined,
+    });
+    expect(params.sessionTarget).toBe("main");
+  });
+
+  it("rejects delivery flags on workflow cron add", async () => {
+    await expectCronCommandExit([
+      "cron",
+      "add",
+      "--name",
+      "workflow job",
+      "--cron",
+      "0 * * * *",
+      "--workflow",
+      "codex_controller",
+      "--announce",
+    ]);
+  });
+
+  it("rejects --session current on workflow cron add", async () => {
+    await expectCronCommandExit([
+      "cron",
+      "add",
+      "--name",
+      "workflow job",
+      "--cron",
+      "0 * * * *",
+      "--workflow",
+      "codex_controller",
+      "--session",
+      "current",
+    ]);
   });
 
   it("defaults isolated cron add to announce delivery", async () => {

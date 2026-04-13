@@ -8,7 +8,9 @@ function ensureDir(dirPath: string) {
 }
 
 export function workflowsStateDir() {
-  return path.join(homedir(), ".local", "state", "pibo-workflows");
+  const homeDir = process.env.HOME?.trim() || homedir();
+  const stateRoot = process.env.XDG_STATE_HOME?.trim() || path.join(homeDir, ".local", "state");
+  return path.join(stateRoot, "pibo-workflows");
 }
 
 export function workflowRunsDir() {

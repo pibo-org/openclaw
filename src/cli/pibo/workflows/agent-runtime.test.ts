@@ -45,7 +45,7 @@ describe("runWorkflowAgentOnSession", () => {
       deliver: false,
       suppressRuntimeOutput: true,
       runId: "idem-1",
-      timeout: 60,
+      timeout: "60",
     });
     expect(callWorkflowGatewayMethod).toHaveBeenNthCalledWith(1, "chat.history", {
       sessionKey: "agent:codex:workflow:test:orchestrator:main",

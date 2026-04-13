@@ -4,10 +4,7 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import type {
-  WorkflowOriginContext,
-  WorkflowReportingConfig,
-} from "../../../src/cli/pibo/workflows/types.js";
+import { buildTrustedWorkflowContext as buildTrustedWorkflowContextFromOrigin } from "../../../src/cli/pibo/workflows/trusted-context.js";
 
 function json(payload: unknown) {
   return {
@@ -118,26 +115,18 @@ function buildTrustedWorkflowContext(ctx: OpenClawPluginToolContext) {
   if (!sessionKey || !delivery?.channel || !delivery.to) {
     return null;
   }
-  const origin: WorkflowOriginContext = {
+  return buildTrustedWorkflowContextFromOrigin({
     ownerSessionKey: sessionKey,
     channel: delivery.channel,
     to: delivery.to,
-    ...(typeof delivery.accountId === "string" && delivery.accountId
-      ? { accountId: delivery.accountId }
-      : typeof ctx.agentAccountId === "string" && ctx.agentAccountId
-        ? { accountId: ctx.agentAccountId }
-        : {}),
-    ...(delivery.threadId != null && delivery.threadId !== ""
-      ? { threadId: String(delivery.threadId) }
-      : {}),
-  };
-  const reporting: WorkflowReportingConfig = {
-    deliveryMode: "topic_origin",
-    senderPolicy: "emitting_agent",
-    headerMode: "runtime_header",
-    events: ["started", "blocked", "completed"],
-  };
-  return { origin, reporting };
+    accountId:
+      typeof delivery.accountId === "string" && delivery.accountId
+        ? delivery.accountId
+        : typeof ctx.agentAccountId === "string" && ctx.agentAccountId
+          ? ctx.agentAccountId
+          : undefined,
+    threadId: delivery.threadId,
+  });
 }
 
 export function createPiboWorkflowStartAsyncTool(_api: OpenClawPluginApi) {

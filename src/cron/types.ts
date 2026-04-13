@@ -27,6 +27,9 @@ export type CronRunTelemetry = {
   usage?: CronUsageSummary;
   deliveryStatus?: CronDeliveryStatus;
   deliveryError?: string;
+  workflowRunId?: string;
+  workflowModuleId?: string;
+  workflowStartMode?: "async";
 };
 
 export type CronRunOutcome = {
@@ -48,9 +51,15 @@ export type CronFailureAlert = {
   accountId?: string;
 };
 
-export type CronPayload = { kind: "systemEvent"; text: string } | CronAgentTurnPayload;
+export type CronPayload =
+  | { kind: "systemEvent"; text: string }
+  | CronAgentTurnPayload
+  | CronWorkflowStartPayload;
 
-export type CronPayloadPatch = { kind: "systemEvent"; text?: string } | CronAgentTurnPayloadPatch;
+export type CronPayloadPatch =
+  | { kind: "systemEvent"; text?: string }
+  | CronAgentTurnPayloadPatch
+  | CronWorkflowStartPayloadPatch;
 
 type CronAgentTurnPayloadFields = {
   message: string;
@@ -73,6 +82,21 @@ type CronAgentTurnPayloadPatch = {
 } & Partial<Omit<CronAgentTurnPayloadFields, "toolsAllow">> & {
     toolsAllow?: string[] | null;
   };
+
+type CronWorkflowStartPayloadFields = {
+  moduleId: string;
+  input?: unknown;
+  maxRounds?: number;
+  asyncStart?: boolean;
+};
+
+export type CronWorkflowStartPayload = {
+  kind: "workflowStart";
+} & CronWorkflowStartPayloadFields;
+
+type CronWorkflowStartPayloadPatch = {
+  kind: "workflowStart";
+} & Partial<CronWorkflowStartPayloadFields>;
 
 export type CronScheduleAt = {
   kind: "at";

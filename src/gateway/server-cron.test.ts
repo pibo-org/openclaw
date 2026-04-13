@@ -3,6 +3,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { readCronRunLogEntriesPage, resolveCronRunLogPath } from "../cron/run-log.js";
 import { SsrFBlockedError } from "../infra/net/ssrf.js";
 import { mergeMockedModule } from "../test-utils/vitest-module-mocks.js";
 
@@ -13,6 +14,8 @@ const {
   fetchWithSsrFGuardMock,
   runCronIsolatedAgentTurnMock,
   cleanupBrowserSessionsForLifecycleEndMock,
+  resolveDeliveryTargetMock,
+  workflowStartAsyncMock,
 } = vi.hoisted(() => ({
   enqueueSystemEventMock: vi.fn(),
   requestHeartbeatNowMock: vi.fn(),
@@ -20,6 +23,20 @@ const {
   fetchWithSsrFGuardMock: vi.fn(),
   runCronIsolatedAgentTurnMock: vi.fn(async () => ({ status: "ok" as const, summary: "ok" })),
   cleanupBrowserSessionsForLifecycleEndMock: vi.fn(async () => {}),
+  resolveDeliveryTargetMock: vi.fn(
+    async (): Promise<any> => ({
+      ok: true,
+      channel: "telegram",
+      to: "123456",
+      accountId: "acct-main",
+      threadId: "333",
+      mode: "implicit" as const,
+    }),
+  ),
+  workflowStartAsyncMock: vi.fn(async () => ({
+    runId: "workflow-run-1",
+    moduleId: "codex_controller",
+  })),
 }));
 
 function enqueueSystemEvent(...args: unknown[]) {
@@ -65,6 +82,16 @@ vi.mock("../browser-lifecycle-cleanup.js", () => ({
   cleanupBrowserSessionsForLifecycleEnd: cleanupBrowserSessionsForLifecycleEndMock,
 }));
 
+vi.mock("../cron/isolated-agent/delivery-target.js", () => ({
+  resolveDeliveryTarget: resolveDeliveryTargetMock,
+}));
+
+vi.mock("../plugins/runtime/runtime-pibo-workflows.js", () => ({
+  createRuntimePiboWorkflows: () => ({
+    startAsync: workflowStartAsyncMock,
+  }),
+}));
+
 import { buildGatewayCronService } from "./server-cron.js";
 
 function createCronConfig(name: string): OpenClawConfig {
@@ -87,6 +114,8 @@ describe("buildGatewayCronService", () => {
     fetchWithSsrFGuardMock.mockClear();
     runCronIsolatedAgentTurnMock.mockClear();
     cleanupBrowserSessionsForLifecycleEndMock.mockClear();
+    resolveDeliveryTargetMock.mockClear();
+    workflowStartAsyncMock.mockClear();
   });
 
   it("routes main-target jobs to the scoped session for enqueue + wake", async () => {
@@ -256,6 +285,143 @@ describe("buildGatewayCronService", () => {
         sessionKeys: [`cron:${job.id}`],
         onWarn: expect.any(Function),
       });
+    } finally {
+      state.cron.stop();
+    }
+  });
+
+  it("starts workflow cron jobs through runtime.piboWorkflows.startAsync and persists linkage fields without webhook success delivery", async () => {
+    const cfg = createCronConfig("server-cron-workflow");
+    cfg.cron = {
+      ...cfg.cron,
+      webhook: "https://example.com/cron-webhook",
+    };
+    loadConfigMock.mockReturnValue(cfg);
+
+    const state = buildGatewayCronService({
+      cfg,
+      deps: {} as CliDeps,
+      broadcast: () => {},
+    });
+    try {
+      const job = await state.cron.add({
+        name: "workflow-start",
+        enabled: true,
+        schedule: { kind: "at", at: new Date(1).toISOString() },
+        sessionTarget: "main",
+        wakeMode: "next-heartbeat",
+        sessionKey: "telegram:group:-100123:topic:333",
+        payload: {
+          kind: "workflowStart",
+          moduleId: "codex_controller",
+          input: { task: "ship" },
+          maxRounds: 4,
+        },
+      });
+
+      await state.cron.run(job.id, "force");
+
+      expect(workflowStartAsyncMock).toHaveBeenCalledWith(
+        "codex_controller",
+        expect.objectContaining({
+          input: { task: "ship" },
+          maxRounds: 4,
+          origin: {
+            ownerSessionKey: "agent:main:telegram:group:-100123:topic:333",
+            channel: "telegram",
+            to: "123456",
+            accountId: "acct-main",
+            threadId: "333",
+          },
+          reporting: {
+            deliveryMode: "topic_origin",
+            senderPolicy: "emitting_agent",
+            headerMode: "runtime_header",
+            events: ["started", "blocked", "completed"],
+          },
+        }),
+      );
+      expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+
+      const logPath = resolveCronRunLogPath({ storePath: cfg.cron.store!, jobId: job.id });
+      const page = await readCronRunLogEntriesPage(logPath, { jobId: job.id });
+      expect(page.entries).toHaveLength(1);
+      expect(page.entries[0]).toMatchObject({
+        status: "ok",
+        workflowRunId: "workflow-run-1",
+        workflowModuleId: "codex_controller",
+        workflowStartMode: "async",
+      });
+      expect(page.entries[0]?.summary).toBeUndefined();
+      expect(page.entries[0]?.delivered).toBeUndefined();
+    } finally {
+      state.cron.stop();
+    }
+  });
+
+  it("fails workflow cron starts closed when trusted origin/reporting cannot be resolved", async () => {
+    const cfg = createCronConfig("server-cron-workflow-fail-closed");
+    loadConfigMock.mockReturnValue(cfg);
+    resolveDeliveryTargetMock.mockResolvedValueOnce({
+      ok: false as const,
+      mode: "implicit" as const,
+      error: new Error("missing delivery target"),
+    });
+
+    const state = buildGatewayCronService({
+      cfg,
+      deps: {} as CliDeps,
+      broadcast: () => {},
+    });
+    try {
+      const job = await state.cron.add({
+        name: "workflow-fail-closed",
+        enabled: true,
+        schedule: { kind: "at", at: new Date(1).toISOString() },
+        sessionTarget: "main",
+        wakeMode: "next-heartbeat",
+        payload: {
+          kind: "workflowStart",
+          moduleId: "codex_controller",
+        },
+      });
+
+      await state.cron.run(job.id, "force");
+
+      expect(workflowStartAsyncMock).not.toHaveBeenCalled();
+      expect(state.cron.getJob(job.id)?.state.lastError).toContain(
+        "workflowStart requires a trusted origin/reporting target: missing delivery target",
+      );
+    } finally {
+      state.cron.stop();
+    }
+  });
+
+  it("rejects workflow cron jobs with sessionTarget current before persistence", async () => {
+    const cfg = createCronConfig("server-cron-workflow-current");
+    loadConfigMock.mockReturnValue(cfg);
+
+    const state = buildGatewayCronService({
+      cfg,
+      deps: {} as CliDeps,
+      broadcast: () => {},
+    });
+    try {
+      await expect(
+        state.cron.add({
+          name: "workflow-current",
+          enabled: true,
+          schedule: { kind: "at", at: new Date(1).toISOString() },
+          sessionTarget: "current",
+          wakeMode: "next-heartbeat",
+          payload: {
+            kind: "workflowStart",
+            moduleId: "codex_controller",
+          },
+        }),
+      ).rejects.toThrow(
+        'workflowStart cron jobs require sessionTarget="main" or "session:<id>"',
+      );
     } finally {
       state.cron.stop();
     }

@@ -44,6 +44,21 @@ describe("cron protocol validators", () => {
     ).toBe(true);
   });
 
+  it("accepts workflowStart payloads", () => {
+    expect(
+      validateCronAddParams({
+        ...minimalAddParams,
+        payload: {
+          kind: "workflowStart",
+          moduleId: "codex_controller",
+          input: { task: "ship" },
+          maxRounds: 5,
+          asyncStart: true,
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("rejects add params when required scheduling fields are missing", () => {
     const { wakeMode: _wakeMode, ...withoutWakeMode } = minimalAddParams;
     expect(validateCronAddParams(withoutWakeMode)).toBe(false);

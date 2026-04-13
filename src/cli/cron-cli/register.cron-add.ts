@@ -86,6 +86,10 @@ export function registerCronAddCommand(cron: Command) {
       .option("--exact", "Disable cron staggering (set stagger to 0)", false)
       .option("--system-event <text>", "System event payload (main session)")
       .option("--message <text>", "Agent message payload")
+      .option("--workflow <moduleId>", "PIBO workflow module id")
+      .option("--input-json <json>", "JSON workflow input payload")
+      .option("--max-rounds <n>", "Workflow round limit")
+      .option("--async-workflow", "Start workflow asynchronously", false)
       .option(
         "--thinking <level>",
         "Thinking level for agent jobs (off|minimal|low|medium|high|xhigh)",
@@ -124,8 +128,19 @@ export function registerCronAddCommand(cron: Command) {
           const rawAgentId = normalizeOptionalString(opts.agent);
           const agentId = rawAgentId ? sanitizeAgentId(rawAgentId) : undefined;
 
-          const hasAnnounce = Boolean(opts.announce) || opts.deliver === true;
-          const hasNoDeliver = opts.deliver === false;
+          const optionSource =
+            typeof cmd?.getOptionValueSource === "function"
+              ? (name: string) => cmd.getOptionValueSource(name)
+              : () => undefined;
+          const deliverSource = optionSource("deliver");
+          const channelSource = optionSource("channel");
+          const toSource = optionSource("to");
+          const hasExplicitDeliverFlag = deliverSource === "cli";
+          const hasExplicitChannel = channelSource === "cli";
+          const hasExplicitTo = toSource === "cli";
+          const hasAnnounce =
+            Boolean(opts.announce) || (hasExplicitDeliverFlag && opts.deliver === true);
+          const hasNoDeliver = hasExplicitDeliverFlag && opts.deliver === false;
           const deliveryFlagCount = [hasAnnounce, hasNoDeliver].filter(Boolean).length;
           if (deliveryFlagCount > 1) {
             throw new Error("Choose at most one of --announce or --no-deliver");
@@ -134,12 +149,38 @@ export function registerCronAddCommand(cron: Command) {
           const payload = (() => {
             const systemEvent = normalizeOptionalString(opts.systemEvent) ?? "";
             const message = normalizeOptionalString(opts.message) ?? "";
-            const chosen = [Boolean(systemEvent), Boolean(message)].filter(Boolean).length;
+            const workflow = normalizeOptionalString(opts.workflow) ?? "";
+            const chosen = [Boolean(systemEvent), Boolean(message), Boolean(workflow)].filter(
+              Boolean,
+            ).length;
             if (chosen !== 1) {
-              throw new Error("Choose exactly one payload: --system-event or --message");
+              throw new Error(
+                "Choose exactly one payload: --system-event, --message, or --workflow",
+              );
             }
             if (systemEvent) {
               return { kind: "systemEvent" as const, text: systemEvent };
+            }
+            if (workflow) {
+              let inputJson: unknown = {};
+              if (typeof opts.inputJson === "string" && opts.inputJson.trim()) {
+                try {
+                  inputJson = JSON.parse(opts.inputJson);
+                } catch (error) {
+                  throw new Error(
+                    `Invalid --input-json: ${error instanceof Error ? error.message : String(error)}`,
+                    { cause: error },
+                  );
+                }
+              }
+              const maxRounds = parsePositiveIntOrUndefined(opts.maxRounds);
+              return {
+                kind: "workflowStart" as const,
+                moduleId: workflow,
+                input: inputJson,
+                maxRounds: maxRounds && Number.isFinite(maxRounds) ? maxRounds : undefined,
+                asyncStart: opts.asyncWorkflow === true ? true : undefined,
+              };
             }
             const timeoutSeconds = parsePositiveIntOrUndefined(opts.timeoutSeconds);
             return {
@@ -160,10 +201,6 @@ export function registerCronAddCommand(cron: Command) {
             };
           })();
 
-          const optionSource =
-            typeof cmd?.getOptionValueSource === "function"
-              ? (name: string) => cmd.getOptionValueSource(name)
-              : () => undefined;
           const sessionSource = optionSource("session");
           const sessionTargetRaw = normalizeOptionalString(opts.session) ?? "";
           const inferredSessionTarget = payload.kind === "agentTurn" ? "isolated" : "main";
@@ -182,14 +219,32 @@ export function registerCronAddCommand(cron: Command) {
             throw new Error("Choose --delete-after-run or --keep-after-run, not both");
           }
 
-          if (sessionTarget === "main" && payload.kind !== "systemEvent") {
-            throw new Error("Main jobs require --system-event (systemEvent).");
+          if (
+            sessionTarget === "main" &&
+            payload.kind !== "systemEvent" &&
+            payload.kind !== "workflowStart"
+          ) {
+            throw new Error("Main jobs require --system-event or --workflow.");
           }
-          if (isIsolatedLikeSessionTarget && payload.kind !== "agentTurn") {
-            throw new Error("Isolated/current/custom-session jobs require --message (agentTurn).");
+          if (sessionTarget === "isolated" && payload.kind !== "agentTurn") {
+            throw new Error(
+              "Isolated jobs require --message; workflow jobs do not support --session isolated.",
+            );
+          }
+          if (sessionTarget === "current" && payload.kind === "workflowStart") {
+            throw new Error(
+              "Workflow jobs require --session main or --session session:<id>; --session current is not supported here.",
+            );
           }
           if (
-            (opts.announce || typeof opts.deliver === "boolean") &&
+            (sessionTarget === "current" || isCustomSessionTarget) &&
+            payload.kind !== "agentTurn" &&
+            payload.kind !== "workflowStart"
+          ) {
+            throw new Error("Current/custom-session jobs require --message or --workflow.");
+          }
+          if (
+            (opts.announce || hasExplicitDeliverFlag) &&
             (!isIsolatedLikeSessionTarget || payload.kind !== "agentTurn")
           ) {
             throw new Error("--announce/--no-deliver require a non-main agentTurn session target.");
@@ -199,6 +254,19 @@ export function registerCronAddCommand(cron: Command) {
 
           if (accountId && (!isIsolatedLikeSessionTarget || payload.kind !== "agentTurn")) {
             throw new Error("--account requires a non-main agentTurn job with delivery.");
+          }
+          if (
+            payload.kind === "workflowStart" &&
+            (opts.announce ||
+              hasExplicitDeliverFlag ||
+              hasExplicitChannel ||
+              hasExplicitTo ||
+              accountId ||
+              opts.bestEffortDeliver === true)
+          ) {
+            throw new Error(
+              "workflowStart jobs do not support cron delivery flags; workflow reporting owns visible success delivery.",
+            );
           }
 
           const deliveryMode =

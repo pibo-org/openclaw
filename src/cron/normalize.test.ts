@@ -583,6 +583,22 @@ describe("normalizeCronJobCreate", () => {
     expect(normalized.sessionTarget).toBe("isolated");
   });
 
+  it("preserves workflowStart current sessionTarget without context for explicit rejection", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "workflow-current-without-context",
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "current",
+      payload: { kind: "workflowStart", moduleId: "codex_controller" },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.sessionTarget).toBe("current");
+    expect(normalized.payload).toEqual({
+      kind: "workflowStart",
+      moduleId: "codex_controller",
+      asyncStart: true,
+    });
+  });
+
   it("preserves custom session ids with a session: prefix", () => {
     const normalized = normalizeCronJobCreate({
       name: "custom-session",
@@ -592,6 +608,29 @@ describe("normalizeCronJobCreate", () => {
     }) as unknown as Record<string, unknown>;
 
     expect(normalized.sessionTarget).toBe("session:MySessionID");
+  });
+
+  it("normalizes workflowStart payloads as first-class cron payloads", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "workflow-start",
+      schedule: { kind: "cron", expr: "0 * * * *" },
+      payload: {
+        kind: "workflowStart",
+        moduleId: " codex_controller ",
+        input: { task: "ship" },
+        maxRounds: "5",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.sessionTarget).toBe("main");
+    expect(normalized.payload).toEqual({
+      kind: "workflowStart",
+      moduleId: "codex_controller",
+      input: { task: "ship" },
+      maxRounds: 5,
+      asyncStart: true,
+    });
+    expect(validateCronAddParams(normalized)).toBe(true);
   });
 
   it("rejects custom session ids with path separators", () => {
@@ -819,6 +858,22 @@ describe("normalizeCronJobPatch", () => {
 
     const payload = normalized.payload as Record<string, unknown>;
     expect(payload).toEqual({ kind: "systemEvent", text: "hi" });
+    expect(validateCronUpdateParams({ id: "job-1", patch: normalized })).toBe(true);
+  });
+
+  it("infers workflowStart kind for workflow-only payload patches", () => {
+    const normalized = normalizeCronJobPatch({
+      payload: {
+        moduleId: " codex_controller ",
+        maxRounds: "3",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.payload).toEqual({
+      kind: "workflowStart",
+      moduleId: "codex_controller",
+      maxRounds: 3,
+    });
     expect(validateCronUpdateParams({ id: "job-1", patch: normalized })).toBe(true);
   });
 
