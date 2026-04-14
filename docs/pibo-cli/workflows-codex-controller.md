@@ -93,7 +93,9 @@ This is intentionally **not** wired to the generic OpenClaw session-compaction p
 Recommended verification steps:
 
 ```bash
-pnpm vitest run src/cli/pibo/workflows/index.test.ts src/cli/pibo/workflows/modules/codex-controller.test.ts
+node scripts/run-vitest.mjs run --config vitest.cli.config.ts \
+  src/cli/pibo/workflows/index.test.ts \
+  src/cli/pibo/workflows/modules/codex-controller.test.ts
 pnpm openclaw -- pibo workflows list
 pnpm openclaw -- pibo workflows describe codex_controller
 pnpm openclaw -- pibo workflows start noop --json '{"prompt":"smoke"}' --output-json
