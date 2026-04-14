@@ -59,6 +59,34 @@ describe("runWorkflowAgentOnSession", () => {
     });
   });
 
+  it("passes an explicit workspaceDir override through to agentCommand only when provided", async () => {
+    readLatestAssistantReplySnapshot.mockResolvedValueOnce({}).mockResolvedValueOnce({
+      text: "DECISION: DONE\nMODULE_REASON: probe ok",
+      fingerprint: "reply-2",
+    });
+    callWorkflowGatewayMethod.mockResolvedValueOnce({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+    });
+
+    const { runWorkflowAgentOnSession } = await import("./agent-runtime.js");
+    await runWorkflowAgentOnSession({
+      sessionKey: "agent:codex:workflow:test:orchestrator:main",
+      message: "test",
+      idempotencyKey: "idem-override",
+      workspaceDir: "/workspace/context",
+    });
+
+    expect(agentCommand).toHaveBeenCalledWith({
+      sessionKey: "agent:codex:workflow:test:orchestrator:main",
+      message: "test",
+      deliver: false,
+      suppressRuntimeOutput: true,
+      workspaceDir: "/workspace/context",
+      runId: "idem-override",
+      timeout: "120",
+    });
+  });
+
   it("throws when no assistant output appears after the turn completes", async () => {
     readLatestAssistantReplySnapshot.mockResolvedValue({});
     callWorkflowGatewayMethod.mockResolvedValueOnce({ messages: [] });

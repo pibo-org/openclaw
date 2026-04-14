@@ -5,6 +5,7 @@ import {
   requireAcpRuntimeBackend,
 } from "../../../../acp/runtime/registry.js";
 import type { AcpRuntimeEvent } from "../../../../acp/runtime/types.js";
+import { resolveAgentWorkspaceDir } from "../../../../agents/agent-scope.js";
 import { ensureCliPluginRegistryLoaded } from "../../../../cli/plugin-registry-loader.js";
 import { loadConfig } from "../../../../config/config.js";
 import { getActivePluginRegistry } from "../../../../plugins/runtime.js";
@@ -25,6 +26,7 @@ type WorkerCompactionMode = "off" | "acp_control_command";
 type CodexControllerInput = {
   task: string;
   workingDirectory: string;
+  agentId?: string;
   maxRetries?: number;
   successCriteria: string[];
   constraints: string[];
@@ -33,6 +35,10 @@ type CodexControllerInput = {
   controllerPromptPath: string;
   workerCompactionMode?: WorkerCompactionMode;
   workerCompactionAfterRound?: number;
+};
+
+type NormalizedCodexControllerInput = Omit<Required<CodexControllerInput>, "agentId"> & {
+  agentId?: string;
 };
 
 type ControllerDecision = {
@@ -76,6 +82,7 @@ const DEFAULT_CONTROLLER_PROMPT_PATH =
 const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "off";
 const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
 let cliPluginServicesHandlePromise: Promise<PluginServicesHandle> | null = null;
+let cliPluginServicesWorkspaceDir: string | undefined;
 type ProbeableAcpRuntime = {
   probeAvailability?: () => Promise<void>;
 };
@@ -104,7 +111,7 @@ function normalizeCompactionMode(value: unknown): WorkerCompactionMode {
   return DEFAULT_WORKER_COMPACTION_MODE;
 }
 
-function normalizeInput(request: WorkflowStartRequest): Required<CodexControllerInput> {
+function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControllerInput {
   const record = request.input as Record<string, unknown>;
   if (!record || typeof record !== "object") {
     throw new Error("codex_controller erwartet ein JSON-Objekt als Input.");
@@ -112,6 +119,8 @@ function normalizeInput(request: WorkflowStartRequest): Required<CodexController
   const task = typeof record.task === "string" ? record.task.trim() : "";
   const workingDirectory =
     typeof record.workingDirectory === "string" ? record.workingDirectory.trim() : "";
+  const agentId =
+    typeof record.agentId === "string" && record.agentId.trim() ? record.agentId.trim() : undefined;
   if (!task) {
     throw new Error("codex_controller benötigt ein nicht-leeres Feld `task`.");
   }
@@ -127,6 +136,7 @@ function normalizeInput(request: WorkflowStartRequest): Required<CodexController
   return {
     task,
     workingDirectory,
+    agentId,
     maxRetries,
     successCriteria: normalizeStringArray(record.successCriteria),
     constraints: normalizeStringArray(record.constraints),
@@ -685,10 +695,12 @@ function buildControllerDeltaPrompt(params: {
   ].join("\n");
 }
 
-function buildWorkflowStartedMessage(input: Required<CodexControllerInput>): string {
+function buildWorkflowStartedMessage(input: NormalizedCodexControllerInput): string {
   return [
     `Task: ${input.task}`,
     `Round budget: ${input.maxRetries}`,
+    `Worker cwd: ${input.workingDirectory}`,
+    ...(input.agentId ? [`Context workspace agent: ${input.agentId}`] : []),
     ...(input.successCriteria.length
       ? [`Success criteria: ${input.successCriteria.join("; ")}`]
       : []),
@@ -775,8 +787,25 @@ function stepIdForRound(round: number): string {
   return `round-${round}`;
 }
 
-async function ensureCliAcpRuntimeReady(cfg: ReturnType<typeof loadConfig>): Promise<void> {
+function normalizeWorkspaceOverride(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+async function ensureCliAcpRuntimeReady(
+  cfg: ReturnType<typeof loadConfig>,
+  contextWorkspaceDir?: string,
+): Promise<void> {
+  const desiredWorkspaceDir =
+    normalizeWorkspaceOverride(contextWorkspaceDir) ??
+    normalizeWorkspaceOverride(cfg.agents?.defaults?.workspace);
   await ensureCliPluginRegistryLoaded({ scope: "all" });
+  if (cliPluginServicesHandlePromise && cliPluginServicesWorkspaceDir !== desiredWorkspaceDir) {
+    const activeHandle = await cliPluginServicesHandlePromise.catch(() => null);
+    cliPluginServicesHandlePromise = null;
+    cliPluginServicesWorkspaceDir = undefined;
+    await activeHandle?.stop();
+  }
   if (!cliPluginServicesHandlePromise) {
     const registry = getActivePluginRegistry();
     if (!registry) {
@@ -785,11 +814,13 @@ async function ensureCliAcpRuntimeReady(cfg: ReturnType<typeof loadConfig>): Pro
     const startPromise = startPluginServices({
       registry,
       config: cfg,
-      workspaceDir: cfg.agents?.defaults?.workspace,
+      workspaceDir: desiredWorkspaceDir,
     });
+    cliPluginServicesWorkspaceDir = desiredWorkspaceDir;
     cliPluginServicesHandlePromise = startPromise.catch((error) => {
       if (cliPluginServicesHandlePromise === startPromise) {
         cliPluginServicesHandlePromise = null;
+        cliPluginServicesWorkspaceDir = undefined;
       }
       throw error;
     });
@@ -808,19 +839,30 @@ async function ensureCliAcpRuntimeReady(cfg: ReturnType<typeof loadConfig>): Pro
   requireAcpRuntimeBackend(backendId);
 }
 
+function resolveContextWorkspaceDir(
+  input: NormalizedCodexControllerInput,
+  cfg: ReturnType<typeof loadConfig>,
+): string | undefined {
+  if (!input.agentId) {
+    return undefined;
+  }
+  return resolveAgentWorkspaceDir(cfg, input.agentId);
+}
+
 async function runCodexTurn(params: {
   sessionKey: string;
   workingDirectory: string;
   agentId: string;
   text: string;
   requestId: string;
+  contextWorkspaceDir?: string;
 }): Promise<{
   text: string;
   outputEvents: string[];
   rawEvents: AcpRuntimeEvent[];
 }> {
   const cfg = loadConfig();
-  await ensureCliAcpRuntimeReady(cfg);
+  await ensureCliAcpRuntimeReady(cfg, params.contextWorkspaceDir);
   const manager = getAcpSessionManager();
   await manager.initializeSession({
     cfg,
@@ -857,9 +899,10 @@ async function runCodexTurn(params: {
 }
 
 async function maybeCompactCodexSession(params: {
-  input: Required<CodexControllerInput>;
+  input: NormalizedCodexControllerInput;
   sessionKey: string;
   round: number;
+  contextWorkspaceDir?: string;
 }): Promise<boolean> {
   if (params.input.workerCompactionMode === "off") {
     return false;
@@ -869,7 +912,7 @@ async function maybeCompactCodexSession(params: {
   }
 
   const cfg = loadConfig();
-  await ensureCliAcpRuntimeReady(cfg);
+  await ensureCliAcpRuntimeReady(cfg, params.contextWorkspaceDir);
   const manager = getAcpSessionManager();
   await manager.initializeSession({
     cfg,
@@ -895,13 +938,14 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     description:
       "Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
     kind: "agent_workflow",
-    version: "0.2.0",
+    version: "0.2.1",
     requiredAgents: ["codex", "codex-controller"],
     terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
     supportsAbort: false,
     inputSchemaSummary: [
       "task (string, required): original coding task passed directly to Codex.",
-      "workingDirectory (string, required): absolute workspace path for the persistent Codex ACP session.",
+      "workingDirectory (string, required): absolute project/worktree path used as the persistent Codex ACP worker cwd.",
+      "agentId (string, optional): agent workspace used for bootstrap/context/system-prompt resolution; does not change workingDirectory or worker cwd.",
       "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 10.",
       "successCriteria (string[], optional): additional completion criteria.",
       "constraints (string[], optional): extra constraints to keep in every turn.",
@@ -917,6 +961,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
   },
   async start(request, ctx: WorkflowModuleContext) {
     const input = normalizeInput(request);
+    const cfg = loadConfig();
+    const contextWorkspaceDir = resolveContextWorkspaceDir(input, cfg);
     const createdAt = ctx.nowIso();
     const controllerPrompt = loadControllerPrompt(input.controllerPromptPath);
     const sessions = await ensureWorkflowSessions({
@@ -941,6 +987,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       codexWorkerRuntime: "acp",
       codexWorkerSessionKind: "persistent_acp_thread",
       workingDirectory: input.workingDirectory,
+      ...(input.agentId ? { contextAgentId: input.agentId } : {}),
+      ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
       controllerPromptPath: input.controllerPromptPath,
       workerCompactionMode: input.workerCompactionMode,
       workerCompactionAfterRound: String(input.workerCompactionAfterRound),
@@ -972,6 +1020,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       payload: {
         maxRounds: input.maxRetries,
         workingDirectory: input.workingDirectory,
+        ...(input.agentId ? { contextAgentId: input.agentId } : {}),
+        ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
         codexAgentId: input.codexAgentId,
         controllerAgentId: input.controllerAgentId,
       },
@@ -1000,6 +1050,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       }),
       idempotencyKey: `${ctx.runId}:controller:init`,
       timeoutMs: 60 * 60 * 1000,
+      ...(contextWorkspaceDir ? { workspaceDir: contextWorkspaceDir } : {}),
     });
 
     let nextInstruction: string[] = [];
@@ -1035,6 +1086,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           input,
           sessionKey: codexSessionKey,
           round,
+          contextWorkspaceDir,
         });
         if (compacted) {
           sessions.extras = {
@@ -1065,6 +1117,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         agentId: input.codexAgentId,
         text: codexPrompt,
         requestId: `${ctx.runId}:codex:${round}`,
+        contextWorkspaceDir,
       });
       const workerArtifact = writeWorkflowArtifact(
         ctx.runId,
@@ -1140,6 +1193,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         message: controllerMessage,
         idempotencyKey: `${ctx.runId}:controller:${round}`,
         timeoutMs: 60 * 60 * 1000,
+        ...(contextWorkspaceDir ? { workspaceDir: contextWorkspaceDir } : {}),
       });
       const controllerArtifact = writeWorkflowArtifact(
         ctx.runId,
@@ -1394,6 +1448,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
 export const __testing = {
   resetCliPluginServicesHandleForTests() {
     cliPluginServicesHandlePromise = null;
+    cliPluginServicesWorkspaceDir = undefined;
   },
   buildControllerInitPrompt,
   buildControllerDeltaPrompt,

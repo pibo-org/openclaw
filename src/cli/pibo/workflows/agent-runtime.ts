@@ -53,6 +53,7 @@ export async function runWorkflowAgentOnSession(params: {
   message: string;
   idempotencyKey: string;
   timeoutMs?: number;
+  workspaceDir?: string;
 }): Promise<{
   runId: string;
   text: string;
@@ -71,6 +72,7 @@ export async function runWorkflowAgentOnSession(params: {
     message: params.message,
     deliver: false,
     suppressRuntimeOutput: true,
+    ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     runId,
     timeout: String(Math.max(1, Math.ceil((params.timeoutMs ?? 120_000) / 1_000))),
   });

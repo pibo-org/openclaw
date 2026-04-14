@@ -22,6 +22,7 @@ It is intended for tasks where:
 
 - the coding worker should keep its own persistent ACP thread
 - the worker must stay anchored to an explicit `workingDirectory`
+- an optional `agentId` should be able to switch bootstrap/context resolution to a different agent workspace without moving the worker cwd
 - a controller should decide whether to continue, stop as done, or escalate a real blocker
 
 ## Runtime shape
@@ -43,6 +44,15 @@ The controller itself runs on a normal native OpenClaw workflow session key, but
 - optional ACP control-command steering such as `/compact` when explicitly requested for debugging or specialized cases
 
 This is deliberate, not accidental.
+
+## Workspace semantics
+
+The module keeps two paths distinct when `agentId` is provided:
+
+- `workingDirectory`: the project repo/worktree used as the Codex ACP worker `cwd`
+- `agentId`: selects the agent workspace used for bootstrap files, system-prompt context, and plugin-service workspace resolution
+
+If `agentId` is omitted, the prior behavior stays unchanged.
 
 ## Controller prompt/session model
 
@@ -114,6 +124,7 @@ Recommended verification steps:
 
 ```bash
 node scripts/run-vitest.mjs run --config vitest.cli.config.ts \
+  src/cli/pibo/workflows/agent-runtime.test.ts \
   src/cli/pibo/workflows/index.test.ts \
   src/cli/pibo/workflows/modules/codex-controller.test.ts
 pnpm openclaw -- pibo workflows list
@@ -128,6 +139,7 @@ pnpm openclaw -- pibo workflows start codex_controller \
   --json '{
     "task": "Inspect the repo and summarize one safe improvement.",
     "workingDirectory": "/absolute/path/to/repo",
+    "agentId": "writer",
     "maxRetries": 1,
     "workerCompactionMode": "off"
   }' \

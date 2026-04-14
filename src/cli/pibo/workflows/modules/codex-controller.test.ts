@@ -35,6 +35,25 @@ function controllerInitReady(runId = "controller-init") {
   return controllerRun("CONTROLLER_READY", runId);
 }
 
+function mockSingleRoundDoneLoop(reason = "Requested implementation is complete and verified.") {
+  runWorkflowAgentOnSession
+    .mockResolvedValueOnce(controllerInitReady())
+    .mockResolvedValueOnce(
+      controllerRun(
+        [
+          "MODULE_DECISION: DONE",
+          "MODULE_REASON:",
+          `- ${reason}`,
+          "NEXT_INSTRUCTION:",
+          "- none",
+          "BLOCKER:",
+          "- none",
+        ].join("\n"),
+        "controller-run-1",
+      ),
+    );
+}
+
 function createTraceMock(runId: string): WorkflowTraceRuntime {
   return {
     runId,
@@ -64,10 +83,19 @@ function createTraceMock(runId: string): WorkflowTraceRuntime {
   };
 }
 
-vi.mock("node:fs", () => ({
-  existsSync,
-  readFileSync,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    default: {
+      ...actual.default,
+      existsSync,
+      readFileSync,
+    },
+    existsSync,
+    readFileSync,
+  };
+});
 
 vi.mock("../workflow-session-helper.js", () => ({
   ensureWorkflowSessions,
@@ -164,6 +192,9 @@ describe("codex_controller module", () => {
     expect(manifest.moduleId).toBe("codex_controller");
     expect(manifest.description).toContain("Codex");
     expect(manifest.requiredAgents).toEqual(["codex", "codex-controller"]);
+    expect(manifest.inputSchemaSummary).toContain(
+      "agentId (string, optional): agent workspace used for bootstrap/context/system-prompt resolution; does not change workingDirectory or worker cwd.",
+    );
   });
 
   it("rejects missing workingDirectory with repoPath-specific guidance", async () => {
@@ -187,6 +218,224 @@ describe("codex_controller module", () => {
     ).rejects.toThrow(
       "codex_controller benötigt `input.workingDirectory`. Falls `repoPath` übergeben wurde, bitte in `workingDirectory` umbenennen.",
     );
+  });
+
+  it("keeps the default behavior unchanged when agentId is omitted", async () => {
+    loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          workspace: "/workspace/default",
+        },
+      },
+    });
+    mockSingleRoundDoneLoop();
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    expect(record.input.agentId).toBeUndefined();
+    expect(record.sessions.extras).not.toHaveProperty("contextAgentId");
+    expect(record.sessions.extras).not.toHaveProperty("contextWorkspaceDir");
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(2);
+    expect(runWorkflowAgentOnSession.mock.calls.every(([call]) => !("workspaceDir" in call))).toBe(
+      true,
+    );
+    expect(startPluginServices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceDir: "/workspace/default",
+      }),
+    );
+    expect(initializeSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/repo",
+      }),
+    );
+  });
+
+  it("uses the selected agent workspace as workflow context when agentId is provided", async () => {
+    loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          workspace: "/workspace/default",
+        },
+        list: [
+          { id: "writer", workspace: "/workspace/writer" },
+          { id: "codex-controller", workspace: "/workspace/controller" },
+        ],
+      },
+    });
+    mockSingleRoundDoneLoop();
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          agentId: "writer",
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    expect(record.input.agentId).toBe("writer");
+    expect(record.sessions.extras?.contextAgentId).toBe("writer");
+    expect(record.sessions.extras?.contextWorkspaceDir).toBe("/workspace/writer");
+    expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        workspaceDir: "/workspace/writer",
+      }),
+    );
+    expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        workspaceDir: "/workspace/writer",
+      }),
+    );
+    expect(startPluginServices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceDir: "/workspace/writer",
+      }),
+    );
+  });
+
+  it("keeps the worker cwd on workingDirectory when agentId selects a different context workspace", async () => {
+    loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          workspace: "/workspace/default",
+        },
+        list: [{ id: "writer", workspace: "/workspace/writer" }],
+      },
+    });
+    mockSingleRoundDoneLoop();
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          agentId: "writer",
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    expect(initializeSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/repo",
+        sessionKey: "agent:codex:acp:workflow:run-1:worker:codex",
+      }),
+    );
+    expect(initializeSession).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/workspace/writer",
+      }),
+    );
+  });
+
+  it("restarts plugin services when the workflow context workspace changes between runs", async () => {
+    const firstHandle = { stop: vi.fn(async () => {}) };
+    const secondHandle = { stop: vi.fn(async () => {}) };
+    startPluginServices.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
+    let cfg = {
+      agents: {
+        defaults: {
+          workspace: "/workspace/default",
+        },
+      },
+    };
+    loadConfig.mockImplementation(() => cfg);
+    mockSingleRoundDoneLoop("First run complete.");
+    mockSingleRoundDoneLoop("Second run complete.");
+
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo-a",
+        },
+      },
+      {
+        runId: "run-1",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-1"),
+      },
+    );
+
+    cfg = {
+      agents: {
+        defaults: {
+          workspace: "/workspace/default",
+        },
+        list: [{ id: "writer", workspace: "/workspace/writer" }],
+      },
+    };
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix again",
+          workingDirectory: "/repo-b",
+          agentId: "writer",
+        },
+      },
+      {
+        runId: "run-2",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-2"),
+      },
+    );
+
+    expect(startPluginServices).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        workspaceDir: "/workspace/default",
+      }),
+    );
+    expect(startPluginServices).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        workspaceDir: "/workspace/writer",
+      }),
+    );
+    expect(firstHandle.stop).toHaveBeenCalledTimes(1);
+    expect(secondHandle.stop).not.toHaveBeenCalled();
   });
 
   it("maps normalized controller DONE output to a done terminal state", async () => {
