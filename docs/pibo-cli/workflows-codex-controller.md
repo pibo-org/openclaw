@@ -1,6 +1,6 @@
 # `codex_controller` workflow module
 
-Date: 2026-04-10
+Date: 2026-04-14
 
 ## Documentation status
 
@@ -44,7 +44,7 @@ The controller itself runs on a normal native OpenClaw workflow session key, but
 
 This is deliberate, not accidental.
 
-## Controller contract handling
+## Controller prompt/session model
 
 The controller prompt template at `controllerPromptPath` still uses the human-oriented controller contract:
 
@@ -53,14 +53,34 @@ The controller prompt template at `controllerPromptPath` still uses the human-or
 - `ASK_USER`
 - `STOP_BLOCKED`
 
-The workflow module now wraps that prompt with an explicit normalized contract:
+The workflow runtime now sends controller context in two phases on the same persistent controller session:
+
+1. One-time init message
+
+- includes the stable controller prompt template
+- includes the normalized workflow contract
+- includes the decision-mapping rules
+- includes stable run context such as `ORIGINAL_TASK`, `SUCCESS_CRITERIA`, and `CONSTRAINTS`
+- is sent once at workflow start, before the per-round controller loop
+
+2. Per-round delta message
+
+- omits the stable controller contract/context by default
+- sends only bounded dynamic supervisory context for the current round
+- includes compact visible worker history, bounded controller history, current status hints, progress evidence, drift signals, and current `WORKER_OUTPUT`
+
+This means the runtime no longer rebuilds the full controller wrapper prompt every round.
+
+## Controller contract handling
+
+The one-time init message carries an explicit normalized contract:
 
 - `MODULE_DECISION: CONTINUE | ESCALATE_BLOCKED | DONE`
 - `MODULE_REASON`
 - `NEXT_INSTRUCTION`
 - `BLOCKER`
 
-The parser accepts both:
+The parser still accepts both:
 
 1. the normalized module contract
 2. the legacy controller contract as fallback
@@ -71,7 +91,7 @@ Legacy mapping:
 - `ASK_USER` / `STOP_BLOCKED` → blocked escalation
 - `DONE` should come from the normalized module block
 
-This avoids silent breakage when the underlying prompt template is still on the older contract.
+This preserves decision-parsing reliability while avoiding stable prompt re-injection on later rounds.
 
 ## Compaction behavior
 

@@ -354,7 +354,7 @@ function assessDrift(params: {
     ? claimsLookRepeated(params.current.claims, previousWorker.claims)
     : false;
   const repetitiveNarrative =
-    params.current.narrativeOnly && Boolean(previousWorker?.narrativeOnly || repeatedClaim);
+    params.current.narrativeOnly && (previousWorker?.narrativeOnly || repeatedClaim);
   const evidenceThin = params.current.evidence.length === 0;
   const signals: string[] = [];
   if (repeatedClaim) {
@@ -603,24 +603,20 @@ function buildCodexPrompt(params: {
   ].join("\n");
 }
 
-function buildControllerPrompt(params: {
+function buildControllerInitPrompt(params: {
   controllerPrompt: string;
   input: Required<CodexControllerInput>;
-  round: number;
   maxRounds: number;
-  workerOutput: string;
-  recentWorkerHistory: WorkerRoundSummary[];
-  controllerHistory: ControllerRoundSummary[];
-  currentWorkerSummary: WorkerRoundSummary;
-  drift: DriftAssessment;
 }): string {
   return [
     params.controllerPrompt,
     "",
     "You are operating inside the codex_controller PIBO workflow module.",
-    `Current round: ${params.round}/${params.maxRounds}.`,
-    "Use the controller prompt above as policy, but normalize your final answer for the workflow runtime.",
-    "First decide using the prompt's native contract if helpful. Then return a final normalized block.",
+    "This controller session is persistent for the whole workflow run.",
+    "Treat this message as one-time stable run context. Later messages send only bounded per-round deltas.",
+    `Round budget: ${params.maxRounds}.`,
+    "Use the controller prompt above as policy for the whole run.",
+    "For round messages, first decide using the prompt's native contract if helpful. Then return a final normalized block.",
     "",
     "NORMALIZED WORKFLOW CONTRACT:",
     "MODULE_DECISION: CONTINUE | ESCALATE_BLOCKED | DONE",
@@ -641,6 +637,34 @@ function buildControllerPrompt(params: {
     "- If MODULE_DECISION is DONE or ESCALATE_BLOCKED, NEXT_INSTRUCTION may be empty.",
     "- Do not silently omit the normalized block.",
     "",
+    "ORIGINAL_TASK:",
+    params.input.task,
+    "",
+    "SUCCESS_CRITERIA:",
+    toBulletLines(params.input.successCriteria),
+    "",
+    "CONSTRAINTS:",
+    toBulletLines(params.input.constraints),
+    "",
+    "Do not make a workflow decision in response to this initialization message.",
+    "Reply exactly with: CONTROLLER_READY",
+  ].join("\n");
+}
+
+function buildControllerDeltaPrompt(params: {
+  round: number;
+  maxRounds: number;
+  workerOutput: string;
+  recentWorkerHistory: WorkerRoundSummary[];
+  controllerHistory: ControllerRoundSummary[];
+  currentWorkerSummary: WorkerRoundSummary;
+  drift: DriftAssessment;
+}): string {
+  return [
+    `ROUND_CONTEXT: ${params.round}/${params.maxRounds}`,
+    "Use the stable controller policy and normalized workflow contract already provided in this session.",
+    "Evaluate only the bounded dynamic context below.",
+    "",
     "RECENT_VISIBLE_WORKER_HISTORY:",
     formatWorkerHistory(params.recentWorkerHistory),
     "",
@@ -655,15 +679,6 @@ function buildControllerPrompt(params: {
     "",
     "CURRENT_DRIFT_SIGNALS:",
     buildDriftSignals(params.drift),
-    "",
-    "ORIGINAL_TASK:",
-    params.input.task,
-    "",
-    "SUCCESS_CRITERIA:",
-    toBulletLines(params.input.successCriteria),
-    "",
-    "CONSTRAINTS:",
-    toBulletLines(params.input.constraints),
     "",
     "WORKER_OUTPUT:",
     params.workerOutput,
@@ -976,6 +991,16 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       role: "orchestrator",
       targetSessionKey: sessions.orchestrator,
     });
+    await runWorkflowAgentOnSession({
+      sessionKey: sessions.orchestrator!,
+      message: buildControllerInitPrompt({
+        controllerPrompt,
+        input,
+        maxRounds: input.maxRetries,
+      }),
+      idempotencyKey: `${ctx.runId}:controller:init`,
+      timeoutMs: 60 * 60 * 1000,
+    });
 
     let nextInstruction: string[] = [];
     const workerHistory: WorkerRoundSummary[] = [];
@@ -1092,9 +1117,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         priorWorkers: workerHistory,
         priorControllers: controllerHistory,
       });
-      const controllerMessage = buildControllerPrompt({
-        controllerPrompt,
-        input,
+      const controllerMessage = buildControllerDeltaPrompt({
         round,
         maxRounds: input.maxRetries,
         workerOutput: codexResult.text,
@@ -1372,6 +1395,8 @@ export const __testing = {
   resetCliPluginServicesHandleForTests() {
     cliPluginServicesHandlePromise = null;
   },
+  buildControllerInitPrompt,
+  buildControllerDeltaPrompt,
   summarizeWorkerRound,
   assessDrift,
   enforceContinueGuardrails,

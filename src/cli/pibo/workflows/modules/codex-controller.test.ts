@@ -22,6 +22,19 @@ const emitTracedWorkflowReportEvent = vi.fn(async () => ({
 }));
 const traceEmit = vi.fn();
 
+function controllerRun(text: string, runId = "controller-run") {
+  return {
+    runId,
+    text,
+    wait: { status: "ok" as const },
+    messages: [],
+  };
+}
+
+function controllerInitReady(runId = "controller-init") {
+  return controllerRun("CONTROLLER_READY", runId);
+}
+
 function createTraceMock(runId: string): WorkflowTraceRuntime {
   return {
     runId,
@@ -177,20 +190,22 @@ describe("codex_controller module", () => {
   });
 
   it("maps normalized controller DONE output to a done terminal state", async () => {
-    runWorkflowAgentOnSession.mockResolvedValueOnce({
-      runId: "controller-run-1",
-      text: [
-        "MODULE_DECISION: DONE",
-        "MODULE_REASON:",
-        "- Requested implementation is complete and verified.",
-        "NEXT_INSTRUCTION:",
-        "- none",
-        "BLOCKER:",
-        "- none",
-      ].join("\n"),
-      wait: { status: "ok" },
-      messages: [],
-    });
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: DONE",
+            "MODULE_REASON:",
+            "- Requested implementation is complete and verified.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      );
 
     const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
@@ -246,19 +261,21 @@ describe("codex_controller module", () => {
   });
 
   it("maps legacy ASK_USER controller output to blocked without silent format break", async () => {
-    runWorkflowAgentOnSession.mockResolvedValueOnce({
-      runId: "controller-run-1",
-      text: [
-        "DECISION: ASK_USER",
-        "RATIONALE:",
-        "- A real product choice is required.",
-        "CONTROLLER_MESSAGE:",
-        "- Please choose between architecture A and B before I continue.",
-        "CONFIDENCE: high",
-      ].join("\n"),
-      wait: { status: "ok" },
-      messages: [],
-    });
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "DECISION: ASK_USER",
+            "RATIONALE:",
+            "- A real product choice is required.",
+            "CONTROLLER_MESSAGE:",
+            "- Please choose between architecture A and B before I continue.",
+            "CONFIDENCE: high",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      );
 
     const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
@@ -283,33 +300,34 @@ describe("codex_controller module", () => {
 
   it("keeps manual ACP compaction off by default", async () => {
     runWorkflowAgentOnSession
-      .mockResolvedValueOnce({
-        runId: "controller-run-1",
-        text: [
-          "DECISION: GUIDE",
-          "RATIONALE:",
-          "- Continue with tighter verification.",
-          "CONTROLLER_MESSAGE:",
-          "- Proceed with the implementation, then verify end-to-end.",
-          "CONFIDENCE: high",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      })
-      .mockResolvedValueOnce({
-        runId: "controller-run-2",
-        text: [
-          "MODULE_DECISION: DONE",
-          "MODULE_REASON:",
-          "- Task is complete.",
-          "NEXT_INSTRUCTION:",
-          "- none",
-          "BLOCKER:",
-          "- none",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      });
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "DECISION: GUIDE",
+            "RATIONALE:",
+            "- Continue with tighter verification.",
+            "CONTROLLER_MESSAGE:",
+            "- Proceed with the implementation, then verify end-to-end.",
+            "CONFIDENCE: high",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      )
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: DONE",
+            "MODULE_REASON:",
+            "- Task is complete.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-2",
+        ),
+      );
 
     const mod = await import("./codex-controller.js");
     mod.__testing.resetCliPluginServicesHandleForTests();
@@ -341,33 +359,34 @@ describe("codex_controller module", () => {
 
   it("continues on legacy GUIDE output and triggers ACP compaction only after the configured round when explicitly enabled", async () => {
     runWorkflowAgentOnSession
-      .mockResolvedValueOnce({
-        runId: "controller-run-1",
-        text: [
-          "DECISION: GUIDE",
-          "RATIONALE:",
-          "- Continue with tighter verification.",
-          "CONTROLLER_MESSAGE:",
-          "- Proceed with the implementation, then verify end-to-end.",
-          "CONFIDENCE: high",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      })
-      .mockResolvedValueOnce({
-        runId: "controller-run-2",
-        text: [
-          "MODULE_DECISION: DONE",
-          "MODULE_REASON:",
-          "- Task is complete.",
-          "NEXT_INSTRUCTION:",
-          "- none",
-          "BLOCKER:",
-          "- none",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      });
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "DECISION: GUIDE",
+            "RATIONALE:",
+            "- Continue with tighter verification.",
+            "CONTROLLER_MESSAGE:",
+            "- Proceed with the implementation, then verify end-to-end.",
+            "CONFIDENCE: high",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      )
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: DONE",
+            "MODULE_REASON:",
+            "- Task is complete.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-2",
+        ),
+      );
 
     const mod = await import("./codex-controller.js");
     mod.__testing.resetCliPluginServicesHandleForTests();
@@ -404,7 +423,7 @@ describe("codex_controller module", () => {
     expect(startPluginServices).toHaveBeenCalledTimes(1);
   });
 
-  it("passes compact visible history, controller history, and drift signals into round-2 controller input", async () => {
+  it("sends stable controller context once at init and keeps later controller turns delta-only", async () => {
     runTurn.mockImplementationOnce(
       async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
         params.onEvent?.({
@@ -424,34 +443,35 @@ describe("codex_controller module", () => {
       },
     );
     runWorkflowAgentOnSession
-      .mockResolvedValueOnce({
-        runId: "controller-run-1",
-        text: [
-          "MODULE_DECISION: CONTINUE",
-          "MODULE_REASON:",
-          "- First round made concrete repo changes.",
-          "NEXT_INSTRUCTION:",
-          "- Continue, verify the changed files, and summarize the diff.",
-          "BLOCKER:",
-          "- none",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      })
-      .mockResolvedValueOnce({
-        runId: "controller-run-2",
-        text: [
-          "MODULE_DECISION: DONE",
-          "MODULE_REASON:",
-          "- Enough context for prompt-shape verification.",
-          "NEXT_INSTRUCTION:",
-          "- none",
-          "BLOCKER:",
-          "- none",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      });
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: CONTINUE",
+            "MODULE_REASON:",
+            "- First round made concrete repo changes.",
+            "NEXT_INSTRUCTION:",
+            "- Continue, verify the changed files, and summarize the diff.",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      )
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: DONE",
+            "MODULE_REASON:",
+            "- Enough context for prompt-shape verification.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-2",
+        ),
+      );
 
     const mod = await import("./codex-controller.js");
     mod.__testing.resetCliPluginServicesHandleForTests();
@@ -472,14 +492,41 @@ describe("codex_controller module", () => {
       },
     );
 
-    expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(2);
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(3);
+    const initPrompt = runWorkflowAgentOnSession.mock.calls[0][0].message as string;
+    expect(initPrompt).toContain("controller prompt template");
+    expect(initPrompt).toContain(
+      "This controller session is persistent for the whole workflow run.",
+    );
+    expect(initPrompt).toContain("NORMALIZED WORKFLOW CONTRACT:");
+    expect(initPrompt).toContain("ORIGINAL_TASK:");
+    expect(initPrompt).toContain("SUCCESS_CRITERIA:");
+    expect(initPrompt).toContain("CONSTRAINTS:");
+    expect(initPrompt).not.toContain("RECENT_VISIBLE_WORKER_HISTORY:");
+    expect(initPrompt).not.toContain("WORKER_OUTPUT:");
+
     expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
+        idempotencyKey: "run-1:controller:1",
         message: expect.stringContaining("RECENT_VISIBLE_WORKER_HISTORY:"),
       }),
     );
-    const secondPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    const roundOneDelta = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    expect(roundOneDelta).toContain("ROUND_CONTEXT: 1/2");
+    expect(roundOneDelta).toContain("RECENT_VISIBLE_WORKER_HISTORY:");
+    expect(roundOneDelta).toContain("CURRENT_WORKER_STATUS_HINTS:");
+    expect(roundOneDelta).toContain("CURRENT_PROGRESS_EVIDENCE:");
+    expect(roundOneDelta).toContain("CURRENT_DRIFT_SIGNALS:");
+    expect(roundOneDelta).toContain("WORKER_OUTPUT:");
+    expect(roundOneDelta).not.toContain("controller prompt template");
+    expect(roundOneDelta).not.toContain("NORMALIZED WORKFLOW CONTRACT:");
+    expect(roundOneDelta).not.toContain("ORIGINAL_TASK:");
+    expect(roundOneDelta).not.toContain("SUCCESS_CRITERIA:");
+    expect(roundOneDelta).not.toContain("CONSTRAINTS:");
+
+    const secondPrompt = runWorkflowAgentOnSession.mock.calls[2][0].message as string;
+    expect(secondPrompt).toContain("ROUND_CONTEXT: 2/2");
     expect(secondPrompt).toContain("round 1: status=working_with_evidence");
     expect(secondPrompt).toContain("round 2: status=claims_done");
     expect(secondPrompt).toContain("CONTROLLER_HISTORY:");
@@ -490,6 +537,12 @@ describe("codex_controller module", () => {
     expect(secondPrompt).toContain(
       "visible output lacks concrete implementation or verification evidence",
     );
+    expect(secondPrompt).toContain("WORKER_OUTPUT:");
+    expect(secondPrompt).not.toContain("controller prompt template");
+    expect(secondPrompt).not.toContain("NORMALIZED WORKFLOW CONTRACT:");
+    expect(secondPrompt).not.toContain("ORIGINAL_TASK:");
+    expect(secondPrompt).not.toContain("SUCCESS_CRITERIA:");
+    expect(secondPrompt).not.toContain("CONSTRAINTS:");
     expect(secondPrompt).not.toContain("stream: thought");
   });
 
@@ -520,20 +573,22 @@ describe("codex_controller module", () => {
         });
       },
     );
-    runWorkflowAgentOnSession.mockResolvedValueOnce({
-      runId: "controller-run-1",
-      text: [
-        "MODULE_DECISION: DONE",
-        "MODULE_REASON:",
-        "- Requested implementation is complete and verified.",
-        "NEXT_INSTRUCTION:",
-        "- none",
-        "BLOCKER:",
-        "- none",
-      ].join("\n"),
-      wait: { status: "ok" },
-      messages: [],
-    });
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: DONE",
+            "MODULE_REASON:",
+            "- Requested implementation is complete and verified.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      );
 
     const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
@@ -579,34 +634,35 @@ describe("codex_controller module", () => {
       },
     );
     runWorkflowAgentOnSession
-      .mockResolvedValueOnce({
-        runId: "controller-run-1",
-        text: [
-          "MODULE_DECISION: CONTINUE",
-          "MODULE_REASON:",
-          "- Keep going.",
-          "NEXT_INSTRUCTION:",
-          "- Continue.",
-          "BLOCKER:",
-          "- none",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      })
-      .mockResolvedValueOnce({
-        runId: "controller-run-2",
-        text: [
-          "MODULE_DECISION: CONTINUE",
-          "MODULE_REASON:",
-          "- Keep going.",
-          "NEXT_INSTRUCTION:",
-          "- Continue.",
-          "BLOCKER:",
-          "- none",
-        ].join("\n"),
-        wait: { status: "ok" },
-        messages: [],
-      });
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: CONTINUE",
+            "MODULE_REASON:",
+            "- Keep going.",
+            "NEXT_INSTRUCTION:",
+            "- Continue.",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      )
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: CONTINUE",
+            "MODULE_REASON:",
+            "- Keep going.",
+            "NEXT_INSTRUCTION:",
+            "- Continue.",
+            "BLOCKER:",
+            "- none",
+          ].join("\n"),
+          "controller-run-2",
+        ),
+      );
 
     const mod = await import("./codex-controller.js");
     mod.__testing.resetCliPluginServicesHandleForTests();
