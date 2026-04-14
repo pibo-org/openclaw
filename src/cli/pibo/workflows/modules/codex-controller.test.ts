@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../../../config/types.js";
 import type { WorkflowTraceRuntime } from "../tracing/runtime.js";
 import type { WorkflowTraceSummary } from "../tracing/types.js";
 import type { WorkflowRunRecord } from "../types.js";
 
+const execFileSync = vi.fn();
 const ensureWorkflowSessions = vi.fn();
 const runWorkflowAgentOnSession = vi.fn();
 const writeWorkflowArtifact = vi.fn();
@@ -10,7 +12,7 @@ const existsSync = vi.fn();
 const readFileSync = vi.fn();
 const initializeSession = vi.fn();
 const runTurn = vi.fn();
-const loadConfig = vi.fn(() => ({ ok: true }));
+const loadConfig = vi.fn<() => OpenClawConfig>(() => ({}));
 const ensureCliPluginRegistryLoaded = vi.fn(async () => {});
 const getActivePluginRegistry = vi.fn(() => ({ services: [] }));
 const startPluginServices = vi.fn(async () => ({ stop: async () => {} }));
@@ -33,6 +35,44 @@ function controllerRun(text: string, runId = "controller-run") {
 
 function controllerInitReady(runId = "controller-init") {
   return controllerRun("CONTROLLER_READY", runId);
+}
+
+type CloseoutGitScenario = {
+  head?: string;
+  mergeBase?: string;
+  statusPorcelain?: string;
+  worktreeList?: string;
+  refs?: string;
+};
+
+function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
+  execFileSync.mockImplementation((command: string, args: string[]) => {
+    expect(command).toBe("git");
+    const cwd = args[1];
+    const gitArgs = args.slice(2);
+    const joined = gitArgs.join(" ");
+    const head = scenario.head ?? "1111111111111111111111111111111111111111";
+    const mergeBase = scenario.mergeBase ?? head;
+    if (joined === "rev-parse --show-toplevel") {
+      return `${cwd}\n`;
+    }
+    if (joined === "rev-parse HEAD") {
+      return `${head}\n`;
+    }
+    if (joined === "status --porcelain=1") {
+      return scenario.statusPorcelain ?? "";
+    }
+    if (joined === "worktree list --porcelain") {
+      return scenario.worktreeList ?? `worktree ${cwd}\nHEAD ${head}\nbranch refs/heads/main\n`;
+    }
+    if (joined === "for-each-ref --format=%(refname:short) refs/heads refs/remotes") {
+      return scenario.refs ?? "main\norigin/main\n";
+    }
+    if (joined === "merge-base HEAD origin/main") {
+      return `${mergeBase}\n`;
+    }
+    throw new Error(`Unexpected git command: ${joined}`);
+  });
 }
 
 function mockSingleRoundDoneLoop(reason = "Requested implementation is complete and verified.") {
@@ -83,17 +123,24 @@ function createTraceMock(runId: string): WorkflowTraceRuntime {
   };
 }
 
+function recordInput(record: WorkflowRunRecord): { agentId?: string } {
+  return record.input as { agentId?: string };
+}
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
-    default: {
-      ...actual.default,
-      existsSync,
-      readFileSync,
-    },
     existsSync,
     readFileSync,
+  };
+});
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync,
   };
 });
 
@@ -154,6 +201,7 @@ describe("codex_controller module", () => {
     vi.resetModules();
     existsSync.mockReturnValue(true);
     readFileSync.mockReturnValue("controller prompt template");
+    mockCloseoutGitScenario();
     ensureWorkflowSessions.mockResolvedValue({
       orchestrator: "agent:langgraph:workflow:run-1:orchestrator:main",
     });
@@ -248,7 +296,7 @@ describe("codex_controller module", () => {
       },
     );
 
-    expect(record.input.agentId).toBeUndefined();
+    expect(recordInput(record).agentId).toBeUndefined();
     expect(record.sessions.extras).not.toHaveProperty("contextAgentId");
     expect(record.sessions.extras).not.toHaveProperty("contextWorkspaceDir");
     expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(2);
@@ -300,7 +348,7 @@ describe("codex_controller module", () => {
       },
     );
 
-    expect(record.input.agentId).toBe("writer");
+    expect(recordInput(record).agentId).toBe("writer");
     expect(record.sessions.extras?.contextAgentId).toBe("writer");
     expect(record.sessions.extras?.contextWorkspaceDir).toBe("/workspace/writer");
     expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
@@ -369,7 +417,7 @@ describe("codex_controller module", () => {
     const firstHandle = { stop: vi.fn(async () => {}) };
     const secondHandle = { stop: vi.fn(async () => {}) };
     startPluginServices.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
-    let cfg = {
+    let cfg: OpenClawConfig = {
       agents: {
         defaults: {
           workspace: "/workspace/default",
@@ -438,7 +486,7 @@ describe("codex_controller module", () => {
     expect(secondHandle.stop).not.toHaveBeenCalled();
   });
 
-  it("maps normalized controller DONE output to a done terminal state", async () => {
+  it("maps normalized controller DONE output to done only after clean closeout success", async () => {
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
       .mockResolvedValueOnce(
@@ -474,8 +522,32 @@ describe("codex_controller module", () => {
 
     expect(record.status).toBe("done");
     expect(record.terminalReason).toContain("complete and verified");
+    expect(record.input).toEqual(
+      expect.objectContaining({
+        workingDirectory: "/repo",
+        repoRoot: "/repo",
+        closeoutContextSource: "workingDirectory",
+      }),
+    );
     expect(record.sessions.worker).toBe("agent:codex:acp:workflow:run-1:worker:codex");
     expect(record.sessions.orchestrator).toBe("agent:langgraph:workflow:run-1:orchestrator:main");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "closeout-assessment.json",
+      expect.stringContaining('"status": "pass"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "run-summary.txt",
+      expect.stringContaining("closeout-status: pass"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "run-summary.txt",
+      expect.stringContaining(
+        "closeout-reason: Closeout passed: repo clean, no extra worktrees, HEAD integrated into origin/main.",
+      ),
+    );
     expect(runTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("FINISH_QUALITY:"),
@@ -506,6 +578,141 @@ describe("codex_controller module", () => {
         kind: "run_completed",
         status: "done",
       }),
+    );
+  });
+
+  it("blocks DONE closeout on dirty repo and writes closeout mismatch context", async () => {
+    mockCloseoutGitScenario({
+      statusPorcelain: " M src/dirty.ts\n?? scratch.txt\n",
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      {
+        runId: "run-dirty",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-dirty"),
+      },
+    );
+
+    expect(record.status).toBe("blocked");
+    expect(record.terminalReason).toContain("Closeout mismatch after controller DONE");
+    expect(record.terminalReason).toContain("repo/worktree is dirty");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-dirty",
+      "closeout-assessment.json",
+      expect.stringContaining('"code": "dirty_repo"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-dirty",
+      "run-summary.txt",
+      expect.stringContaining("closeout-status: blocked"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-dirty",
+      "run-summary.txt",
+      expect.stringContaining("dirty_paths=src/dirty.ts,scratch.txt"),
+    );
+    expect(traceEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "run_blocked",
+        status: "blocked",
+        summary: expect.stringContaining("Closeout mismatch after controller DONE"),
+      }),
+    );
+  });
+
+  it("blocks DONE closeout when additional linked worktrees are open", async () => {
+    mockCloseoutGitScenario({
+      worktreeList: [
+        "worktree /repo",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/main",
+        "worktree /repo-linked",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/feature",
+      ].join("\n"),
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      {
+        runId: "run-worktree",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-worktree"),
+      },
+    );
+
+    expect(record.status).toBe("blocked");
+    expect(record.terminalReason).toContain("open linked worktrees");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-worktree",
+      "closeout-assessment.json",
+      expect.stringContaining('"code": "open_worktree"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-worktree",
+      "run-summary.txt",
+      expect.stringContaining("open_worktrees=/repo,/repo-linked"),
+    );
+  });
+
+  it("blocks DONE closeout when HEAD is not integrated into the mainline ref", async () => {
+    mockCloseoutGitScenario({
+      head: "2222222222222222222222222222222222222222",
+      mergeBase: "1111111111111111111111111111111111111111",
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          repoRoot: "/repo",
+        },
+      },
+      {
+        runId: "run-integration",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-integration"),
+      },
+    );
+
+    expect(record.status).toBe("blocked");
+    expect(record.terminalReason).toContain("not integrated into origin/main");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration",
+      "closeout-assessment.json",
+      expect.stringContaining('"code": "not_integrated"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration",
+      "run-summary.txt",
+      expect.stringContaining("closeout-base-ref: origin/main"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration",
+      "run-summary.txt",
+      expect.stringContaining("merge_base=1111111111111111111111111111111111111111"),
     );
   });
 

@@ -83,8 +83,33 @@ describe("runWorkflowAgentOnSession", () => {
       suppressRuntimeOutput: true,
       workspaceDir: "/workspace/context",
       runId: "idem-override",
-      timeout: "120",
     });
+  });
+
+  it("uses the global agent timeout logic when no explicit timeout override is provided", async () => {
+    readLatestAssistantReplySnapshot.mockResolvedValueOnce({}).mockResolvedValueOnce({
+      text: "DECISION: DONE\nMODULE_REASON: probe ok",
+      fingerprint: "reply-3",
+    });
+    callWorkflowGatewayMethod.mockResolvedValueOnce({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+    });
+
+    const { runWorkflowAgentOnSession } = await import("./agent-runtime.js");
+    await runWorkflowAgentOnSession({
+      sessionKey: "agent:codex:workflow:test:orchestrator:main",
+      message: "test",
+      idempotencyKey: "idem-global-timeout",
+    });
+
+    expect(agentCommand).toHaveBeenCalledWith({
+      sessionKey: "agent:codex:workflow:test:orchestrator:main",
+      message: "test",
+      deliver: false,
+      suppressRuntimeOutput: true,
+      runId: "idem-global-timeout",
+    });
+    expect(agentCommand.mock.calls[0]?.[0]).not.toHaveProperty("timeout");
   });
 
   it("throws when no assistant output appears after the turn completes", async () => {

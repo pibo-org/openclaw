@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { getAcpSessionManager } from "../../../../acp/control-plane/manager.js";
 import {
   getAcpRuntimeBackend,
@@ -8,6 +10,7 @@ import type { AcpRuntimeEvent } from "../../../../acp/runtime/types.js";
 import { resolveAgentWorkspaceDir } from "../../../../agents/agent-scope.js";
 import { ensureCliPluginRegistryLoaded } from "../../../../cli/plugin-registry-loader.js";
 import { loadConfig } from "../../../../config/config.js";
+import { findGitRoot } from "../../../../infra/git-root.js";
 import { getActivePluginRegistry } from "../../../../plugins/runtime.js";
 import { startPluginServices, type PluginServicesHandle } from "../../../../plugins/services.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
@@ -26,6 +29,7 @@ type WorkerCompactionMode = "off" | "acp_control_command";
 type CodexControllerInput = {
   task: string;
   workingDirectory: string;
+  repoRoot?: string;
   agentId?: string;
   maxRetries?: number;
   successCriteria: string[];
@@ -39,6 +43,48 @@ type CodexControllerInput = {
 
 type NormalizedCodexControllerInput = Omit<Required<CodexControllerInput>, "agentId"> & {
   agentId?: string;
+  closeoutContextSource: "repoRoot" | "workingDirectory";
+};
+
+type CloseoutContext = Pick<
+  NormalizedCodexControllerInput,
+  "workingDirectory" | "repoRoot" | "closeoutContextSource"
+>;
+
+type CloseoutCheckCode =
+  | "git_repo_missing"
+  | "git_head_missing"
+  | "dirty_repo"
+  | "open_worktree"
+  | "integration_ref_missing"
+  | "integration_merge_base_missing"
+  | "not_integrated";
+
+type CloseoutCheck = {
+  code: CloseoutCheckCode;
+  ok: boolean;
+  summary: string;
+  detail?: string;
+};
+
+type CloseoutAssessment = {
+  status: "pass" | "blocked";
+  reason: string;
+  trace: string[];
+  context: {
+    workingDirectory: string;
+    requestedRepoRoot: string;
+    closeoutContextSource: CloseoutContext["closeoutContextSource"];
+    resolvedRepoRoot: string | null;
+  };
+  git: {
+    head: string | null;
+    baseRef: string | null;
+    mergeBase: string | null;
+    dirtyPaths: string[];
+    worktreePaths: string[];
+  };
+  checks: CloseoutCheck[];
 };
 
 type ControllerDecision = {
@@ -117,18 +163,21 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
     throw new Error("codex_controller erwartet ein JSON-Objekt als Input.");
   }
   const task = typeof record.task === "string" ? record.task.trim() : "";
-  const workingDirectory =
+  const rawWorkingDirectory =
     typeof record.workingDirectory === "string" ? record.workingDirectory.trim() : "";
+  const rawRepoRoot = typeof record.repoRoot === "string" ? record.repoRoot.trim() : "";
   const agentId =
     typeof record.agentId === "string" && record.agentId.trim() ? record.agentId.trim() : undefined;
   if (!task) {
     throw new Error("codex_controller benötigt ein nicht-leeres Feld `task`.");
   }
-  if (!workingDirectory) {
+  if (!rawWorkingDirectory) {
     throw new Error(
       "codex_controller benötigt `input.workingDirectory`. Falls `repoPath` übergeben wurde, bitte in `workingDirectory` umbenennen.",
     );
   }
+  const workingDirectory = path.resolve(rawWorkingDirectory);
+  const repoRoot = path.resolve(rawRepoRoot || workingDirectory);
   const maxRetries =
     normalizePositiveInteger(record.maxRetries) ??
     normalizePositiveInteger(request.maxRounds) ??
@@ -136,6 +185,7 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
   return {
     task,
     workingDirectory,
+    repoRoot,
     agentId,
     maxRetries,
     successCriteria: normalizeStringArray(record.successCriteria),
@@ -156,6 +206,7 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
     workerCompactionAfterRound:
       normalizePositiveInteger(record.workerCompactionAfterRound) ??
       DEFAULT_WORKER_COMPACTION_AFTER_ROUND,
+    closeoutContextSource: rawRepoRoot ? "repoRoot" : "workingDirectory",
   };
 }
 
@@ -584,7 +635,7 @@ function parseControllerDecision(raw: string): ControllerDecision {
 }
 
 function buildCodexPrompt(params: {
-  input: Required<CodexControllerInput>;
+  input: NormalizedCodexControllerInput;
   round: number;
   maxRounds: number;
   nextInstruction: string[];
@@ -615,7 +666,7 @@ function buildCodexPrompt(params: {
 
 function buildControllerInitPrompt(params: {
   controllerPrompt: string;
-  input: Required<CodexControllerInput>;
+  input: NormalizedCodexControllerInput;
   maxRounds: number;
 }): string {
   return [
@@ -700,12 +751,388 @@ function buildWorkflowStartedMessage(input: NormalizedCodexControllerInput): str
     `Task: ${input.task}`,
     `Round budget: ${input.maxRetries}`,
     `Worker cwd: ${input.workingDirectory}`,
+    `Closeout repo root: ${input.repoRoot} (${input.closeoutContextSource})`,
     ...(input.agentId ? [`Context workspace agent: ${input.agentId}`] : []),
     ...(input.successCriteria.length
       ? [`Success criteria: ${input.successCriteria.join("; ")}`]
       : []),
     ...(input.constraints.length ? [`Constraints: ${input.constraints.join("; ")}`] : []),
   ].join("\n");
+}
+
+function runGitReadOnly(cwd: string, args: string[]): string | null {
+  try {
+    return execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function parseGitStatusPorcelain(raw: string | null): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => line.replace(/^(?:[ MADRCU?!]{2}|[MADRCU?!])\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function parseGitWorktreePaths(raw: string | null): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length).trim())
+    .filter(Boolean);
+}
+
+function parseRefList(raw: string | null): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function chooseIntegrationBaseRef(refs: string[]): string | null {
+  const available = new Set(refs);
+  for (const candidate of ["origin/main", "origin/master", "main", "master"]) {
+    if (available.has(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function assessCloseout(context: CloseoutContext): CloseoutAssessment {
+  const requestedRepoRoot = context.repoRoot;
+  const directRequestedRepoRoot = runGitReadOnly(requestedRepoRoot, [
+    "rev-parse",
+    "--show-toplevel",
+  ]);
+  const directWorkingDirectoryRoot =
+    directRequestedRepoRoot === null
+      ? runGitReadOnly(context.workingDirectory, ["rev-parse", "--show-toplevel"])
+      : null;
+  const discoveredRepoRoot =
+    directRequestedRepoRoot || directWorkingDirectoryRoot
+      ? null
+      : (findGitRoot(requestedRepoRoot) ?? findGitRoot(context.workingDirectory));
+  const resolvedRepoRootCandidate =
+    directRequestedRepoRoot ??
+    directWorkingDirectoryRoot ??
+    (discoveredRepoRoot
+      ? (runGitReadOnly(discoveredRepoRoot, ["rev-parse", "--show-toplevel"]) ?? discoveredRepoRoot)
+      : null);
+  const resolvedRepoRoot = resolvedRepoRootCandidate
+    ? path.resolve(resolvedRepoRootCandidate)
+    : null;
+  const trace: string[] = [
+    `closeout_context=${context.closeoutContextSource}`,
+    `requested_repo_root=${requestedRepoRoot}`,
+    `working_directory=${context.workingDirectory}`,
+    `resolved_repo_root=${resolvedRepoRoot ?? "unresolved"}`,
+  ];
+  const checks: CloseoutCheck[] = [];
+
+  if (!resolvedRepoRoot) {
+    checks.push({
+      code: "git_repo_missing",
+      ok: false,
+      summary: "Closeout could not resolve a readable git repo root.",
+    });
+    trace.push("git_repo=missing");
+    return {
+      status: "blocked",
+      reason:
+        "Closeout blocked: git repo root could not be resolved from repoRoot/workingDirectory.",
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot: null,
+      },
+      git: {
+        head: null,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths: [],
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+
+  const head = runGitReadOnly(resolvedRepoRoot, ["rev-parse", "HEAD"]);
+  if (!head) {
+    checks.push({
+      code: "git_head_missing",
+      ok: false,
+      summary: "Closeout could not read HEAD.",
+    });
+    trace.push("git_head=missing");
+    return {
+      status: "blocked",
+      reason: "Closeout blocked: git HEAD could not be resolved.",
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot,
+      },
+      git: {
+        head: null,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths: [],
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+
+  trace.push(`head=${head}`);
+  const dirtyPaths = parseGitStatusPorcelain(
+    runGitReadOnly(resolvedRepoRoot, ["status", "--porcelain=1"]),
+  );
+  if (dirtyPaths.length > 0) {
+    checks.push({
+      code: "dirty_repo",
+      ok: false,
+      summary: "Closeout requires a clean repo/worktree.",
+      detail: dirtyPaths.join(", "),
+    });
+    trace.push(`dirty_paths=${dirtyPaths.join(",")}`);
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: repo/worktree is dirty (${dirtyPaths.join(", ")}).`,
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot,
+      },
+      git: {
+        head,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  checks.push({
+    code: "dirty_repo",
+    ok: true,
+    summary: "Repo/worktree is clean.",
+  });
+
+  const worktreePaths = parseGitWorktreePaths(
+    runGitReadOnly(resolvedRepoRoot, ["worktree", "list", "--porcelain"]),
+  );
+  trace.push(`worktree_count=${worktreePaths.length}`);
+  if (worktreePaths.length > 1) {
+    checks.push({
+      code: "open_worktree",
+      ok: false,
+      summary: "Closeout requires no additional linked worktrees.",
+      detail: worktreePaths.join(", "),
+    });
+    trace.push(`open_worktrees=${worktreePaths.join(",")}`);
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: open linked worktrees detected (${worktreePaths.join(", ")}).`,
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot,
+      },
+      git: {
+        head,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths,
+      },
+      checks,
+    };
+  }
+  checks.push({
+    code: "open_worktree",
+    ok: true,
+    summary: "No additional linked worktrees detected.",
+  });
+
+  const baseRef = chooseIntegrationBaseRef(
+    parseRefList(
+      runGitReadOnly(resolvedRepoRoot, [
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads",
+        "refs/remotes",
+      ]),
+    ),
+  );
+  if (!baseRef) {
+    checks.push({
+      code: "integration_ref_missing",
+      ok: false,
+      summary: "Closeout could not find a known integration ref.",
+    });
+    trace.push("integration_ref=missing");
+    return {
+      status: "blocked",
+      reason:
+        "Closeout blocked: integration ref (origin/main|origin/master|main|master) is missing.",
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot,
+      },
+      git: {
+        head,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths,
+      },
+      checks,
+    };
+  }
+
+  const mergeBase = runGitReadOnly(resolvedRepoRoot, ["merge-base", "HEAD", baseRef]);
+  if (!mergeBase) {
+    checks.push({
+      code: "integration_merge_base_missing",
+      ok: false,
+      summary: `Closeout could not compute merge-base against ${baseRef}.`,
+    });
+    trace.push(`integration_ref=${baseRef}`);
+    trace.push("merge_base=missing");
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: merge-base against ${baseRef} could not be resolved.`,
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot,
+      },
+      git: {
+        head,
+        baseRef,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths,
+      },
+      checks,
+    };
+  }
+
+  trace.push(`integration_ref=${baseRef}`);
+  trace.push(`merge_base=${mergeBase}`);
+  if (mergeBase !== head) {
+    checks.push({
+      code: "not_integrated",
+      ok: false,
+      summary: `HEAD is not integrated into ${baseRef}.`,
+      detail: `head=${head} mergeBase=${mergeBase}`,
+    });
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: HEAD ${head} is not integrated into ${baseRef} (merge-base ${mergeBase}).`,
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        resolvedRepoRoot,
+      },
+      git: {
+        head,
+        baseRef,
+        mergeBase,
+        dirtyPaths,
+        worktreePaths,
+      },
+      checks,
+    };
+  }
+
+  checks.push({
+    code: "not_integrated",
+    ok: true,
+    summary: `HEAD is integrated into ${baseRef}.`,
+  });
+  trace.push("closeout=pass");
+  return {
+    status: "pass",
+    reason: `Closeout passed: repo clean, no extra worktrees, HEAD integrated into ${baseRef}.`,
+    trace,
+    context: {
+      workingDirectory: context.workingDirectory,
+      requestedRepoRoot,
+      closeoutContextSource: context.closeoutContextSource,
+      resolvedRepoRoot,
+    },
+    git: {
+      head,
+      baseRef,
+      mergeBase,
+      dirtyPaths,
+      worktreePaths,
+    },
+    checks,
+  };
+}
+
+function buildCloseoutArtifact(assessment: CloseoutAssessment): string {
+  return `${JSON.stringify(assessment, null, 2)}\n`;
+}
+
+function buildRunSummary(params: {
+  status: WorkflowRunRecord["status"];
+  round: number;
+  reason: string;
+  workerSession: string;
+  controllerSession: string | undefined;
+  closeout?: CloseoutAssessment;
+}): string {
+  return (
+    [
+      `status: ${params.status}`,
+      `round: ${params.round}`,
+      `reason: ${params.reason}`,
+      `worker-session: ${params.workerSession}`,
+      `controller-session: ${params.controllerSession ?? "n/a"}`,
+      `closeout-status: ${params.closeout?.status ?? "not_run"}`,
+      `closeout-reason: ${params.closeout?.reason ?? "not_run"}`,
+      `closeout-repo-root: ${params.closeout?.context.resolvedRepoRoot ?? "n/a"}`,
+      `closeout-working-directory: ${params.closeout?.context.workingDirectory ?? "n/a"}`,
+      `closeout-head: ${params.closeout?.git.head ?? "n/a"}`,
+      `closeout-base-ref: ${params.closeout?.git.baseRef ?? "n/a"}`,
+      `closeout-trace: ${(params.closeout?.trace ?? ["not_run"]).join(" | ")}`,
+    ].join("\n") + "\n"
+  );
 }
 
 function buildControllerTerminalMessage(params: {
@@ -747,7 +1174,7 @@ function buildControllerCompletionMessage(params: {
 
 function buildRecord(params: {
   runId: string;
-  input: Required<CodexControllerInput>;
+  input: NormalizedCodexControllerInput;
   sessions: WorkflowRunRecord["sessions"];
   status: WorkflowRunRecord["status"];
   terminalReason: string | null;
@@ -945,6 +1372,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     inputSchemaSummary: [
       "task (string, required): original coding task passed directly to Codex.",
       "workingDirectory (string, required): absolute project/worktree path used as the persistent Codex ACP worker cwd.",
+      "repoRoot (string, optional): repo-root-first closeout path used for final read-only git/worktree/integration assessment; defaults to workingDirectory for backward compatibility.",
       "agentId (string, optional): agent workspace used for bootstrap/context/system-prompt resolution; does not change workingDirectory or worker cwd.",
       "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 10.",
       "successCriteria (string[], optional): additional completion criteria.",
@@ -956,7 +1384,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     artifactContract: [
       "round-<n>-codex.txt: raw Codex worker output per round.",
       "round-<n>-controller.txt: raw controller output per round, including normalized decision block.",
-      "run-summary.txt: terminal summary with final status, reason, and session keys.",
+      "closeout-assessment.json: machine-readable read-only closeout assessment written on the DONE path.",
+      "run-summary.txt: terminal summary with final status, reason, sessions, and closeout context.",
     ],
   },
   async start(request, ctx: WorkflowModuleContext) {
@@ -987,6 +1416,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       codexWorkerRuntime: "acp",
       codexWorkerSessionKind: "persistent_acp_thread",
       workingDirectory: input.workingDirectory,
+      repoRoot: input.repoRoot,
+      closeoutContextSource: input.closeoutContextSource,
       ...(input.agentId ? { contextAgentId: input.agentId } : {}),
       ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
       controllerPromptPath: input.controllerPromptPath,
@@ -1020,6 +1451,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       payload: {
         maxRounds: input.maxRetries,
         workingDirectory: input.workingDirectory,
+        repoRoot: input.repoRoot,
+        closeoutContextSource: input.closeoutContextSource,
         ...(input.agentId ? { contextAgentId: input.agentId } : {}),
         ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
         codexAgentId: input.codexAgentId,
@@ -1243,17 +1676,37 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       ctx.persist(record);
 
       if (decision.decision === "DONE") {
-        const finalReason = decision.reason.join(" ").trim() || "Controller approved completion.";
+        const closeout = assessCloseout({
+          workingDirectory: input.workingDirectory,
+          repoRoot: input.repoRoot,
+          closeoutContextSource: input.closeoutContextSource,
+        });
+        const closeoutArtifact = writeWorkflowArtifact(
+          ctx.runId,
+          "closeout-assessment.json",
+          buildCloseoutArtifact(closeout),
+        );
+        emitArtifactWritten({
+          artifactPath: closeoutArtifact,
+          summary: "closeout assessment written",
+          round,
+          role: "controller",
+        });
+        const closeoutBlocked = closeout.status !== "pass";
+        const finalReason = closeoutBlocked
+          ? `Closeout mismatch after controller DONE: ${closeout.reason}`
+          : decision.reason.join(" ").trim() || "Controller approved completion.";
         const summaryArtifact = writeWorkflowArtifact(
           ctx.runId,
           "run-summary.txt",
-          [
-            `status: done`,
-            `round: ${round}`,
-            `reason: ${finalReason}`,
-            `worker-session: ${codexSessionKey}`,
-            `controller-session: ${sessions.orchestrator}`,
-          ].join("\n") + "\n",
+          buildRunSummary({
+            status: closeoutBlocked ? "blocked" : "done",
+            round,
+            reason: finalReason,
+            workerSession: codexSessionKey,
+            controllerSession: sessions.orchestrator,
+            closeout,
+          }),
         );
         emitArtifactWritten({
           artifactPath: summaryArtifact,
@@ -1262,30 +1715,47 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           role: "controller",
         });
         ctx.trace.emit({
-          kind: "run_completed",
+          kind: closeoutBlocked ? "run_blocked" : "run_completed",
           stepId,
           round,
           role: "controller",
-          status: "done",
+          status: closeoutBlocked ? "blocked" : "done",
           summary: finalReason,
+          payload: {
+            closeoutStatus: closeout.status,
+            closeoutReason: closeout.reason,
+            closeoutTrace: closeout.trace,
+            closeoutArtifact,
+          },
         });
         await emitTracedWorkflowReportEvent({
           trace: ctx.trace,
           stepId,
           moduleId: "codex_controller",
           runId: ctx.runId,
-          phase: "workflow_done",
-          eventType: "completed",
-          messageText: buildControllerCompletionMessage({
-            finalResult: codexResult.text,
-            decision,
-            round,
-            maxRounds: input.maxRetries,
-          }),
+          phase: closeoutBlocked ? "workflow_blocked" : "workflow_done",
+          eventType: closeoutBlocked ? "blocked" : "completed",
+          messageText: closeoutBlocked
+            ? [
+                "Closeout mismatch after controller DONE.",
+                `Round: ${round}/${input.maxRetries}`,
+                "",
+                "Reason:",
+                `- ${closeout.reason}`,
+                "",
+                "Trace:",
+                ...closeout.trace.map((line) => `- ${line}`),
+              ].join("\n")
+            : buildControllerCompletionMessage({
+                finalResult: codexResult.text,
+                decision,
+                round,
+                maxRounds: input.maxRetries,
+              }),
           emittingAgentId: input.controllerAgentId,
           origin: request.origin,
           reporting: request.reporting,
-          status: "done",
+          status: closeoutBlocked ? "blocked" : "done",
           role: "orchestrator",
           round,
           targetSessionKey: sessions.orchestrator,
@@ -1294,11 +1764,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           runId: record.runId,
           input,
           sessions,
-          status: "done",
+          status: closeoutBlocked ? "blocked" : "done",
           terminalReason: finalReason,
           currentRound: round,
           maxRounds: input.maxRetries,
-          artifacts: [...record.artifacts, summaryArtifact],
+          artifacts: [...record.artifacts, closeoutArtifact, summaryArtifact],
           latestWorkerOutput: codexResult.text,
           latestCriticVerdict: controllerRun.text,
           createdAt: record.createdAt,
@@ -1316,13 +1786,13 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         const summaryArtifact = writeWorkflowArtifact(
           ctx.runId,
           "run-summary.txt",
-          [
-            `status: blocked`,
-            `round: ${round}`,
-            `reason: ${blockedReason}`,
-            `worker-session: ${codexSessionKey}`,
-            `controller-session: ${sessions.orchestrator}`,
-          ].join("\n") + "\n",
+          buildRunSummary({
+            status: "blocked",
+            round,
+            reason: blockedReason,
+            workerSession: codexSessionKey,
+            controllerSession: sessions.orchestrator,
+          }),
         );
         emitArtifactWritten({
           artifactPath: summaryArtifact,
@@ -1384,13 +1854,13 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     const summaryArtifact = writeWorkflowArtifact(
       ctx.runId,
       "run-summary.txt",
-      [
-        `status: max_rounds_reached`,
-        `round: ${input.maxRetries}`,
-        `reason: Controller retry budget exhausted.`,
-        `worker-session: ${codexSessionKey}`,
-        `controller-session: ${sessions.orchestrator}`,
-      ].join("\n") + "\n",
+      buildRunSummary({
+        status: "max_rounds_reached",
+        round: input.maxRetries,
+        reason: "Controller retry budget exhausted.",
+        workerSession: codexSessionKey,
+        controllerSession: sessions.orchestrator,
+      }),
     );
     emitArtifactWritten({
       artifactPath: summaryArtifact,

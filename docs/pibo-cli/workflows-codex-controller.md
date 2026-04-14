@@ -50,6 +50,7 @@ This is deliberate, not accidental.
 The module keeps two paths distinct when `agentId` is provided:
 
 - `workingDirectory`: the project repo/worktree used as the Codex ACP worker `cwd`
+- `repoRoot`: repo-root-first closeout target for the final read-only git/worktree/integration gate; falls back to `workingDirectory` if omitted
 - `agentId`: selects the agent workspace used for bootstrap files, system-prompt context, and plugin-service workspace resolution
 
 If `agentId` is omitted, the prior behavior stays unchanged.
@@ -102,6 +103,24 @@ Legacy mapping:
 - `DONE` should come from the normalized module block
 
 This preserves decision-parsing reliability while avoiding stable prompt re-injection on later rounds.
+
+## Done closeout semantics
+
+`MODULE_DECISION: DONE` is no longer sufficient on its own.
+
+The runtime now executes a read-only closeout assessment on the real DONE -> terminal path before it returns `done`:
+
+- resolve the effective closeout repo from `repoRoot` first, with `workingDirectory` fallback
+- require a clean repo/worktree
+- require no additional linked worktrees
+- require `HEAD` to be integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
+
+If that closeout gate fails, the workflow ends as `blocked` instead of `done`.
+
+Artifacts now include:
+
+- `closeout-assessment.json`: machine-readable closeout result
+- `run-summary.txt`: terminal status plus closeout reason/trace/context
 
 ## Compaction behavior
 

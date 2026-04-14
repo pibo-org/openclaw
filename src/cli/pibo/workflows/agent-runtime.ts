@@ -67,6 +67,10 @@ export async function runWorkflowAgentOnSession(params: {
     callGateway,
   });
   const runId = params.idempotencyKey;
+  const timeout =
+    params.timeoutMs !== undefined
+      ? String(Math.max(1, Math.ceil(params.timeoutMs / 1_000)))
+      : undefined;
   await agentCommand({
     sessionKey: params.sessionKey,
     message: params.message,
@@ -74,7 +78,7 @@ export async function runWorkflowAgentOnSession(params: {
     suppressRuntimeOutput: true,
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     runId,
-    timeout: String(Math.max(1, Math.ceil((params.timeoutMs ?? 120_000) / 1_000))),
+    ...(timeout ? { timeout } : {}),
   });
 
   const settledReply =
