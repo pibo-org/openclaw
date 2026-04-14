@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs, { readFileSync } from "node:fs";
 import path from "node:path";
+import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { getWorkflowModule, listWorkflowModules } from "./modules/index.js";
 import {
   listRunRecords,
@@ -26,11 +27,13 @@ import type {
   WorkflowArtifactInfo,
   WorkflowModuleManifest,
   WorkflowProgressSnapshot,
+  WorkflowReportingConfig,
   WorkflowRunRecord,
   WorkflowStartRequest,
   WorkflowTerminalState,
   WorkflowWaitResult,
 } from "./types.js";
+import { emitTracedWorkflowReportEvent } from "./workflow-reporting.js";
 
 const activeWorkflowRuns = new Map<string, Promise<WorkflowRunRecord>>();
 const WORKFLOW_WAIT_POLL_MS = 250;
@@ -104,6 +107,108 @@ function isTerminalStatus(status: WorkflowRunRecord["status"]) {
     status === "failed" ||
     status === "max_rounds_reached"
   );
+}
+
+function startedReportWasAttempted(runId: string): boolean {
+  return readWorkflowTraceEvents(runId, { kind: "report_delivery_attempted" }).some((event) => {
+    const payload =
+      event.payload && typeof event.payload === "object"
+        ? (event.payload as { eventType?: unknown; phase?: unknown })
+        : null;
+    return payload?.eventType === "started" || payload?.phase === "run_started";
+  });
+}
+
+function ensureFailureReporting(
+  reporting?: WorkflowReportingConfig,
+): WorkflowReportingConfig | undefined {
+  if (!reporting) {
+    return undefined;
+  }
+  const events = new Set(reporting.events ?? []);
+  events.add("blocked");
+  return {
+    ...reporting,
+    events: [...events],
+  };
+}
+
+function buildEarlyStartFailureMessage(params: {
+  moduleId: string;
+  runId: string;
+  terminalReason: string;
+}): string {
+  return [
+    "Workflow start failed before the regular workflow start/reporting path began.",
+    `Module: ${params.moduleId}`,
+    `Run: ${params.runId}`,
+    `Reason: ${params.terminalReason}`,
+  ].join("\n");
+}
+
+function buildFailedWorkflowRunRecord(params: {
+  terminalReason: string;
+  tracer: ReturnType<typeof createWorkflowTraceRuntime>;
+  persistedRecord: WorkflowRunRecord;
+}): WorkflowRunRecord {
+  const updatedAt = nowIso();
+  const persisted = params.persistedRecord;
+  return {
+    runId: persisted.runId,
+    moduleId: persisted.moduleId,
+    status: "failed",
+    terminalReason: params.terminalReason,
+    currentRound: persisted.currentRound,
+    maxRounds: persisted.maxRounds,
+    input: persisted.input,
+    artifacts: persisted.artifacts,
+    sessions: persisted.sessions,
+    latestWorkerOutput: persisted.latestWorkerOutput,
+    latestCriticVerdict: persisted.latestCriticVerdict,
+    originalTask: persisted.originalTask,
+    currentTask: persisted.currentTask,
+    ...(persisted.origin ? { origin: persisted.origin } : {}),
+    ...(persisted.reporting ? { reporting: persisted.reporting } : {}),
+    trace: params.tracer.getRef(updatedAt),
+    createdAt: persisted.createdAt,
+    updatedAt,
+  };
+}
+
+async function emitEarlyStartFailureAnnouncement(params: {
+  runId: string;
+  moduleId: string;
+  tracer: ReturnType<typeof createWorkflowTraceRuntime>;
+  terminalReason: string;
+  persistedRecord: WorkflowRunRecord;
+}) {
+  if (startedReportWasAttempted(params.runId)) {
+    return;
+  }
+
+  const targetSessionKey =
+    params.persistedRecord.sessions.orchestrator ?? params.persistedRecord.origin?.ownerSessionKey;
+  const emittingAgentId = resolveAgentIdFromSessionKey(targetSessionKey);
+  await emitTracedWorkflowReportEvent({
+    trace: params.tracer,
+    stepId: "run",
+    moduleId: params.moduleId,
+    runId: params.runId,
+    phase: "run_start_failed",
+    eventType: "blocked",
+    messageText: buildEarlyStartFailureMessage({
+      moduleId: params.moduleId,
+      runId: params.runId,
+      terminalReason: params.terminalReason,
+    }),
+    emittingAgentId,
+    origin: params.persistedRecord.origin,
+    reporting: ensureFailureReporting(params.persistedRecord.reporting),
+    status: "failed",
+    role: "orchestrator",
+    targetSessionKey,
+    traceSummary: "early start failure announcement attempted",
+  });
 }
 
 function printStatusText(record: WorkflowRunRecord) {
@@ -326,37 +431,34 @@ async function startWorkflowRunWithRunId(
     return tracedRecord;
   } catch (error) {
     const persisted = persistedRecord;
-    if (persisted === null) {
-      throw error;
-    }
     const terminalReason = error instanceof Error ? error.message : String(error);
     tracer.emit({
       kind: "run_failed",
+      stepId: "run",
       status: "failed",
       summary: terminalReason,
       payload: { terminalReason },
     });
-    const failed: WorkflowRunRecord = {
-      runId: persisted.runId,
-      moduleId: persisted.moduleId,
-      status: "failed",
+    if (persisted === null) {
+      throw error;
+    }
+    const failed = buildFailedWorkflowRunRecord({
       terminalReason,
-      currentRound: persisted.currentRound,
-      maxRounds: persisted.maxRounds,
-      input: persisted.input,
-      artifacts: persisted.artifacts,
-      sessions: persisted.sessions,
-      latestWorkerOutput: persisted.latestWorkerOutput,
-      latestCriticVerdict: persisted.latestCriticVerdict,
-      originalTask: persisted.originalTask,
-      currentTask: persisted.currentTask,
-      ...(persisted.origin ? { origin: persisted.origin } : {}),
-      ...(persisted.reporting ? { reporting: persisted.reporting } : {}),
-      trace: tracer.getRef(nowIso()),
-      createdAt: persisted.createdAt,
-      updatedAt: nowIso(),
-    };
+      tracer,
+      persistedRecord: persisted,
+    });
     writeRunRecord(failed);
+    try {
+      await emitEarlyStartFailureAnnouncement({
+        runId,
+        moduleId,
+        tracer,
+        terminalReason,
+        persistedRecord: failed,
+      });
+    } catch {
+      // Preserve the original workflow failure if the best-effort fallback announcement path breaks.
+    }
     return failed;
   }
 }
