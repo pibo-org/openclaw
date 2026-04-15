@@ -1517,14 +1517,23 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         agentId: input.codexAgentId,
         summary: "codex worker turn started",
       });
-      const codexResult = await runCodexTurn({
-        sessionKey: codexSessionKey,
-        workingDirectory: input.workingDirectory,
-        agentId: input.codexAgentId,
-        text: codexPrompt,
-        requestId: `${ctx.runId}:codex:${round}`,
-        contextWorkspaceDir,
-      });
+      let codexResult: Awaited<ReturnType<typeof runCodexTurn>>;
+      try {
+        codexResult = await runCodexTurn({
+          sessionKey: codexSessionKey,
+          workingDirectory: input.workingDirectory,
+          agentId: input.codexAgentId,
+          text: codexPrompt,
+          requestId: `${ctx.runId}:codex:${round}`,
+          contextWorkspaceDir,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Codex worker turn failed in round ${round}/${input.maxRetries} on session ${codexSessionKey}: ${message}`,
+          { cause: error },
+        );
+      }
       const workerArtifact = writeWorkflowArtifact(
         ctx.runId,
         `round-${round}-codex.txt`,

@@ -85,6 +85,8 @@ import { SessionActorQueue } from "./session-actor-queue.js";
 const ACP_TURN_TIMEOUT_GRACE_MS = 1_000;
 const ACP_TURN_TIMEOUT_CLEANUP_GRACE_MS = 2_000;
 const ACP_TURN_TIMEOUT_REASON = "turn-timeout";
+const ACP_TURN_DISCONNECT_REASON = "turn-disconnected";
+const ACP_TURN_HEALTH_POLL_MS = 1_000;
 const ACP_BACKGROUND_TASK_TEXT_MAX_LENGTH = 160;
 const ACP_BACKGROUND_TASK_PROGRESS_MAX_LENGTH = 240;
 
@@ -769,12 +771,13 @@ export class AcpSessionManager {
               input.signal.addEventListener("abort", onCallerAbort, { once: true });
             }
 
-            activeTurn = {
+            const activeTurnState: ActiveTurnState = {
               runtime,
               handle,
               abortController: internalAbortController,
             };
-            this.activeTurnBySession.set(actorKey, activeTurn);
+            activeTurn = activeTurnState;
+            this.activeTurnBySession.set(actorKey, activeTurnState);
             activeTurnStarted = true;
 
             let streamError: AcpRuntimeError | null = null;
@@ -824,14 +827,34 @@ export class AcpSessionManager {
                 throw streamError;
               }
             })();
+            const sessionMode = meta.mode;
+            const turnPromiseWithHealthMonitoring = this.withTurnHealthMonitoring({
+              sessionKey,
+              requestId: input.requestId,
+              runtime,
+              handle,
+              activeTurn: activeTurnState,
+              turnPromise,
+              sawTurnOutput: () => sawTurnOutput,
+              onDisconnect: async () => {
+                eventGate.open = false;
+                skipPostTurnCleanup = true;
+                await this.cleanupInterruptedTurn({
+                  sessionKey,
+                  activeTurn: activeTurnState,
+                  mode: sessionMode,
+                  reason: ACP_TURN_DISCONNECT_REASON,
+                  clearCachedHandle: true,
+                });
+              },
+            });
             const turnTimeoutMs = this.resolveTurnTimeoutMs({
               cfg: input.cfg,
               meta,
             });
-            const sessionMode = meta.mode;
             await this.awaitTurnWithTimeout({
               sessionKey,
-              turnPromise,
+              turnPromise: turnPromiseWithHealthMonitoring,
               timeoutMs: turnTimeoutMs + ACP_TURN_TIMEOUT_GRACE_MS,
               timeoutLabelMs: turnTimeoutMs,
               onTimeout: async () => {
@@ -1051,6 +1074,281 @@ export class AcpSessionManager {
       if (timer) {
         clearTimeout(timer);
       }
+    }
+  }
+
+  private async withTurnHealthMonitoring<T>(params: {
+    sessionKey: string;
+    requestId: string;
+    runtime: AcpRuntime;
+    handle: AcpRuntimeHandle;
+    activeTurn: ActiveTurnState;
+    turnPromise: Promise<T>;
+    sawTurnOutput: () => boolean;
+    onDisconnect: () => Promise<void>;
+  }): Promise<T> {
+    if (!params.runtime.getStatus) {
+      return await params.turnPromise;
+    }
+
+    const observedTurnPromise: Promise<
+      { kind: "value"; value: T } | { kind: "error"; error: unknown }
+    > = params.turnPromise.then(
+      (value) => ({ kind: "value" as const, value }),
+      (error) => ({ kind: "error" as const, error }),
+    );
+    const pollToken = Symbol("acp-turn-health-poll");
+    const stoppedToken = Symbol("acp-turn-health-stopped");
+
+    while (true) {
+      const outcome = await Promise.race([
+        observedTurnPromise,
+        this.waitForTurnHealthPoll({
+          pollMs: ACP_TURN_HEALTH_POLL_MS,
+          signal: params.activeTurn.abortController.signal,
+          pollToken,
+          stoppedToken,
+        }),
+      ]);
+      if (typeof outcome !== "symbol") {
+        if (outcome.kind === "error") {
+          throw outcome.error;
+        }
+        return outcome.value;
+      }
+      if (outcome === stoppedToken) {
+        const finalOutcome = await observedTurnPromise;
+        if (finalOutcome.kind === "error") {
+          throw finalOutcome.error;
+        }
+        return finalOutcome.value;
+      }
+
+      const disconnectError = await this.probeTurnDisconnectError({
+        sessionKey: params.sessionKey,
+        requestId: params.requestId,
+        runtime: params.runtime,
+        handle: params.handle,
+        signal: params.activeTurn.abortController.signal,
+        sawTurnOutput: params.sawTurnOutput(),
+      });
+      if (!disconnectError) {
+        continue;
+      }
+      await params.onDisconnect();
+      throw disconnectError;
+    }
+  }
+
+  private async waitForTurnHealthPoll(params: {
+    pollMs: number;
+    signal: AbortSignal;
+    pollToken: symbol;
+    stoppedToken: symbol;
+  }): Promise<symbol> {
+    if (params.signal.aborted) {
+      return params.stoppedToken;
+    }
+    return await new Promise<symbol>((resolve) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        params.signal.removeEventListener("abort", onAbort);
+      };
+      const settle = (value: symbol) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+      const onAbort = () => settle(params.stoppedToken);
+      params.signal.addEventListener("abort", onAbort, { once: true });
+      timer = setTimeout(() => settle(params.pollToken), Math.max(250, params.pollMs));
+      timer.unref?.();
+    });
+  }
+
+  private async probeTurnDisconnectError(params: {
+    sessionKey: string;
+    requestId: string;
+    runtime: AcpRuntime;
+    handle: AcpRuntimeHandle;
+    signal: AbortSignal;
+    sawTurnOutput: boolean;
+  }): Promise<AcpRuntimeError | null> {
+    if (!params.runtime.getStatus) {
+      return null;
+    }
+    try {
+      const status = await params.runtime.getStatus({
+        handle: params.handle,
+        signal: params.signal,
+      });
+      const message = this.describeTurnDisconnectStatus({
+        status,
+        requestId: params.requestId,
+        sawTurnOutput: params.sawTurnOutput,
+      });
+      if (!message) {
+        return null;
+      }
+      return new AcpRuntimeError("ACP_TURN_FAILED", message);
+    } catch (error) {
+      const acpError = toAcpRuntimeError({
+        error,
+        fallbackCode: "ACP_TURN_FAILED",
+        fallbackMessage: "ACP runtime status probe failed during active turn.",
+      });
+      if (
+        params.sawTurnOutput ||
+        (!this.isRecoverableEarlyTurnDisconnectError(acpError.message) &&
+          !this.isRecoverableAcpxExitError(acpError.message))
+      ) {
+        logVerbose(
+          `acp-manager: ignoring active-turn status probe failure for ${params.sessionKey}: ${acpError.message}`,
+        );
+        return null;
+      }
+      return new AcpRuntimeError(
+        "ACP_TURN_FAILED",
+        `ACP runtime status probe failed during the active turn: ${acpError.message}`,
+      );
+    }
+  }
+
+  private describeTurnDisconnectStatus(params: {
+    status: AcpRuntimeStatus | undefined;
+    requestId: string;
+    sawTurnOutput: boolean;
+  }): string | null {
+    const status = params.status;
+    if (!status) {
+      return null;
+    }
+    const details =
+      status.details && typeof status.details === "object" ? status.details : undefined;
+    const summary = normalizeText(status.summary) ?? "";
+    const detailsStatus = normalizeLowercaseStringOrEmpty(details?.status);
+    const summaryStatus = normalizeLowercaseStringOrEmpty(summary.match(/\bstatus=([^\s]+)/i)?.[1]);
+    const lastRequestId =
+      normalizeText(details?.last_request_id) ??
+      normalizeText(details?.lastRequestId) ??
+      normalizeText(details?.request_id) ??
+      normalizeText(details?.requestId);
+    const disconnectReason =
+      normalizeText(details?.last_agent_disconnect_reason) ??
+      normalizeText(details?.lastAgentDisconnectReason) ??
+      normalizeText(details?.disconnect_reason) ??
+      normalizeText(details?.disconnectReason);
+    const lastAgentExitAt =
+      normalizeText(details?.last_agent_exit_at) ??
+      normalizeText(details?.lastAgentExitAt) ??
+      normalizeText(details?.agent_exit_at) ??
+      normalizeText(details?.agentExitAt);
+    const requestMatches = !lastRequestId || lastRequestId === params.requestId;
+    const statusUnavailable =
+      detailsStatus === "dead" ||
+      detailsStatus === "no-session" ||
+      summaryStatus === "dead" ||
+      summaryStatus === "no-session";
+    if (statusUnavailable) {
+      return [
+        "ACP runtime session became unavailable during the active turn.",
+        summary ? `status: ${summary}` : null,
+        requestMatches && lastRequestId ? `requestId: ${lastRequestId}` : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+    if (requestMatches && disconnectReason) {
+      return [
+        "ACP worker disconnected before completion.",
+        `reason: ${disconnectReason}.`,
+        lastRequestId ? `requestId: ${lastRequestId}.` : null,
+        summary ? `status: ${summary}.` : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+    const combinedStatusText = [summary, disconnectReason, detailsStatus, summaryStatus]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (
+      requestMatches &&
+      !params.sawTurnOutput &&
+      /(connection[_ ]close|connection closed|disconnect|disconnected|socket hang up|broken pipe|eof)/i.test(
+        combinedStatusText,
+      )
+    ) {
+      return [
+        "ACP worker disconnected before producing output.",
+        summary ? `status: ${summary}.` : null,
+        lastRequestId ? `requestId: ${lastRequestId}.` : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+    if (requestMatches && !params.sawTurnOutput && lastAgentExitAt) {
+      return [
+        "ACP worker exited before producing output.",
+        `lastAgentExitAt: ${lastAgentExitAt}.`,
+        lastRequestId ? `requestId: ${lastRequestId}.` : null,
+        summary ? `status: ${summary}.` : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+    return null;
+  }
+
+  private async cleanupInterruptedTurn(params: {
+    sessionKey: string;
+    activeTurn: ActiveTurnState;
+    mode: AcpRuntimeSessionMode;
+    reason: string;
+    clearCachedHandle: boolean;
+  }): Promise<void> {
+    params.activeTurn.abortController.abort();
+    if (!params.activeTurn.cancelPromise) {
+      params.activeTurn.cancelPromise = params.activeTurn.runtime.cancel({
+        handle: params.activeTurn.handle,
+        reason: params.reason,
+      });
+    }
+    await this.awaitCleanupWithGrace({
+      sessionKey: params.sessionKey,
+      label: "cancel",
+      promise: params.activeTurn.cancelPromise,
+    });
+    if (params.clearCachedHandle) {
+      this.clearCachedRuntimeStateIfHandleMatches({
+        sessionKey: params.sessionKey,
+        handle: params.activeTurn.handle,
+      });
+    }
+    if (params.mode !== "oneshot") {
+      return;
+    }
+    const closePromise = params.activeTurn.runtime.close({
+      handle: params.activeTurn.handle,
+      reason: params.reason,
+    });
+    await this.awaitCleanupWithGrace({
+      sessionKey: params.sessionKey,
+      label: "close",
+      promise: closePromise,
+    });
+    if (params.clearCachedHandle) {
+      this.clearCachedRuntimeStateIfHandleMatches({
+        sessionKey: params.sessionKey,
+        handle: params.activeTurn.handle,
+      });
     }
   }
 
@@ -1686,7 +1984,10 @@ export class AcpSessionManager {
     if (params.attempt > 0 || params.sawTurnOutput) {
       return false;
     }
-    if (this.isRecoverableAcpxExitError(params.error.message)) {
+    if (
+      this.isRecoverableAcpxExitError(params.error.message) ||
+      this.isRecoverableEarlyTurnDisconnectError(params.error.message)
+    ) {
       this.clearCachedRuntimeState(params.sessionKey);
       logVerbose(
         `acp-manager: retrying ${params.sessionKey} with a fresh runtime handle after early turn failure: ${params.error.message}`,
@@ -1729,6 +2030,18 @@ export class AcpSessionManager {
 
   private isRecoverableAcpxExitError(message: string): boolean {
     return /^acpx exited with (code \d+|signal [a-z0-9]+)/i.test(message.trim());
+  }
+
+  private isRecoverableEarlyTurnDisconnectError(message: string): boolean {
+    const normalized = message.trim();
+    return (
+      /ACP worker disconnected before (?:completion|producing output)/i.test(normalized) ||
+      /ACP worker exited before producing output/i.test(normalized) ||
+      /ACP runtime session became unavailable during the active turn/i.test(normalized) ||
+      /ACP runtime status probe failed during the active turn:.*(?:connection[_ ]close|connection closed|disconnect|disconnected|socket hang up|broken pipe|eof)/i.test(
+        normalized,
+      )
+    );
   }
 
   private isRecoverableMissingPersistentSessionError(message: string): boolean {

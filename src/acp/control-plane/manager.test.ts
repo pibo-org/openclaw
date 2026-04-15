@@ -2003,6 +2003,156 @@ describe("AcpSessionManager", () => {
     expect(states).not.toContain("error");
   });
 
+  it("retries once with a fresh runtime handle after an early connection_close status disconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtimeState = createRuntime();
+      hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+        id: "acpx",
+        runtime: runtimeState.runtime,
+      });
+      hoisted.readAcpSessionEntryMock.mockReturnValue({
+        sessionKey: "agent:codex:acp:session-1",
+        storeSessionKey: "agent:codex:acp:session-1",
+        acp: readySessionMeta(),
+      });
+      runtimeState.getStatus
+        .mockResolvedValueOnce({
+          summary: "status=alive",
+          details: {
+            status: "alive",
+            last_request_id: "run-1",
+          },
+        })
+        .mockResolvedValueOnce({
+          summary: "status=alive",
+          details: {
+            status: "alive",
+            last_request_id: "run-1",
+            last_agent_disconnect_reason: "connection_close",
+            last_agent_exit_at: "2026-04-15T15:51:17.736Z",
+          },
+        });
+      runtimeState.runTurn
+        .mockImplementationOnce(async function* () {
+          yield* [];
+          await new Promise(() => {});
+        })
+        .mockImplementationOnce(async function* () {
+          yield { type: "done" as const };
+        });
+
+      const manager = new AcpSessionManager();
+      const runPromise = manager.runTurn({
+        cfg: baseCfg,
+        sessionKey: "agent:codex:acp:session-1",
+        text: "do work",
+        mode: "prompt",
+        requestId: "run-1",
+      });
+
+      await vi.advanceTimersByTimeAsync(2_500);
+
+      await expect(runPromise).resolves.toBeUndefined();
+      expect(runtimeState.ensureSession).toHaveBeenCalledTimes(2);
+      expect(runtimeState.runTurn).toHaveBeenCalledTimes(2);
+      expect(runtimeState.cancel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "turn-disconnected",
+        }),
+      );
+      const states = extractStatesFromUpserts();
+      expect(states).toContain("running");
+      expect(states).toContain("idle");
+      expect(states).not.toContain("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails terminally after the bounded retry also hits connection_close", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtimeState = createRuntime();
+      hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+        id: "acpx",
+        runtime: runtimeState.runtime,
+      });
+      hoisted.readAcpSessionEntryMock.mockReturnValue({
+        sessionKey: "agent:codex:acp:session-1",
+        storeSessionKey: "agent:codex:acp:session-1",
+        acp: readySessionMeta(),
+      });
+      runtimeState.getStatus
+        .mockResolvedValueOnce({
+          summary: "status=alive",
+          details: {
+            status: "alive",
+            last_request_id: "run-1",
+          },
+        })
+        .mockResolvedValueOnce({
+          summary: "status=alive",
+          details: {
+            status: "alive",
+            last_request_id: "run-1",
+            last_agent_disconnect_reason: "connection_close",
+            last_agent_exit_at: "2026-04-15T15:51:17.736Z",
+          },
+        })
+        .mockResolvedValueOnce({
+          summary: "status=alive",
+          details: {
+            status: "alive",
+            last_request_id: "run-1",
+          },
+        })
+        .mockResolvedValueOnce({
+          summary: "status=alive",
+          details: {
+            status: "alive",
+            last_request_id: "run-1",
+            last_agent_disconnect_reason: "connection_close",
+            last_agent_exit_at: "2026-04-15T15:51:19.000Z",
+          },
+        });
+      runtimeState.runTurn
+        .mockImplementationOnce(async function* () {
+          yield* [];
+          await new Promise(() => {});
+        })
+        .mockImplementationOnce(async function* () {
+          yield* [];
+          await new Promise(() => {});
+        });
+
+      const manager = new AcpSessionManager();
+      const runPromise = manager.runTurn({
+        cfg: baseCfg,
+        sessionKey: "agent:codex:acp:session-1",
+        text: "do work",
+        mode: "prompt",
+        requestId: "run-1",
+      });
+      const rejection = expect(runPromise).rejects.toMatchObject({
+        code: "ACP_TURN_FAILED",
+        message: expect.stringContaining("connection_close"),
+      });
+
+      await vi.advanceTimersByTimeAsync(4_500);
+
+      await rejection;
+      expect(runtimeState.ensureSession).toHaveBeenCalledTimes(2);
+      expect(runtimeState.runTurn).toHaveBeenCalledTimes(2);
+      expect(runtimeState.cancel).toHaveBeenCalledTimes(2);
+      const states = extractStatesFromUpserts();
+      expect(states).toContain("error");
+      expect(states.at(-1)).toBe("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries once with a fresh persistent session after an early missing-session turn failure", async () => {
     const runtimeState = createRuntime();
     hoisted.requireAcpRuntimeBackendMock.mockReturnValue({

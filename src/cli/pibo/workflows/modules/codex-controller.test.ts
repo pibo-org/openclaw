@@ -1070,6 +1070,33 @@ describe("codex_controller module", () => {
     expect(record.latestWorkerOutput).not.toContain("[tool] tool call");
   });
 
+  it("surfaces codex worker disconnects with round and session context", async () => {
+    runTurn.mockRejectedValueOnce(
+      new Error("ACP worker disconnected before completion. reason: connection_close."),
+    );
+    runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    await expect(
+      codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+          },
+        },
+        {
+          runId: "run-1",
+          nowIso: () => "2026-04-10T00:00:00.000Z",
+          persist: () => {},
+          trace: createTraceMock("run-1"),
+        },
+      ),
+    ).rejects.toThrow(
+      "Codex worker turn failed in round 1/10 on session agent:codex:acp:workflow:run-1:worker:codex: ACP worker disconnected before completion. reason: connection_close.",
+    );
+  });
+
   it("rejects blind CONTINUE when drift warnings exist but next instruction is not corrective", async () => {
     runTurn.mockImplementationOnce(
       async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
