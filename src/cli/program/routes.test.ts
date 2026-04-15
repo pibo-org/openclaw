@@ -14,6 +14,8 @@ const listCommandsMock = vi.hoisted(() =>
 const formatRegistrySummaryMock = vi.hoisted(() => vi.fn(() => "registry summary"));
 const getCommandPromptMock = vi.hoisted(() => vi.fn());
 const findInitMock = vi.hoisted(() => vi.fn());
+const workflowsListMock = vi.hoisted(() => vi.fn());
+const workflowsDescribeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../config-cli.js", () => ({
   runConfigGet: runConfigGetMock,
@@ -45,6 +47,11 @@ vi.mock("../pibo/commands/commands/index.js", () => ({
 
 vi.mock("../pibo/find/index.js", () => ({
   findInit: findInitMock,
+}));
+
+vi.mock("../pibo/workflows/read-only.js", () => ({
+  workflowsList: workflowsListMock,
+  workflowsDescribe: workflowsDescribeMock,
 }));
 
 describe("program routes", () => {
@@ -229,6 +236,47 @@ describe("program routes", () => {
     await expect(route?.run(["node", "openclaw", "pibo", "commands", "list"])).resolves.toBe(true);
     expect(listCommandsMock).toHaveBeenCalledTimes(1);
     expect(formatRegistrySummaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes pibo workflows list and describe through the read-only handlers", async () => {
+    const listRoute = expectRoute(["pibo", "workflows", "list"]);
+    await expect(
+      listRoute?.run(["node", "openclaw", "pibo", "workflows", "list", "--json"]),
+    ).resolves.toBe(true);
+    expect(workflowsListMock).toHaveBeenCalledWith({ json: true });
+
+    const describeRoute = expectRoute(["pibo", "workflows", "describe"]);
+    await expect(
+      describeRoute?.run([
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "describe",
+        "codex_controller",
+        "--json",
+      ]),
+    ).resolves.toBe(true);
+    expect(workflowsDescribeMock).toHaveBeenCalledWith("codex_controller", { json: true });
+  });
+
+  it("returns false for unsupported pibo workflow route variants", async () => {
+    await expectRunFalse(
+      ["pibo", "workflows", "list"],
+      ["node", "openclaw", "pibo", "workflows", "list", "extra"],
+    );
+    await expectRunFalse(
+      ["pibo", "workflows", "describe"],
+      [
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "describe",
+        "codex_controller",
+        "extra",
+      ],
+    );
   });
 
   it("returns false for pibo commands show route when name is missing", async () => {

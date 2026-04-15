@@ -23,6 +23,7 @@ import type {
 } from "../types.js";
 import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
 import { buildAcpWorkflowSessionKey, ensureWorkflowSessions } from "../workflow-session-helper.js";
+import { codexControllerWorkflowModuleManifest } from "./manifests.js";
 
 type WorkerCompactionMode = "off" | "acp_control_command";
 
@@ -1359,35 +1360,7 @@ async function maybeCompactCodexSession(params: {
 }
 
 export const codexControllerWorkflowModule: WorkflowModule = {
-  manifest: {
-    moduleId: "codex_controller",
-    displayName: "Codex Controller",
-    description:
-      "Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
-    kind: "agent_workflow",
-    version: "0.2.1",
-    requiredAgents: ["codex", "codex-controller"],
-    terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
-    supportsAbort: false,
-    inputSchemaSummary: [
-      "task (string, required): original coding task passed directly to Codex.",
-      "workingDirectory (string, required): absolute project/worktree path used as the persistent Codex ACP worker cwd.",
-      "repoRoot (string, optional): repo-root-first closeout path used for final read-only git/worktree/integration assessment; defaults to workingDirectory for backward compatibility.",
-      "agentId (string, optional): agent workspace used for bootstrap/context/system-prompt resolution; does not change workingDirectory or worker cwd.",
-      "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 10.",
-      "successCriteria (string[], optional): additional completion criteria.",
-      "constraints (string[], optional): extra constraints to keep in every turn.",
-      `controllerPromptPath (string, optional): defaults to ${DEFAULT_CONTROLLER_PROMPT_PATH}.`,
-      'workerCompactionMode ("off"|"acp_control_command", optional): semantic ACP-thread compaction strategy; defaults to off. Use acp_control_command only as an explicit debugging or specialized exception path.',
-      `workerCompactionAfterRound (number, optional): first round that may trigger manual ACP-thread compaction when workerCompactionMode is set to acp_control_command; defaults to ${DEFAULT_WORKER_COMPACTION_AFTER_ROUND}.`,
-    ],
-    artifactContract: [
-      "round-<n>-codex.txt: raw Codex worker output per round.",
-      "round-<n>-controller.txt: raw controller output per round, including normalized decision block.",
-      "closeout-assessment.json: machine-readable read-only closeout assessment written on the DONE path.",
-      "run-summary.txt: terminal summary with final status, reason, sessions, and closeout context.",
-    ],
-  },
+  manifest: codexControllerWorkflowModuleManifest,
   async start(request, ctx: WorkflowModuleContext) {
     const input = normalizeInput(request);
     const cfg = loadConfig();

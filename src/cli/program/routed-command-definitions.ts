@@ -12,6 +12,8 @@ import {
   parsePiboCommandsSetDirRouteArgs,
   parsePiboCommandsShowRouteArgs,
   parsePiboFindInitRouteArgs,
+  parsePiboWorkflowsDescribeRouteArgs,
+  parsePiboWorkflowsListRouteArgs,
   parsePiboTodoCheckRouteArgs,
   parsePiboTodoInitRouteArgs,
   parsePiboTodoStatusRouteArgs,
@@ -185,6 +187,20 @@ export const routedCommandDefinitions = {
     runParsedArgs: async () => {
       const { findInit } = await import("../pibo/find/index.js");
       findInit();
+    },
+  }),
+  "pibo-workflows-list": defineRoutedCommand({
+    parseArgs: parsePiboWorkflowsListRouteArgs,
+    runParsedArgs: async (args) => {
+      const { workflowsList } = await import("../pibo/workflows/read-only.js");
+      workflowsList({ json: args.json });
+    },
+  }),
+  "pibo-workflows-describe": defineRoutedCommand({
+    parseArgs: parsePiboWorkflowsDescribeRouteArgs,
+    runParsedArgs: async (args) => {
+      const { workflowsDescribe } = await import("../pibo/workflows/read-only.js");
+      workflowsDescribe(args.moduleId, { json: args.json });
     },
   }),
 };

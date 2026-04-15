@@ -21,14 +21,17 @@ async function prepareRoutedCommand(params: {
     routeMode: true,
     commandPathOverride: params.commandPath,
   });
-  const { VERSION } = await import("../version.js");
-  await applyCliExecutionStartupPresentation({
-    argv: params.argv,
-    routeLogsToStderrOnSuppress: false,
-    startupPolicy,
-    showBanner: process.stdout.isTTY && !startupPolicy.suppressDoctorStdout,
-    version: VERSION,
-  });
+  const showBanner = process.stdout.isTTY && !startupPolicy.suppressDoctorStdout;
+  if (startupPolicy.suppressDoctorStdout || showBanner) {
+    const version = showBanner ? (await import("../version.js")).VERSION : undefined;
+    await applyCliExecutionStartupPresentation({
+      argv: params.argv,
+      routeLogsToStderrOnSuppress: false,
+      startupPolicy,
+      showBanner,
+      version,
+    });
+  }
   const shouldLoadPlugins =
     typeof params.loadPlugins === "function" ? params.loadPlugins(params.argv) : params.loadPlugins;
   await ensureCliExecutionBootstrap({

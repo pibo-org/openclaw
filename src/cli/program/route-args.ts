@@ -160,6 +160,33 @@ export function parseAgentsListRouteArgs(argv: string[]) {
   };
 }
 
+export function parsePiboWorkflowsListRouteArgs(argv: string[]) {
+  const base = parseNoPositionalRouteArgs(argv, {
+    commandPath: ["pibo", "workflows", "list"],
+    booleanFlags: ["--json"],
+  });
+  if (!base) {
+    return null;
+  }
+  return {
+    json: hasFlag(argv, "--json"),
+  };
+}
+
+export function parsePiboWorkflowsDescribeRouteArgs(argv: string[]) {
+  const moduleId = parseSinglePositional(argv, {
+    commandPath: ["pibo", "workflows", "describe"],
+    booleanFlags: ["--json"],
+  });
+  if (!moduleId) {
+    return null;
+  }
+  return {
+    moduleId,
+    json: hasFlag(argv, "--json"),
+  };
+}
+
 export function parseConfigGetRouteArgs(argv: string[]) {
   const path = parseSinglePositional(argv, {
     commandPath: ["config", "get"],

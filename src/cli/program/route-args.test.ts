@@ -7,6 +7,8 @@ import {
   parseHealthRouteArgs,
   parseModelsListRouteArgs,
   parseModelsStatusRouteArgs,
+  parsePiboWorkflowsDescribeRouteArgs,
+  parsePiboWorkflowsListRouteArgs,
   parseSessionsRouteArgs,
   parseStatusRouteArgs,
 } from "./route-args.js";
@@ -205,6 +207,56 @@ describe("route-args", () => {
     });
     expect(
       parseModelsStatusRouteArgs(["node", "openclaw", "models", "status", "--probe-profile"]),
+    ).toBeNull();
+  });
+
+  it("parses pibo workflow list/describe routes and rejects unsupported shapes", () => {
+    expect(
+      parsePiboWorkflowsListRouteArgs([
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "list",
+        "--json",
+      ]),
+    ).toEqual({
+      json: true,
+    });
+    expect(
+      parsePiboWorkflowsDescribeRouteArgs([
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "describe",
+        "codex_controller",
+        "--json",
+      ]),
+    ).toEqual({
+      moduleId: "codex_controller",
+      json: true,
+    });
+    expect(
+      parsePiboWorkflowsListRouteArgs([
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "list",
+        "extra",
+      ]),
+    ).toBeNull();
+    expect(
+      parsePiboWorkflowsDescribeRouteArgs([
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "describe",
+        "codex_controller",
+        "extra",
+      ]),
     ).toBeNull();
   });
 });

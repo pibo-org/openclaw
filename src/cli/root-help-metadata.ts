@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 type CliStartupMetadata = {
   rootHelpText?: unknown;
   piboHelpText?: unknown;
+  cronHelpText?: unknown;
+  piboWorkflowsHelpText?: unknown;
 };
 
 let cachedStartupMetadata: CliStartupMetadata | null | undefined;
@@ -37,7 +39,9 @@ function loadStartupMetadata(): CliStartupMetadata | null {
   return cachedStartupMetadata;
 }
 
-function loadPrecomputedHelpText(key: "rootHelpText" | "piboHelpText"): string | null {
+function loadPrecomputedHelpText(
+  key: "rootHelpText" | "piboHelpText" | "cronHelpText" | "piboWorkflowsHelpText",
+): string | null {
   const metadata = loadStartupMetadata();
   const value = metadata?.[key];
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -66,6 +70,32 @@ export function outputPrecomputedPiboHelpText(): boolean {
     return false;
   }
   process.stdout.write(piboHelpText);
+  return true;
+}
+
+export function loadPrecomputedCronHelpText(): string | null {
+  return loadPrecomputedHelpText("cronHelpText");
+}
+
+export function outputPrecomputedCronHelpText(): boolean {
+  const cronHelpText = loadPrecomputedCronHelpText();
+  if (!cronHelpText) {
+    return false;
+  }
+  process.stdout.write(cronHelpText);
+  return true;
+}
+
+export function loadPrecomputedPiboWorkflowsHelpText(): string | null {
+  return loadPrecomputedHelpText("piboWorkflowsHelpText");
+}
+
+export function outputPrecomputedPiboWorkflowsHelpText(): boolean {
+  const helpText = loadPrecomputedPiboWorkflowsHelpText();
+  if (!helpText) {
+    return false;
+  }
+  process.stdout.write(helpText);
   return true;
 }
 

@@ -15,6 +15,8 @@ const startTaskRegistryMaintenanceMock = vi.hoisted(() => vi.fn());
 const outputRootHelpMock = vi.hoisted(() => vi.fn());
 const outputPrecomputedRootHelpTextMock = vi.hoisted(() => vi.fn(() => false));
 const outputPrecomputedPiboHelpTextMock = vi.hoisted(() => vi.fn(() => false));
+const outputPrecomputedCronHelpTextMock = vi.hoisted(() => vi.fn(() => false));
+const outputPrecomputedPiboWorkflowsHelpTextMock = vi.hoisted(() => vi.fn(() => false));
 const buildProgramMock = vi.hoisted(() => vi.fn());
 const getProgramContextMock = vi.hoisted(() => vi.fn(() => null));
 const registerCoreCliByNameMock = vi.hoisted(() => vi.fn());
@@ -74,6 +76,8 @@ vi.mock("./program/root-help.js", () => ({
 vi.mock("./root-help-metadata.js", () => ({
   outputPrecomputedRootHelpText: outputPrecomputedRootHelpTextMock,
   outputPrecomputedPiboHelpText: outputPrecomputedPiboHelpTextMock,
+  outputPrecomputedCronHelpText: outputPrecomputedCronHelpTextMock,
+  outputPrecomputedPiboWorkflowsHelpText: outputPrecomputedPiboWorkflowsHelpTextMock,
 }));
 
 vi.mock("./program.js", () => ({
@@ -102,6 +106,8 @@ describe("runCli exit behavior", () => {
     hasMemoryRuntimeMock.mockReturnValue(false);
     outputPrecomputedRootHelpTextMock.mockReturnValue(false);
     outputPrecomputedPiboHelpTextMock.mockReturnValue(false);
+    outputPrecomputedCronHelpTextMock.mockReturnValue(false);
+    outputPrecomputedPiboWorkflowsHelpTextMock.mockReturnValue(false);
     getProgramContextMock.mockReturnValue(null);
   });
 
@@ -155,6 +161,26 @@ describe("runCli exit behavior", () => {
     expect(closeActiveMemorySearchManagersMock).not.toHaveBeenCalled();
     expect(exitSpy).not.toHaveBeenCalled();
     exitSpy.mockRestore();
+  });
+
+  it("renders cron help from precomputed metadata without building the full program", async () => {
+    outputPrecomputedCronHelpTextMock.mockReturnValueOnce(true);
+
+    await runCli(["node", "openclaw", "cron", "--help"]);
+
+    expect(outputPrecomputedCronHelpTextMock).toHaveBeenCalledTimes(1);
+    expect(tryRouteCliMock).not.toHaveBeenCalled();
+    expect(buildProgramMock).not.toHaveBeenCalled();
+  });
+
+  it("renders pibo workflows help from precomputed metadata without building the full program", async () => {
+    outputPrecomputedPiboWorkflowsHelpTextMock.mockReturnValueOnce(true);
+
+    await runCli(["node", "openclaw", "pibo", "workflows", "--help"]);
+
+    expect(outputPrecomputedPiboWorkflowsHelpTextMock).toHaveBeenCalledTimes(1);
+    expect(tryRouteCliMock).not.toHaveBeenCalled();
+    expect(buildProgramMock).not.toHaveBeenCalled();
   });
 
   it("closes memory managers when a runtime was registered", async () => {

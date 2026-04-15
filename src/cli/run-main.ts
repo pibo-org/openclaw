@@ -18,6 +18,7 @@ import {
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
 import { resolveCliArgvInvocation } from "./argv-invocation.js";
+import { getCommandPathWithRootOptions } from "./argv.js";
 import {
   shouldRegisterPrimaryCommandOnly,
   shouldSkipPluginCommandRegistration,
@@ -76,6 +77,23 @@ export function shouldUsePiboHelpFastPath(argv: string[]): boolean {
   return (
     invocation.primary === "pibo" &&
     invocation.commandPath.length === 1 &&
+    invocation.hasHelpOrVersion
+  );
+}
+
+export function shouldUseCronHelpFastPath(argv: string[]): boolean {
+  const invocation = resolveCliArgvInvocation(argv);
+  return invocation.primary === "cron" && invocation.commandPath.length === 1 && invocation.hasHelpOrVersion;
+}
+
+export function shouldUsePiboWorkflowsHelpFastPath(argv: string[]): boolean {
+  const invocation = resolveCliArgvInvocation(argv);
+  const commandPath = getCommandPathWithRootOptions(argv, 3);
+  return (
+    invocation.primary === "pibo" &&
+    commandPath.length === 2 &&
+    commandPath[0] === "pibo" &&
+    commandPath[1] === "workflows" &&
     invocation.hasHelpOrVersion
   );
 }
@@ -172,6 +190,20 @@ export async function runCli(argv: string[] = process.argv) {
     if (shouldUsePiboHelpFastPath(normalizedArgv)) {
       const { outputPrecomputedPiboHelpText } = await import("./root-help-metadata.js");
       if (outputPrecomputedPiboHelpText()) {
+        return;
+      }
+    }
+
+    if (shouldUseCronHelpFastPath(normalizedArgv)) {
+      const { outputPrecomputedCronHelpText } = await import("./root-help-metadata.js");
+      if (outputPrecomputedCronHelpText()) {
+        return;
+      }
+    }
+
+    if (shouldUsePiboWorkflowsHelpFastPath(normalizedArgv)) {
+      const { outputPrecomputedPiboWorkflowsHelpText } = await import("./root-help-metadata.js");
+      if (outputPrecomputedPiboWorkflowsHelpText()) {
         return;
       }
     }

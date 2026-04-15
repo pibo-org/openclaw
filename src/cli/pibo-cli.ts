@@ -36,6 +36,10 @@ async function loadWorkflowModule() {
   return import("./pibo/workflows/index.js");
 }
 
+async function loadWorkflowReadOnlyModule() {
+  return import("./pibo/workflows/read-only.js");
+}
+
 export function registerPiboCli(program: Command) {
   const pibo = program.command("pibo").description("PIBo CLI modules ported into OpenClaw");
 
@@ -283,7 +287,7 @@ export function registerPiboCli(program: Command) {
     .description("Registrierte Workflow-Module anzeigen")
     .option("--json", "JSON-Ausgabe")
     .action(async (opts: { json?: boolean }) => {
-      const { workflowsList } = await loadWorkflowModule();
+      const { workflowsList } = await loadWorkflowReadOnlyModule();
       workflowsList({ json: opts.json });
     });
   workflows
@@ -291,7 +295,7 @@ export function registerPiboCli(program: Command) {
     .description("Workflow-Modul beschreiben")
     .option("--json", "JSON-Ausgabe")
     .action(async (moduleId: string, opts: { json?: boolean }) => {
-      const { workflowsDescribe } = await loadWorkflowModule();
+      const { workflowsDescribe } = await loadWorkflowReadOnlyModule();
       workflowsDescribe(moduleId, { json: opts.json });
     });
   workflows

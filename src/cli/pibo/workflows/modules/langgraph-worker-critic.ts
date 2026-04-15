@@ -8,6 +8,7 @@ import type {
 } from "../types.js";
 import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
 import { ensureWorkflowSessions } from "../workflow-session-helper.js";
+import { langgraphWorkerCriticModuleManifest } from "./manifests.js";
 
 interface WorkerCriticInput {
   task: string;
@@ -713,28 +714,6 @@ async function start(
 }
 
 export const langgraphWorkerCriticModule: WorkflowModule = {
-  manifest: {
-    moduleId: "langgraph_worker_critic",
-    displayName: "LangGraph Worker/Critic",
-    description:
-      "Führt einen expliziten Worker/Critic-Loop mit `langgraph` als Worker und `critic` als Review-Agent aus.",
-    kind: "agent_workflow",
-    version: "2.0.0",
-    requiredAgents: ["langgraph", "critic"],
-    terminalStates: ["done", "blocked", "failed", "aborted", "max_rounds_reached"],
-    supportsAbort: false,
-    inputSchemaSummary: [
-      "task: string (pflichtig)",
-      "successCriteria: string[] (mindestens ein Eintrag)",
-      "optional: contextNotes, deliverables, workerAgentId, criticAgentId",
-      "optional: workerModel, criticModel (als provider/model)",
-      "optional: criticPromptAddendum (wird additiv an den Critic-Prompt angehängt)",
-    ],
-    artifactContract: [
-      "input.json",
-      "worker/critic prompt- und output-Dateien pro Runde unter ~/.local/state/pibo-workflows/artifacts/<runId>/",
-      "Workflow-Run speichert zusätzlich die Worker-/Critic-Session-Keys im Run-Record",
-    ],
-  },
+  manifest: langgraphWorkerCriticModuleManifest,
   start,
 };

@@ -3,7 +3,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   renderBundledRootHelpText,
+  renderSourceCronHelpText,
   renderSourcePiboHelpText,
+  renderSourcePiboWorkflowsHelpText,
   writeCliStartupMetadata,
 } from "../../scripts/write-cli-startup-metadata.ts";
 import { createScriptTestHarness } from "./test-helpers.js";
@@ -37,6 +39,16 @@ describe("write-cli-startup-metadata", () => {
     expect(piboHelpText).toContain("PIBo CLI modules ported into OpenClaw");
   });
 
+  it("captures source cron and pibo workflows help text from the CLI program", async () => {
+    const cronHelpText = await renderSourceCronHelpText();
+    const piboWorkflowsHelpText = await renderSourcePiboWorkflowsHelpText();
+
+    expect(cronHelpText).toContain("Usage:");
+    expect(cronHelpText).toContain("cron");
+    expect(piboWorkflowsHelpText).toContain("Usage:");
+    expect(piboWorkflowsHelpText).toContain("workflows");
+  });
+
   it("writes startup metadata with populated root help text", async () => {
     const tempRoot = createTempDir("openclaw-startup-metadata-");
     const distDir = path.join(tempRoot, "dist");
@@ -65,11 +77,15 @@ describe("write-cli-startup-metadata", () => {
       channelOptions: string[];
       rootHelpText: string;
       piboHelpText: string;
+      cronHelpText: string;
+      piboWorkflowsHelpText: string;
     };
     expect(written.channelOptions).toContain("matrix");
     expect(written.rootHelpText).toContain("Usage:");
     expect(written.rootHelpText).toContain("openclaw");
     expect(written.piboHelpText).toContain("Usage:");
     expect(written.piboHelpText).toContain("PIBo CLI modules ported into OpenClaw");
+    expect(written.cronHelpText).toContain("Usage:");
+    expect(written.piboWorkflowsHelpText).toContain("Usage:");
   });
 });

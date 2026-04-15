@@ -18,7 +18,9 @@ export type CliRoutedCommandId =
   | "pibo-commands-get-dir"
   | "pibo-commands-show"
   | "pibo-commands-set-dir"
-  | "pibo-find-init";
+  | "pibo-find-init"
+  | "pibo-workflows-list"
+  | "pibo-workflows-describe";
 
 export type CliCommandPathPolicy = {
   bypassConfigGuard: boolean;
@@ -46,6 +48,18 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
   { commandPath: ["agents"], policy: { loadPlugins: "always" } },
   { commandPath: ["configure"], policy: { loadPlugins: "always" } },
   { commandPath: ["pibo", "workflows"], policy: { loadPlugins: "always" } },
+  {
+    commandPath: ["pibo", "workflows", "list"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false, loadPlugins: "never" },
+    route: { id: "pibo-workflows-list" },
+  },
+  {
+    commandPath: ["pibo", "workflows", "describe"],
+    exact: true,
+    policy: { bypassConfigGuard: true, ensureCliPath: false, loadPlugins: "never" },
+    route: { id: "pibo-workflows-describe" },
+  },
   {
     commandPath: ["status"],
     policy: {

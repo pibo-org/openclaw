@@ -5,6 +5,7 @@ import type {
   WorkflowStartRequest,
 } from "../types.js";
 import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
+import { noopWorkflowModuleManifest } from "./manifests.js";
 
 function normalizeInput(input: unknown) {
   if (input && typeof input === "object") {
@@ -91,21 +92,6 @@ async function start(
 }
 
 export const noopWorkflowModule: WorkflowModule = {
-  manifest: {
-    moduleId: "noop",
-    displayName: "Noop Reference Workflow",
-    description:
-      "Minimal referenzierbares Workflow-Modul zum Testen von start/status/describe/runs.",
-    kind: "maintenance_workflow",
-    version: "1.1.0",
-    requiredAgents: [],
-    terminalStates: ["done", "aborted", "failed"],
-    supportsAbort: true,
-    inputSchemaSummary: [
-      "beliebiges JSON-Objekt oder String",
-      "wird nur als Referenzinput gespeichert",
-    ],
-    artifactContract: ["keine Artefakte", "latestWorkerOutput enthält nur ein Input-Echo"],
-  },
+  manifest: noopWorkflowModuleManifest,
   start,
 };

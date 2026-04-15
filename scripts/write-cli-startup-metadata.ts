@@ -30,6 +30,11 @@ const PIBO_HELP_SOURCE_PATHS = [
   path.join("src", "cli", "pibo", "docs-sync", "index.ts"),
   path.join("src", "cli", "pibo", "local-sync", "index.ts"),
 ] as const;
+const CRON_HELP_SOURCE_PATHS = [path.join("src", "cli", "cron-cli", "register.ts")] as const;
+const PIBO_WORKFLOWS_HELP_SOURCE_PATHS = [
+  path.join("src", "cli", "pibo-cli.ts"),
+  path.join("src", "cli", "pibo", "workflows", "index.ts"),
+] as const;
 const CORE_CHANNEL_ORDER = [
   "telegram",
   "whatsapp",
@@ -218,20 +223,74 @@ async function renderSourceRootHelpText(
 }
 
 export async function renderSourcePiboHelpText(rootDirOverride: string = rootDir): Promise<string> {
-  const moduleUrl = pathToFileURL(path.join(rootDirOverride, "src/cli/pibo-cli.ts")).href;
+  return renderSourceSubcommandHelpText({
+    rootDirOverride,
+    registerModulePath: path.join("src", "cli", "pibo-cli.ts"),
+    registerExportName: "registerPiboCli",
+    commandPath: ["pibo"],
+  });
+}
+
+export async function renderSourceCronHelpText(rootDirOverride: string = rootDir): Promise<string> {
+  return renderSourceSubcommandHelpText({
+    rootDirOverride,
+    registerModulePath: path.join("src", "cli", "cron-cli.ts"),
+    registerExportName: "registerCronCli",
+    commandPath: ["cron"],
+  });
+}
+
+export async function renderSourcePiboWorkflowsHelpText(
+  rootDirOverride: string = rootDir,
+): Promise<string> {
+  return renderSourceSubcommandHelpText({
+    rootDirOverride,
+    registerModulePath: path.join("src", "cli", "pibo-cli.ts"),
+    registerExportName: "registerPiboCli",
+    commandPath: ["pibo", "workflows"],
+  });
+}
+
+async function renderSourceSubcommandHelpText(params: {
+  rootDirOverride?: string;
+  registerModulePath: string;
+  registerExportName: string;
+  commandPath: string[];
+}): Promise<string> {
+  const rootDirOverride = params.rootDirOverride ?? rootDir;
+  const moduleUrl = pathToFileURL(path.join(rootDirOverride, params.registerModulePath)).href;
   const { Command } = await import("commander");
-  const mod = await tsImport(moduleUrl, import.meta.url);
-  if (typeof mod.registerPiboCli !== "function") {
-    throw new Error("Source pibo-cli module does not export registerPiboCli.");
+  const [{ configureProgramHelp }, { VERSION }, mod] = await Promise.all([
+    tsImport(pathToFileURL(path.join(rootDirOverride, "src/cli/program/help.ts")).href, import.meta.url),
+    tsImport(pathToFileURL(path.join(rootDirOverride, "src/version.ts")).href, import.meta.url),
+    tsImport(moduleUrl, import.meta.url),
+  ]);
+  const register = mod[params.registerExportName];
+  if (typeof register !== "function") {
+    throw new Error(
+      `Source module ${params.registerModulePath} does not export ${params.registerExportName}.`,
+    );
   }
   const program = new Command();
-  mod.registerPiboCli(program);
-  const pibo = program.commands.find((command) => command.name() === "pibo");
-  if (!pibo) {
-    throw new Error("Failed to register the pibo command while rendering help text.");
+  configureProgramHelp(program, {
+    programVersion: VERSION,
+    channelOptions: [],
+    messageChannelOptions: "",
+    agentChannelOptions: "",
+  });
+  register(program);
+
+  let current: Command | undefined = program;
+  for (const name of params.commandPath) {
+    current = current.commands.find((command) => command.name() === name);
+    if (!current) {
+      throw new Error(
+        `Failed to register command path ${params.commandPath.join(" ")} while rendering help text.`,
+      );
+    }
   }
   return await captureStdoutAsync(async () => {
-    pibo.outputHelp();
+    current.outputHelp();
   });
 }
 
@@ -262,6 +321,10 @@ export async function writeCliStartupMetadata(options?: {
   const channelCatalog = readBundledChannelCatalog(resolvedExtensionsDir);
   const bundleIdentity = resolveRootHelpBundleIdentity(resolvedDistDir);
   const piboHelpSignature = createFileSignature(PIBO_HELP_SOURCE_PATHS);
+  const subcommandHelpSignature = createFileSignature([
+    ...CRON_HELP_SOURCE_PATHS,
+    ...PIBO_WORKFLOWS_HELP_SOURCE_PATHS,
+  ]);
   const bundledPluginsDir = path.join(resolvedDistDir, "extensions");
   const renderContext = createIsolatedRootHelpRenderContext(
     existsSync(bundledPluginsDir) ? bundledPluginsDir : resolvedExtensionsDir,
@@ -273,12 +336,14 @@ export async function writeCliStartupMetadata(options?: {
       rootHelpBundleSignature?: unknown;
       channelCatalogSignature?: unknown;
       piboHelpSignature?: unknown;
+      subcommandHelpSignature?: unknown;
     };
     if (
       bundleIdentity &&
       existing.rootHelpBundleSignature === bundleIdentity.signature &&
       existing.channelCatalogSignature === channelCatalog.signature &&
-      existing.piboHelpSignature === piboHelpSignature
+      existing.piboHelpSignature === piboHelpSignature &&
+      existing.subcommandHelpSignature === subcommandHelpSignature
     ) {
       return;
     }
@@ -293,6 +358,8 @@ export async function writeCliStartupMetadata(options?: {
     rootHelpText = await renderSourceRootHelpText(renderContext);
   }
   const piboHelpText = await renderSourcePiboHelpText();
+  const cronHelpText = await renderSourceCronHelpText();
+  const piboWorkflowsHelpText = await renderSourcePiboWorkflowsHelpText();
 
   mkdirSync(resolvedDistDir, { recursive: true });
   writeFileSync(
@@ -304,8 +371,11 @@ export async function writeCliStartupMetadata(options?: {
         channelCatalogSignature: channelCatalog.signature,
         rootHelpBundleSignature: bundleIdentity?.signature ?? null,
         piboHelpSignature,
+        subcommandHelpSignature,
         rootHelpText,
         piboHelpText,
+        cronHelpText,
+        piboWorkflowsHelpText,
       },
       null,
       2,

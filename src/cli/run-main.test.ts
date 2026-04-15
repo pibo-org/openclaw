@@ -3,6 +3,9 @@ import {
   rewriteUpdateFlagArgv,
   resolveMissingPluginCommandMessage,
   shouldEnsureCliPath,
+  shouldUseCronHelpFastPath,
+  shouldUsePiboHelpFastPath,
+  shouldUsePiboWorkflowsHelpFastPath,
   shouldUseRootHelpFastPath,
 } from "./run-main.js";
 
@@ -68,6 +71,36 @@ describe("shouldUseRootHelpFastPath", () => {
     expect(shouldUseRootHelpFastPath(["node", "openclaw", "--profile", "work", "-h"])).toBe(true);
     expect(shouldUseRootHelpFastPath(["node", "openclaw", "status", "--help"])).toBe(false);
     expect(shouldUseRootHelpFastPath(["node", "openclaw", "--help", "status"])).toBe(false);
+  });
+});
+
+describe("subcommand help fast paths", () => {
+  it("uses the fast path for pibo help only on the direct subcommand", () => {
+    expect(shouldUsePiboHelpFastPath(["node", "openclaw", "pibo", "--help"])).toBe(true);
+    expect(shouldUsePiboHelpFastPath(["node", "openclaw", "pibo", "workflows", "--help"])).toBe(
+      false,
+    );
+  });
+
+  it("uses the fast path for cron help", () => {
+    expect(shouldUseCronHelpFastPath(["node", "openclaw", "cron", "--help"])).toBe(true);
+    expect(shouldUseCronHelpFastPath(["node", "openclaw", "cron", "list", "--help"])).toBe(false);
+  });
+
+  it("uses the fast path for pibo workflows help", () => {
+    expect(shouldUsePiboWorkflowsHelpFastPath(["node", "openclaw", "pibo", "workflows", "-h"])).toBe(
+      true,
+    );
+    expect(
+      shouldUsePiboWorkflowsHelpFastPath([
+        "node",
+        "openclaw",
+        "pibo",
+        "workflows",
+        "list",
+        "--help",
+      ]),
+    ).toBe(false);
   });
 });
 
