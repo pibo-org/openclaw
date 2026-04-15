@@ -261,7 +261,10 @@ async function renderSourceSubcommandHelpText(params: {
   const moduleUrl = pathToFileURL(path.join(rootDirOverride, params.registerModulePath)).href;
   const { Command } = await import("commander");
   const [{ configureProgramHelp }, { VERSION }, mod] = await Promise.all([
-    tsImport(pathToFileURL(path.join(rootDirOverride, "src/cli/program/help.ts")).href, import.meta.url),
+    tsImport(
+      pathToFileURL(path.join(rootDirOverride, "src/cli/program/help.ts")).href,
+      import.meta.url,
+    ),
     tsImport(pathToFileURL(path.join(rootDirOverride, "src/version.ts")).href, import.meta.url),
     tsImport(moduleUrl, import.meta.url),
   ]);
@@ -280,14 +283,15 @@ async function renderSourceSubcommandHelpText(params: {
   });
   register(program);
 
-  let current: Command | undefined = program;
+  let current = program;
   for (const name of params.commandPath) {
-    current = current.commands.find((command) => command.name() === name);
-    if (!current) {
+    const next = current.commands.find((command) => command.name() === name);
+    if (!next) {
       throw new Error(
         `Failed to register command path ${params.commandPath.join(" ")} while rendering help text.`,
       );
     }
+    current = next;
   }
   return await captureStdoutAsync(async () => {
     current.outputHelp();
