@@ -18,7 +18,7 @@ describe("pibo workflows read-only", () => {
   it("lists workflow manifests without importing the runtime graph", () => {
     workflowsList({ json: false });
 
-    expect(stdoutSpy.mock.calls.map(([line]) => line)).toEqual([
+    expect(stdoutSpy.mock.calls.map(([line]: [string, ...unknown[]]) => line)).toEqual([
       "- codex_controller: Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
       "- langgraph_worker_critic: Führt einen expliziten Worker/Critic-Loop mit `langgraph` als Worker und `critic` als Review-Agent aus.",
       "- noop: Minimal referenzierbares Workflow-Modul zum Testen von start/status/describe/runs.",
@@ -38,9 +38,7 @@ describe("pibo workflows read-only", () => {
       throw new Error(`process.exit:${String(code)}`);
     }) as typeof process.exit);
 
-    expect(() => workflowsDescribe("does_not_exist", { json: false })).toThrow(
-      "process.exit:1",
-    );
+    expect(() => workflowsDescribe("does_not_exist", { json: false })).toThrow("process.exit:1");
     expect(stderrSpy).toHaveBeenCalledWith("Workflow-Modul nicht gefunden: does_not_exist");
 
     exitSpy.mockRestore();
