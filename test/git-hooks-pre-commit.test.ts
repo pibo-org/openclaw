@@ -137,7 +137,57 @@ describe("git-hooks/pre-commit (integration)", () => {
     expect(staged).toEqual(["--all"]);
   });
 
-  it("skips pnpm check when FAST_COMMIT is enabled", () => {
+  it("runs pnpm check by default in strict mode for non-docs staged changes", () => {
+    const dir = makeTempRepoRoot(tempDirs, "openclaw-pre-commit-strict-");
+    run(dir, "git", ["init", "-q", "--initial-branch=main"]);
+
+    const fakeBinDir = installPreCommitFixture(dir);
+    writeFileSync(path.join(dir, "package.json"), '{"name":"tmp"}\n', "utf8");
+    writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+
+    writeExecutable(fakeBinDir, "pnpm", "#!/usr/bin/env bash\nprintf 'pnpm-stub %s\\n' \"$*\"\n");
+
+    writeFileSync(path.join(dir, "tracked.txt"), "hello\n", "utf8");
+    run(dir, "git", ["add", "--", "tracked.txt"]);
+
+    const output = run(dir, "bash", ["git-hooks/pre-commit"], {
+      PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+    });
+
+    expect(output).toContain("Pre-commit mode: strict (default).");
+    expect(output).toContain(
+      "Strict mode: running repo-wide pnpm check for non-docs staged changes.",
+    );
+    expect(output).toContain("pnpm-stub check");
+  });
+
+  it("skips pnpm check in explicit hotfix mode", () => {
+    const dir = makeTempRepoRoot(tempDirs, "openclaw-pre-commit-hotfix-");
+    run(dir, "git", ["init", "-q", "--initial-branch=main"]);
+
+    const fakeBinDir = installPreCommitFixture(dir);
+    writeFileSync(path.join(dir, "package.json"), '{"name":"tmp"}\n', "utf8");
+    writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+
+    writeExecutable(
+      fakeBinDir,
+      "pnpm",
+      "#!/usr/bin/env bash\necho 'pnpm should not run in hotfix mode' >&2\nexit 99\n",
+    );
+
+    writeFileSync(path.join(dir, "tracked.txt"), "hello\n", "utf8");
+    run(dir, "git", ["add", "--", "tracked.txt"]);
+
+    const output = run(dir, "bash", ["git-hooks/pre-commit"], {
+      PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+      OPENCLAW_PRECOMMIT_MODE: "hotfix",
+    });
+
+    expect(output).toContain("Pre-commit mode: hotfix (OPENCLAW_PRECOMMIT_MODE=hotfix).");
+    expect(output).toContain("Hotfix mode: skipping repo-wide pnpm check in pre-commit hook.");
+  });
+
+  it("treats FAST_COMMIT as a backward-compatible hotfix alias", () => {
     const dir = makeTempRepoRoot(tempDirs, "openclaw-pre-commit-yolo-");
     run(dir, "git", ["init", "-q", "--initial-branch=main"]);
 
@@ -159,7 +209,31 @@ describe("git-hooks/pre-commit (integration)", () => {
       FAST_COMMIT: "1",
     });
 
-    expect(output).toContain("FAST_COMMIT enabled: skipping pnpm check in pre-commit hook.");
+    expect(output).toContain("Pre-commit mode: hotfix (FAST_COMMIT alias).");
+    expect(output).toContain("Hotfix mode: skipping repo-wide pnpm check in pre-commit hook.");
+  });
+
+  it("fails fast on invalid OPENCLAW_PRECOMMIT_MODE values", () => {
+    const dir = makeTempRepoRoot(tempDirs, "openclaw-pre-commit-invalid-mode-");
+    run(dir, "git", ["init", "-q", "--initial-branch=main"]);
+
+    const fakeBinDir = installPreCommitFixture(dir);
+    writeFileSync(path.join(dir, "package.json"), '{"name":"tmp"}\n', "utf8");
+    writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+    writeExecutable(fakeBinDir, "pnpm", "#!/usr/bin/env bash\nexit 0\n");
+
+    writeFileSync(path.join(dir, "tracked.txt"), "hello\n", "utf8");
+    run(dir, "git", ["add", "--", "tracked.txt"]);
+
+    const result = runResult(dir, "bash", ["git-hooks/pre-commit"], {
+      PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+      OPENCLAW_PRECOMMIT_MODE: "turbo",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Invalid OPENCLAW_PRECOMMIT_MODE='turbo'. Expected one of: strict, hotfix.",
+    );
   });
 
   it("uses the canonical checkout toolchain when a linked worktree has no node_modules", () => {
@@ -195,12 +269,13 @@ printf 'cwd=%s\\n' "$PWD"
       PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
     });
 
+    expect(output).toContain("Pre-commit mode: strict (default).");
     expect(output).toContain(
       `resolved-tool=${path.join(canonicalRoot, "node_modules", ".bin", "oxfmt")}`,
     );
     expect(output).toContain(`cwd=${dir}`);
     expect(output).toContain(
-      "Docs-only staged changes detected: skipping pnpm check in pre-commit hook.",
+      "Docs-only staged changes detected: skipping repo-wide pnpm check in pre-commit hook.",
     );
   });
 

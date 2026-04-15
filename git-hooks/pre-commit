@@ -16,6 +16,43 @@ if [[ ! -f "$FILTER_FILES" ]]; then
   exit 1
 fi
 
+is_truthy_env() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+PRECOMMIT_MODE=""
+PRECOMMIT_MODE_SOURCE=""
+openclaw_precommit_mode_is_set="${OPENCLAW_PRECOMMIT_MODE+x}"
+if [[ -n "$openclaw_precommit_mode_is_set" ]]; then
+  case "${OPENCLAW_PRECOMMIT_MODE}" in
+    strict)
+      PRECOMMIT_MODE="strict"
+      PRECOMMIT_MODE_SOURCE="OPENCLAW_PRECOMMIT_MODE=strict"
+      ;;
+    hotfix)
+      PRECOMMIT_MODE="hotfix"
+      PRECOMMIT_MODE_SOURCE="OPENCLAW_PRECOMMIT_MODE=hotfix"
+      ;;
+    *)
+      echo "Invalid OPENCLAW_PRECOMMIT_MODE='${OPENCLAW_PRECOMMIT_MODE}'. Expected one of: strict, hotfix." >&2
+      exit 1
+      ;;
+  esac
+elif is_truthy_env "${FAST_COMMIT:-}"; then
+  PRECOMMIT_MODE="hotfix"
+  PRECOMMIT_MODE_SOURCE="FAST_COMMIT alias"
+else
+  PRECOMMIT_MODE="strict"
+  PRECOMMIT_MODE_SOURCE="default"
+fi
+
 # Security: avoid option-injection from malicious file names (e.g. "--all", "--force").
 # Robustness: NUL-delimited file list handles spaces/newlines safely.
 # Compatibility: use read loops instead of `mapfile` so this runs on macOS Bash 3.x.
@@ -65,16 +102,13 @@ git add -- "${files[@]}"
 # exist. Only run the repo-wide validation gate inside a real checkout.
 if [[ -f "$ROOT_DIR/package.json" ]] && [[ -f "$ROOT_DIR/pnpm-lock.yaml" ]]; then
   cd "$ROOT_DIR"
-  case "${FAST_COMMIT:-}" in
-    1|true|TRUE|yes|YES|on|ON)
-      echo "FAST_COMMIT enabled: skipping pnpm check in pre-commit hook."
-      ;;
-    *)
-      if [[ "$docs_only" == true ]]; then
-        echo "Docs-only staged changes detected: skipping pnpm check in pre-commit hook."
-      else
-        pnpm check
-      fi
-      ;;
-  esac
+  echo "Pre-commit mode: $PRECOMMIT_MODE ($PRECOMMIT_MODE_SOURCE)."
+  if [[ "$PRECOMMIT_MODE" == "hotfix" ]]; then
+    echo "Hotfix mode: skipping repo-wide pnpm check in pre-commit hook."
+  elif [[ "$docs_only" == true ]]; then
+    echo "Docs-only staged changes detected: skipping repo-wide pnpm check in pre-commit hook."
+  else
+    echo "Strict mode: running repo-wide pnpm check for non-docs staged changes."
+    pnpm check
+  fi
 fi
