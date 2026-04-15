@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useServerFn } from '@tanstack/react-start'
-import { LogOutIcon, ShieldCheckIcon } from 'lucide-react'
+import { ArrowLeftIcon, LogOutIcon, ShieldCheckIcon } from 'lucide-react'
 import { ChatAppClient } from '#/components/ChatAppClient'
 import { getChatBootstrap, loginWithCredentials, logout } from '#/lib/app.functions'
 
@@ -57,18 +57,28 @@ function ChatIndexPage() {
           <section className="space-y-6">
             <p className="text-xs uppercase tracking-[0.28em] text-cyan-200/75">PIBo Chat</p>
             <h1 className="max-w-3xl text-4xl leading-[0.95] font-semibold text-white sm:text-6xl">
-              Ein Login fuer Workspace und OpenClaw-Chat.
+              Ein Login fuer den Chat unter `/chat`.
             </h1>
             <p className="max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
               Diese App sitzt im OpenClaw-Monorepo, nutzt denselben Shared-Auth-Kern wie die Web-App
-              und spricht ueber den bestehenden Gateway-Web-Vertrag direkt mit OpenClaw.
+              und spricht ueber den bestehenden Gateway-Web-Vertrag direkt mit OpenClaw. Assets,
+              Router und Bootstrap laufen nativ unter dem `/chat`-Basepath.
             </p>
+            <div>
+              <a
+                href="/"
+                className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/6 px-4 py-2 text-sm font-medium text-white no-underline transition hover:bg-white/10"
+              >
+                <ArrowLeftIcon className="size-4" />
+                Zurueck zum Modul-Menue
+              </a>
+            </div>
             <div className="grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
               <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-4">
                 Ein gemeinsames Cookie auf derselben Domain-Familie.
               </div>
               <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-4">
-                Gateway-Zugriff bleibt separat ueber Device Identity und Pairing gesichert.
+                Gateway-Zugriff bleibt separat ueber Device Identity und Pairing unter `/chat/__openclaw/gateway` gesichert.
               </div>
               <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-4">
                 Der Mini-PC bleibt privat; Browser spricht nur mit der Web-Oberflaeche.
@@ -145,15 +155,24 @@ function ChatIndexPage() {
               Eingeloggt als <span className="font-medium text-white">{appState.username}</span>
             </p>
           </div>
-          <button
-            className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/6 px-3 py-2 text-sm text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70"
-            disabled={busyAction === 'logout'}
-            onClick={() => void handleLogout()}
-            type="button"
-          >
-            <LogOutIcon className="size-4" />
-            {busyAction === 'logout' ? 'Melde ab...' : 'Logout'}
-          </button>
+          <div className="pointer-events-auto flex items-center gap-2">
+            <a
+              href="/"
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/6 px-3 py-2 text-sm text-white no-underline transition hover:bg-white/10"
+            >
+              <ArrowLeftIcon className="size-4" />
+              Module
+            </a>
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/6 px-3 py-2 text-sm text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={busyAction === 'logout'}
+              onClick={() => void handleLogout()}
+              type="button"
+            >
+              <LogOutIcon className="size-4" />
+              {busyAction === 'logout' ? 'Melde ab...' : 'Logout'}
+            </button>
+          </div>
         </div>
       </div>
       <ChatAppClient gatewayBootstrapToken={appState.gatewayBootstrapToken} />

@@ -101,6 +101,7 @@ import {
   type SessionDefaultsSnapshot,
   type TranscriptAttachment,
 } from "@/lib/openclaw";
+import { getConfiguredChatBasePath } from "@/lib/base-path";
 
 type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -249,7 +250,7 @@ export function App({
   const [bootstrap, setBootstrap] = useState({
     assistantAvatar: "",
     assistantName: "OpenClaw",
-    basePath: "",
+    basePath: getConfiguredChatBasePath(),
   });
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [hello, setHello] = useState<GatewayHelloOk | null>(null);
@@ -273,7 +274,7 @@ export function App({
   useEffect(() => {
     void loadBootstrapConfig().then((nextBootstrap) => {
       setBootstrap(nextBootstrap);
-      const defaultGatewayUrl = buildDefaultGatewayUrl("");
+      const defaultGatewayUrl = buildDefaultGatewayUrl(getConfiguredChatBasePath());
       const nextGatewayUrl = buildDefaultGatewayUrl(nextBootstrap.basePath);
       setSettings((current) =>
         current.gatewayUrl === defaultGatewayUrl ? { ...current, gatewayUrl: nextGatewayUrl } : current,

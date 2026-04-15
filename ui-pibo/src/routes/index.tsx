@@ -1,9 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
-import { ShieldCheck } from "lucide-react";
-import { useCallback, useState } from "react";
-import { WorkspaceShell } from "#/components/WorkspaceShell";
-import { getAppBootstrap, loginWithCredentials } from "#/lib/app.functions";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { ArrowRight, LayoutGrid, Sparkles } from "lucide-react";
+import { PIBO_MODULES } from "#/lib/modules";
 
 type IndexSearch = {
   doc?: string;
@@ -13,134 +10,102 @@ export const Route = createFileRoute("/")({
   validateSearch: (search: Record<string, unknown>): IndexSearch => ({
     doc: typeof search.doc === "string" ? search.doc : undefined,
   }),
-  loaderDeps: ({ search }) => ({
-    doc: search.doc ?? null,
-  }),
-  loader: ({ deps }) =>
-    getAppBootstrap({
-      data: {
-        documentPath: deps.doc,
-      },
-    }),
-  component: HomePage,
+  beforeLoad: ({ search }) => {
+    if (search.doc) {
+      throw redirect({
+        search: {
+          doc: search.doc,
+        },
+        to: "/editor",
+      });
+    }
+  },
+  component: ModuleMenuPage,
 });
 
-function HomePage() {
-  const initialData = Route.useLoaderData();
-  const navigate = Route.useNavigate();
-  const [appState, setAppState] = useState(initialData);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState<"login" | null>(null);
+function ModuleMenuPage() {
+  return (
+    <main className="page-wrap px-4 pb-16 pt-12 sm:pt-14">
+      <section className="island-shell rise-in overflow-hidden rounded-[2.2rem] px-6 py-10 sm:px-10 sm:py-14">
+        <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
+          <div className="space-y-6">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[var(--chip-line)] bg-[var(--chip-bg)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-[var(--sea-ink)]">
+              <LayoutGrid className="h-4 w-4" />
+              PIBo Module
+            </div>
+            <div className="space-y-4">
+              <h1 className="display-title max-w-4xl text-4xl leading-[0.96] font-bold tracking-tight text-[var(--sea-ink)] sm:text-6xl">
+                Ein Einstiegspunkt fuer Editor und Chat auf derselben Hauptdomain.
+              </h1>
+              <p className="max-w-3xl text-base leading-7 text-[var(--sea-ink-soft)] sm:text-lg">
+                `ui-pibo` bleibt fuer Root und `/editor` verantwortlich, `apps/chat` laeuft weiter
+                als eigene Runtime unter `/chat`. Nginx verteilt nur ueber saubere Subpaths.
+              </p>
+            </div>
+          </div>
 
-  const login = useServerFn(loginWithCredentials);
-  const handleDocumentPathChange = useCallback(
-    (documentPath: string | null) => {
-      void navigate({
-        search: (prev) => ({
-          ...prev,
-          doc: documentPath ?? undefined,
-        }),
-        replace: true,
-      });
-    },
-    [navigate],
-  );
+          <div className="rounded-[1.8rem] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] p-6 shadow-[0_24px_80px_rgba(18,63,52,0.10)] backdrop-blur">
+            <p className="island-kicker mb-3">Architektur</p>
+            <div className="grid gap-3 text-sm leading-6 text-[var(--sea-ink-soft)]">
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] px-4 py-3">
+                Root-Menue und Editor bleiben auf `127.0.0.1:3000`.
+              </div>
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] px-4 py-3">
+                Chat bleibt getrennt auf `127.0.0.1:3010` mit Gateway unter
+                `/chat/__openclaw/gateway`.
+              </div>
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] px-4 py-3">
+                Weitere Module koennen spaeter nur ueber neue Subpaths ergaenzt werden.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-  async function handleLogin(formData: FormData) {
-    const username = formData.get("username");
-    const password = formData.get("password");
+      <section className="mt-8 grid gap-5 md:grid-cols-2">
+        {PIBO_MODULES.map((module) => (
+          <a
+            key={module.id}
+            href={module.href}
+            className="group island-shell flex h-full flex-col gap-4 rounded-[2rem] border border-[var(--line)] px-6 py-6 text-inherit no-underline transition hover:-translate-y-0.5 hover:border-[var(--sea-ink)] hover:shadow-[0_26px_70px_rgba(27,76,62,0.12)]"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="island-kicker mb-2">{module.runtime}</p>
+                <h2 className="text-2xl leading-tight font-semibold text-[var(--sea-ink)]">
+                  {module.title}
+                </h2>
+              </div>
+              <span className="inline-flex items-center rounded-full border border-[var(--chip-line)] bg-[var(--chip-bg)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--sea-ink)]">
+                {module.status}
+              </span>
+            </div>
+            <p className="m-0 text-base leading-7 text-[var(--sea-ink-soft)]">
+              {module.description}
+            </p>
+            <div className="mt-auto inline-flex items-center gap-2 text-sm font-semibold text-[var(--sea-ink)]">
+              Modul oeffnen
+              <ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" />
+            </div>
+          </a>
+        ))}
+      </section>
 
-    if (typeof username !== "string" || typeof password !== "string") {
-      return;
-    }
-
-    setBusyAction("login");
-    setAuthError(null);
-
-    try {
-      const nextState = await login({
-        data: { username, password },
-      });
-      setAppState(nextState);
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Login fehlgeschlagen");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  if (!appState.authenticated) {
-    return (
-      <main className="page-wrap px-4 pb-20 pt-14">
-        <section className="auth-shell rise-in overflow-hidden rounded-[2rem] border border-[var(--line)]">
-          <div className="auth-copy">
-            <p className="island-kicker mb-3">Markdown Workspace</p>
-            <h1 className="display-title mb-4 text-4xl leading-[0.98] font-bold text-[var(--paper-ink)] sm:text-6xl">
-              Ein privater Editor mit Dateisystem-Storage.
-            </h1>
-            <p className="m-0 max-w-xl text-base text-[var(--paper-muted)] sm:text-lg">
-              Credentials-Login, 30-Tage-JWT, mehrere Geräte und ein hierarchischer Dokumentbaum in
-              einer Oberfläche.
+      <section className="mt-8 rounded-[2rem] border border-[var(--line)] bg-[linear-gradient(135deg,rgba(240,252,246,0.95),rgba(255,255,255,0.85))] px-6 py-6 shadow-[0_18px_50px_rgba(26,72,58,0.08)]">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="island-kicker mb-2">Kompatibilitaet</p>
+            <p className="m-0 max-w-3xl text-sm leading-6 text-[var(--sea-ink-soft)]">
+              Alte Editor-Bookmarks mit `?doc=...` werden serverseitig nach `/editor?doc=...`
+              weitergeleitet, damit bestehende Deep Links nicht still auf dem Menue landen.
             </p>
           </div>
-
-          <div className="auth-panel">
-            <div className="auth-badge">
-              <ShieldCheck className="h-4 w-4" />
-              Login
-            </div>
-
-            <form
-              className="space-y-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleLogin(new FormData(event.currentTarget));
-              }}
-            >
-              <label className="space-y-2 text-sm font-medium text-[var(--paper-ink)]">
-                <span>Benutzername</span>
-                <input
-                  name="username"
-                  className="auth-input"
-                  autoComplete="username"
-                  placeholder="Benutzername"
-                />
-              </label>
-
-              <label className="space-y-2 text-sm font-medium text-[var(--paper-ink)]">
-                <span>Passwort</span>
-                <input
-                  name="password"
-                  type="password"
-                  className="auth-input"
-                  autoComplete="current-password"
-                  placeholder="Passwort"
-                />
-              </label>
-
-              {authError ? <p className="auth-error">{authError}</p> : null}
-
-              <button
-                type="submit"
-                className="primary-button w-full"
-                disabled={busyAction === "login"}
-              >
-                {busyAction === "login" ? "Prüfe Zugang..." : "Einloggen"}
-              </button>
-            </form>
+          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--chip-line)] bg-[var(--chip-bg)] px-4 py-2 text-sm font-medium text-[var(--sea-ink)]">
+            <Sparkles className="h-4 w-4" />
+            Root bleibt nur das Menue
           </div>
-        </section>
-      </main>
-    );
-  }
-
-  return (
-    <WorkspaceShell
-      initialData={appState}
-      onLoggedOut={(nextState) => {
-        setAppState(nextState);
-      }}
-      onDocumentPathChange={handleDocumentPathChange}
-    />
+        </div>
+      </section>
+    </main>
   );
 }

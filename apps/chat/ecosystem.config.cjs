@@ -32,6 +32,7 @@ module.exports = {
     env: {
       NODE_ENV: "production",
       PORT: 3010,
+      CHAT_BASE_PATH: "/chat",
       ...envVars,
     }
   }]

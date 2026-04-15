@@ -13,9 +13,15 @@ import { Route as AboutRouteImport } from "./routes/about";
 import { Route as ApiDocumentsSaveRouteImport } from "./routes/api/documents/save";
 import { Route as ApiStreamChangesRouteImport } from "./routes/api/stream/changes";
 import { Route as ApiUploadsRouteImport } from "./routes/api/uploads";
+import { Route as EditorRouteImport } from "./routes/editor";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as MediaUploadsSplatRouteImport } from "./routes/media/uploads/$";
 
+const EditorRoute = EditorRouteImport.update({
+  id: "/editor",
+  path: "/editor",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const AboutRoute = AboutRouteImport.update({
   id: "/about",
   path: "/about",
@@ -50,6 +56,7 @@ const ApiDocumentsSaveRoute = ApiDocumentsSaveRouteImport.update({
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/about": typeof AboutRoute;
+  "/editor": typeof EditorRoute;
   "/api/uploads": typeof ApiUploadsRoute;
   "/api/documents/save": typeof ApiDocumentsSaveRoute;
   "/api/stream/changes": typeof ApiStreamChangesRoute;
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/about": typeof AboutRoute;
+  "/editor": typeof EditorRoute;
   "/api/uploads": typeof ApiUploadsRoute;
   "/api/documents/save": typeof ApiDocumentsSaveRoute;
   "/api/stream/changes": typeof ApiStreamChangesRoute;
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
   "/about": typeof AboutRoute;
+  "/editor": typeof EditorRoute;
   "/api/uploads": typeof ApiUploadsRoute;
   "/api/documents/save": typeof ApiDocumentsSaveRoute;
   "/api/stream/changes": typeof ApiStreamChangesRoute;
@@ -77,6 +86,7 @@ export interface FileRouteTypes {
   fullPaths:
     | "/"
     | "/about"
+    | "/editor"
     | "/api/uploads"
     | "/api/documents/save"
     | "/api/stream/changes"
@@ -85,6 +95,7 @@ export interface FileRouteTypes {
   to:
     | "/"
     | "/about"
+    | "/editor"
     | "/api/uploads"
     | "/api/documents/save"
     | "/api/stream/changes"
@@ -93,6 +104,7 @@ export interface FileRouteTypes {
     | "__root__"
     | "/"
     | "/about"
+    | "/editor"
     | "/api/uploads"
     | "/api/documents/save"
     | "/api/stream/changes"
@@ -102,6 +114,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
   AboutRoute: typeof AboutRoute;
+  EditorRoute: typeof EditorRoute;
   ApiUploadsRoute: typeof ApiUploadsRoute;
   ApiDocumentsSaveRoute: typeof ApiDocumentsSaveRoute;
   ApiStreamChangesRoute: typeof ApiStreamChangesRoute;
@@ -110,6 +123,13 @@ export interface RootRouteChildren {
 
 declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
+    "/editor": {
+      id: "/editor";
+      path: "/editor";
+      fullPath: "/editor";
+      preLoaderRoute: typeof EditorRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/about": {
       id: "/about";
       path: "/about";
@@ -158,6 +178,7 @@ declare module "@tanstack/react-router" {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  EditorRoute: EditorRoute,
   ApiUploadsRoute: ApiUploadsRoute,
   ApiDocumentsSaveRoute: ApiDocumentsSaveRoute,
   ApiStreamChangesRoute: ApiStreamChangesRoute,

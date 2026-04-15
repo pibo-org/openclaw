@@ -7,8 +7,9 @@ REPO_DIR="${REPO_DIR:-$(cd "$APP_DIR/../.." && pwd)}"
 BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
 PM2_APP_NAME="${PM2_APP_NAME:-pibo-chat}"
-HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:3010/api/health}"
-HEALTHCHECK_SECONDARY_URL="${HEALTHCHECK_SECONDARY_URL:-http://127.0.0.1:3010/}"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:3010/chat/api/health}"
+HEALTHCHECK_SECONDARY_URL="${HEALTHCHECK_SECONDARY_URL:-http://127.0.0.1:3010/chat/}"
+HEALTHCHECK_TERTIARY_URL="${HEALTHCHECK_TERTIARY_URL:-http://127.0.0.1:3010/chat/__openclaw/control-ui-config.json}"
 SSH_KEY_PATH=/root/.ssh/id_ed25519_pibo_ci
 HEALTHCHECK_TMP_FILE="${HEALTHCHECK_TMP_FILE:-/tmp/pibo-chat-deploy-health.txt}"
 HEALTHCHECK_ATTEMPTS="${HEALTHCHECK_ATTEMPTS:-15}"
@@ -80,6 +81,7 @@ check_url() {
 
 check_url "$HEALTHCHECK_URL"
 check_url "$HEALTHCHECK_SECONDARY_URL"
+check_url "$HEALTHCHECK_TERTIARY_URL"
 
 echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Deploy successful"
 echo "Deployed repo commit: $(git -C "$REPO_DIR" rev-parse HEAD)"

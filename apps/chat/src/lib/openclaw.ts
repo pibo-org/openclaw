@@ -3,6 +3,11 @@ import type { ChatAttachment } from "../../../../ui/src/ui/ui-types.ts";
 import type { ModelCatalogEntry, SessionsListResult } from "../../../../ui/src/ui/types.ts";
 import { type ToolStreamEntry } from "../../../../ui/src/ui/app-tool-stream.ts";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../../src/gateway/control-ui-contract.ts";
+import {
+  getConfiguredChatBasePath,
+  normalizeChatBasePath,
+  withChatBasePath,
+} from "./base-path";
 
 declare const __OPENCLAW_DEV_GATEWAY_TOKEN__: string | undefined;
 
@@ -93,14 +98,6 @@ function trimToNull(value: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-function normalizeBasePath(basePath: string): string {
-  const trimmed = basePath.trim();
-  if (!trimmed || trimmed === "/") {
-    return "";
-  }
-  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
-}
-
 function normalizeGatewayTokenScope(gatewayUrl: string): string {
   const trimmed = trimToNull(gatewayUrl) ?? "";
   if (!trimmed) {
@@ -154,6 +151,11 @@ function persistSessionToken(gatewayUrl: string, token: string) {
 }
 
 function inferBasePathFromLocation(): string {
+  const configuredBasePath = getConfiguredChatBasePath();
+  if (configuredBasePath) {
+    return configuredBasePath;
+  }
+
   const pathname = window.location.pathname || "/";
   if (pathname === "/") {
     return "";
@@ -188,8 +190,10 @@ function inferDevGatewayHost(): string {
 
 export function buildDefaultGatewayUrl(basePath: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  void basePath;
-  return `${protocol}//${window.location.host}${DEFAULT_GATEWAY_PROXY_PATH}`;
+  return `${protocol}//${window.location.host}${withChatBasePath(
+    DEFAULT_GATEWAY_PROXY_PATH,
+    basePath,
+  )}`;
 }
 
 function isLegacyDevGatewayUrl(raw: string, basePath: string): boolean {
@@ -210,7 +214,7 @@ function isLegacyDevGatewayUrl(raw: string, basePath: string): boolean {
     }
 
     const oldDirectHost = inferDevGatewayHost();
-    const normalizedBasePath = (basePath || "/").replace(/\/+$/, "") || "/";
+    const normalizedBasePath = normalizeChatBasePath(basePath) || "/";
     return (
       (parsed.host === oldDirectHost &&
         (normalizedParsedPath === "/" || normalizedParsedPath === normalizedBasePath)) ||
@@ -305,10 +309,8 @@ export function persistCustomUiSettings(settings: CustomUiSettings) {
 }
 
 export async function loadBootstrapConfig(basePath = inferBasePathFromLocation()) {
-  const normalizedBasePath = normalizeBasePath(basePath);
-  const url = normalizedBasePath
-    ? `${normalizedBasePath}${CONTROL_UI_BOOTSTRAP_CONFIG_PATH}`
-    : CONTROL_UI_BOOTSTRAP_CONFIG_PATH;
+  const normalizedBasePath = normalizeChatBasePath(basePath);
+  const url = withChatBasePath(CONTROL_UI_BOOTSTRAP_CONFIG_PATH, normalizedBasePath);
   try {
     const res = await fetch(url, {
       credentials: "same-origin",
@@ -326,7 +328,7 @@ export async function loadBootstrapConfig(basePath = inferBasePathFromLocation()
     return {
       assistantAvatar: trimToNull(parsed.assistantAvatar) ?? "",
       assistantName: trimToNull(parsed.assistantName) ?? "OpenClaw",
-      basePath: normalizeBasePath(parsed.basePath ?? normalizedBasePath),
+      basePath: normalizeChatBasePath(parsed.basePath ?? normalizedBasePath),
     };
   } catch {
     return {

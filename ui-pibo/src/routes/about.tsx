@@ -14,8 +14,9 @@ function About() {
         </h1>
         <div className="max-w-3xl space-y-4 text-base text-[var(--sea-ink-soft)] sm:text-lg">
           <p>
-            Die Anwendung stellt aktuell einen privaten, dateisystembasierten Markdown-Editor
-            bereit.
+            Die Hauptdomain ist jetzt als PIBo-Moduloberflaeche aufgeteilt: Root zeigt das Menue,
+            `/editor` den privaten Markdown-Editor und `/chat` den getrennt betriebenen
+            OpenClaw-Chat.
           </p>
           <p>
             Authentifizierung erfolgt per Benutzername und Passwort aus der Env-Datei. Nach
@@ -23,8 +24,9 @@ function About() {
             gesetzt.
           </p>
           <p>
-            Inhalte liegen unter <code>{`$PIBO_STORAGE_DIR/docs`}</code>, Bild-Uploads unter{" "}
-            <code>{`$PIBO_STORAGE_DIR/uploads`}</code>.
+            Inhalte des Editors liegen weiter unter <code>{`$PIBO_STORAGE_DIR/docs`}</code>,
+            Bild-Uploads unter <code>{`$PIBO_STORAGE_DIR/uploads`}</code>. Der Chat bleibt eine
+            eigene Runtime mit eigenem Gateway-Namespace unter `/chat/__openclaw/gateway`.
           </p>
         </div>
       </section>

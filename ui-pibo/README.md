@@ -2,6 +2,13 @@
 
 This package is the PIBo webapp shipped inside the OpenClaw monorepo.
 
+Production routing on `pibo.schottech.de` is split as follows:
+
+- `/` -> PIBo module menu in `ui-pibo`
+- `/editor` -> markdown editor in `ui-pibo`
+- `/chat` -> separate `apps/chat` runtime behind the same main domain
+- legacy `/?doc=...` editor links redirect to `/editor?doc=...`
+
 ### Local development
 
 From the OpenClaw repo root:
@@ -30,7 +37,7 @@ That script is expected to call:
 ```
 
 The deploy flow pulls the OpenClaw repo, runs the filtered workspace install, builds
-`ui-pibo`, recreates PM2 `pibo-app`, and verifies `/` plus `/about`.
+`ui-pibo`, recreates PM2 `pibo-app`, and verifies `/` plus `/editor`.
 
 ### Build
 
