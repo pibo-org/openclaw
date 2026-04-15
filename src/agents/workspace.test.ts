@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTempWorkspace, writeWorkspaceFile } from "../test-helpers/workspace.js";
 import {
+  ensureCodexWorkspaceSkillsSymlink,
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_BOOTSTRAP_FILENAME,
   DEFAULT_IDENTITY_FILENAME,
@@ -72,6 +73,72 @@ function expectSubagentAllowedBootstrapNames(files: WorkspaceBootstrapFile[]) {
 }
 
 describe("ensureAgentWorkspace", () => {
+  it("creates a relative .codex/skills symlink to workspace skills", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+
+    const linkPath = path.join(tempDir, ".codex", "skills");
+    const linkStat = await fs.lstat(linkPath);
+    expect(linkStat.isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(linkPath)).toBe(path.join("..", "skills"));
+  });
+
+  it("repairs a legacy empty .codex file into a directory before wiring skills", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    await fs.writeFile(path.join(tempDir, ".codex"), "");
+
+    await expect(ensureCodexWorkspaceSkillsSymlink(tempDir)).resolves.toBe("created");
+    const codexStat = await fs.stat(path.join(tempDir, ".codex"));
+    expect(codexStat.isDirectory()).toBe(true);
+    expect(await fs.readlink(path.join(tempDir, ".codex", "skills"))).toBe(path.join("..", "skills"));
+  });
+
+  it("leaves an already-correct Codex skills symlink untouched", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    const codexDir = path.join(tempDir, ".codex");
+    const linkPath = path.join(codexDir, "skills");
+    const absoluteTarget = path.join(tempDir, "skills");
+
+    await fs.mkdir(codexDir, { recursive: true });
+    await fs.symlink(absoluteTarget, linkPath, "dir");
+
+    await expect(ensureCodexWorkspaceSkillsSymlink(tempDir)).resolves.toBe("already-correct");
+    expect(await fs.readlink(linkPath)).toBe(absoluteTarget);
+  });
+
+  it("repairs a broken or wrong Codex skills symlink to point at workspace skills", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    const codexDir = path.join(tempDir, ".codex");
+    const linkPath = path.join(codexDir, "skills");
+
+    await fs.mkdir(codexDir, { recursive: true });
+    await fs.symlink(path.join("..", "wrong-skills"), linkPath, "dir");
+
+    await expect(ensureCodexWorkspaceSkillsSymlink(tempDir)).resolves.toBe("repaired");
+    expect(await fs.readlink(linkPath)).toBe(path.join("..", "skills"));
+  });
+
+  it("fails cleanly when .codex/skills already exists as a real directory", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    const linkPath = path.join(tempDir, ".codex", "skills");
+
+    await fs.mkdir(linkPath, { recursive: true });
+
+    await expect(ensureCodexWorkspaceSkillsSymlink(tempDir)).rejects.toThrow(
+      /already exists and is not a symlink/i,
+    );
+  });
+
+  it("fails cleanly when .codex already exists as a non-empty file", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    await fs.writeFile(path.join(tempDir, ".codex"), "occupied");
+
+    await expect(ensureCodexWorkspaceSkillsSymlink(tempDir)).rejects.toThrow(
+      /cannot create codex workspace directory because .* already exists and is not a directory/i,
+    );
+  });
+
   it("creates BOOTSTRAP.md and records a seeded marker for brand new workspaces", async () => {
     const tempDir = await makeTempWorkspace("openclaw-workspace-");
 

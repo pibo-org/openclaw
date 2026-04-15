@@ -6,7 +6,11 @@ import { openBoundaryFile } from "../infra/boundary-file-read.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
-import { normalizeOptionalLowercaseString, readStringValue } from "../shared/string-coerce.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalLowercaseString,
+  readStringValue,
+} from "../shared/string-coerce.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveWorkspaceTemplateDir } from "./workspace-templates.js";
 
@@ -166,6 +170,8 @@ type WorkspaceSetupState = {
   setupCompletedAt?: string;
 };
 
+export type CodexWorkspaceSkillsSymlinkStatus = "created" | "already-correct" | "repaired";
+
 /** Set of recognized bootstrap filenames for runtime validation */
 const VALID_BOOTSTRAP_NAMES: ReadonlySet<string> = new Set([
   DEFAULT_AGENTS_FILENAME,
@@ -305,6 +311,89 @@ async function isGitAvailable(): Promise<boolean> {
   return gitAvailabilityPromise;
 }
 
+function isSamePath(left: string, right: string): boolean {
+  return (
+    normalizeLowercaseStringOrEmpty(path.resolve(left)) ===
+    normalizeLowercaseStringOrEmpty(path.resolve(right))
+  );
+}
+
+function resolveCodexSkillsSymlinkTarget(codexDir: string, linkTarget: string): string {
+  return path.resolve(codexDir, linkTarget);
+}
+
+async function ensureCodexWorkspaceDir(codexDir: string): Promise<void> {
+  try {
+    const current = await fs.lstat(codexDir);
+    if (current.isDirectory()) {
+      return;
+    }
+    if (current.isSymbolicLink()) {
+      const target = await fs.stat(codexDir);
+      if (target.isDirectory()) {
+        return;
+      }
+      throw new Error(
+        `Cannot create Codex workspace directory because ${codexDir} is a symlink to a non-directory target.`,
+      );
+    }
+    if (current.isFile() && current.size === 0) {
+      await fs.unlink(codexDir);
+      await fs.mkdir(codexDir, { recursive: true });
+      return;
+    }
+    throw new Error(
+      `Cannot create Codex workspace directory because ${codexDir} already exists and is not a directory.`,
+    );
+  } catch (err) {
+    const anyErr = err as NodeJS.ErrnoException;
+    if (anyErr.code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  await fs.mkdir(codexDir, { recursive: true });
+}
+
+export async function ensureCodexWorkspaceSkillsSymlink(
+  workspaceDir: string,
+): Promise<CodexWorkspaceSkillsSymlinkStatus> {
+  const resolvedWorkspaceDir = resolveUserPath(workspaceDir);
+  const codexDir = path.join(resolvedWorkspaceDir, ".codex");
+  const workspaceSkillsDir = path.join(resolvedWorkspaceDir, "skills");
+  const linkPath = path.join(codexDir, "skills");
+  const relativeTarget = path.relative(codexDir, workspaceSkillsDir) || ".";
+
+  await ensureCodexWorkspaceDir(codexDir);
+
+  try {
+    const current = await fs.lstat(linkPath);
+    if (!current.isSymbolicLink()) {
+      // Only repair symlink-shaped conflicts. Real files/directories may contain
+      // user data, so fail loudly instead of replacing them.
+      throw new Error(
+        `Cannot create Codex skills symlink because ${linkPath} already exists and is not a symlink.`,
+      );
+    }
+
+    const currentTarget = await fs.readlink(linkPath);
+    if (isSamePath(resolveCodexSkillsSymlinkTarget(codexDir, currentTarget), workspaceSkillsDir)) {
+      return "already-correct";
+    }
+
+    await fs.unlink(linkPath);
+    await fs.symlink(relativeTarget, linkPath, "dir");
+    return "repaired";
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  await fs.symlink(relativeTarget, linkPath, "dir");
+  return "created";
+}
+
 async function ensureGitRepo(dir: string, isBrandNewWorkspace: boolean) {
   if (!isBrandNewWorkspace) {
     return;
@@ -338,6 +427,7 @@ export async function ensureAgentWorkspace(params?: {
   const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
   const dir = resolveUserPath(rawDir);
   await fs.mkdir(dir, { recursive: true });
+  await ensureCodexWorkspaceSkillsSymlink(dir);
 
   if (!params?.ensureBootstrapFiles) {
     return { dir };

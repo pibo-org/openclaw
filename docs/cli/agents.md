@@ -1,5 +1,5 @@
 ---
-summary: "CLI reference for `openclaw agents` (list/add/delete/bindings/bind/unbind/set identity)"
+summary: "CLI reference for `openclaw agents` (list/add/delete/bindings/bind/unbind/repair/set identity)"
 read_when:
   - You want multiple isolated agents (workspaces + routing + auth)
 title: "agents"
@@ -25,6 +25,7 @@ openclaw agents add ops --workspace ~/.openclaw/workspace-ops --bind telegram:op
 openclaw agents bindings
 openclaw agents bind --agent work --bind telegram:ops
 openclaw agents unbind --agent work --bind telegram:ops
+openclaw agents repair
 openclaw agents set-identity --workspace ~/.openclaw/workspace --from-identity
 openclaw agents set-identity --agent main --avatar avatars/openclaw.png
 openclaw agents delete work
@@ -113,6 +114,7 @@ Notes:
 - Passing any explicit add flags switches the command into the non-interactive path.
 - Non-interactive mode requires both an agent name and `--workspace`.
 - `main` is reserved and cannot be used as the new agent id.
+- New agent workspaces automatically ensure a local Codex-compatible skills link: `<agent-workspace>/.codex/skills -> ../skills`.
 
 ### `agents bindings`
 
@@ -150,6 +152,19 @@ Notes:
 - `main` cannot be deleted.
 - Without `--force`, interactive confirmation is required.
 - Workspace, agent state, and session transcript directories are moved to Trash, not hard-deleted.
+
+### `agents repair`
+
+Repairs `.codex/skills` for each existing configured agent workspace by ensuring:
+
+```text
+<agent-workspace>/.codex/skills -> ../skills
+```
+
+Notes:
+
+- Existing non-symlink `.codex/skills` entries are left untouched and reported as failures.
+- Missing workspace directories are skipped.
 
 ## Identity files
 

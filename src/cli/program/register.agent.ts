@@ -6,6 +6,7 @@ import {
   agentsBindCommand,
   agentsDeleteCommand,
   agentsListCommand,
+  agentsRepairCommand,
   agentsSetIdentityCommand,
   agentsUnbindCommand,
 } from "../../commands/agents.js";
@@ -205,6 +206,15 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/agent", "docs.openclaw.ai/cli/age
           defaultRuntime,
           { hasFlags },
         );
+      });
+    });
+
+  agents
+    .command("repair")
+    .description("Repair Codex workspace links for configured agent workspaces")
+    .action(async () => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await agentsRepairCommand(defaultRuntime);
       });
     });
 

@@ -11,6 +11,10 @@ const wizardMocks = vi.hoisted(() => ({
   createClackPrompter: vi.fn(),
 }));
 
+const onboardHelperMocks = vi.hoisted(() => ({
+  ensureWorkspaceAndSessions: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("../config/config.js", async () => ({
   ...(await vi.importActual<typeof import("../config/config.js")>("../config/config.js")),
   readConfigFileSnapshot: readConfigFileSnapshotMock,
@@ -20,6 +24,11 @@ vi.mock("../config/config.js", async () => ({
 
 vi.mock("../wizard/clack-prompter.js", () => ({
   createClackPrompter: wizardMocks.createClackPrompter,
+}));
+
+vi.mock("./onboard-helpers.js", async () => ({
+  ...(await vi.importActual<typeof import("./onboard-helpers.js")>("./onboard-helpers.js")),
+  ensureWorkspaceAndSessions: onboardHelperMocks.ensureWorkspaceAndSessions,
 }));
 
 import { WizardCancelledError } from "../wizard/prompts.js";
@@ -33,6 +42,7 @@ describe("agents add command", () => {
     writeConfigFileMock.mockClear();
     replaceConfigFileMock.mockClear();
     wizardMocks.createClackPrompter.mockClear();
+    onboardHelperMocks.ensureWorkspaceAndSessions.mockClear();
     runtime.log.mockClear();
     runtime.error.mockClear();
     runtime.exit.mockClear();
@@ -74,5 +84,28 @@ describe("agents add command", () => {
 
     expect(runtime.exit).toHaveBeenCalledWith(1);
     expect(writeConfigFileMock).not.toHaveBeenCalled();
+  });
+
+  it("ensures the workspace setup path during non-interactive agents add", async () => {
+    readConfigFileSnapshotMock.mockResolvedValue({ ...baseConfigSnapshot });
+
+    await agentsAddCommand(
+      {
+        name: "Work",
+        workspace: "/tmp/openclaw-agent-workspace",
+        nonInteractive: true,
+      },
+      runtime,
+      { hasFlags: false },
+    );
+
+    expect(replaceConfigFileMock).toHaveBeenCalledOnce();
+    expect(onboardHelperMocks.ensureWorkspaceAndSessions).toHaveBeenCalledWith(
+      "/tmp/openclaw-agent-workspace",
+      runtime,
+      expect.objectContaining({
+        agentId: "work",
+      }),
+    );
   });
 });

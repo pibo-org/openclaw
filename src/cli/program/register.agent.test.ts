@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   agentsBindCommandMock: vi.fn(),
   agentsDeleteCommandMock: vi.fn(),
   agentsListCommandMock: vi.fn(),
+  agentsRepairCommandMock: vi.fn(),
   agentsSetIdentityCommandMock: vi.fn(),
   agentsUnbindCommandMock: vi.fn(),
   setVerboseMock: vi.fn(),
@@ -26,6 +27,7 @@ const agentsBindingsCommandMock = mocks.agentsBindingsCommandMock;
 const agentsBindCommandMock = mocks.agentsBindCommandMock;
 const agentsDeleteCommandMock = mocks.agentsDeleteCommandMock;
 const agentsListCommandMock = mocks.agentsListCommandMock;
+const agentsRepairCommandMock = mocks.agentsRepairCommandMock;
 const agentsSetIdentityCommandMock = mocks.agentsSetIdentityCommandMock;
 const agentsUnbindCommandMock = mocks.agentsUnbindCommandMock;
 const setVerboseMock = mocks.setVerboseMock;
@@ -42,6 +44,7 @@ vi.mock("../../commands/agents.js", () => ({
   agentsBindCommand: mocks.agentsBindCommandMock,
   agentsDeleteCommand: mocks.agentsDeleteCommandMock,
   agentsListCommand: mocks.agentsListCommandMock,
+  agentsRepairCommand: mocks.agentsRepairCommandMock,
   agentsSetIdentityCommand: mocks.agentsSetIdentityCommandMock,
   agentsUnbindCommand: mocks.agentsUnbindCommandMock,
 }));
@@ -74,6 +77,7 @@ describe("registerAgentCommands", () => {
     agentsBindCommandMock.mockResolvedValue(undefined);
     agentsDeleteCommandMock.mockResolvedValue(undefined);
     agentsListCommandMock.mockResolvedValue(undefined);
+    agentsRepairCommandMock.mockResolvedValue(undefined);
     agentsSetIdentityCommandMock.mockResolvedValue(undefined);
     agentsUnbindCommandMock.mockResolvedValue(undefined);
     createDefaultDepsMock.mockReturnValue({ deps: true });
@@ -230,6 +234,11 @@ describe("registerAgentCommands", () => {
       }),
       runtime,
     );
+  });
+
+  it("runs agents repair", async () => {
+    await runCli(["agents", "repair"]);
+    expect(agentsRepairCommandMock).toHaveBeenCalledWith(runtime);
   });
 
   it("forwards set-identity options", async () => {

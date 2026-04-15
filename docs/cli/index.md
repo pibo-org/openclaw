@@ -1039,7 +1039,7 @@ Options:
 - `--json`
 
 Binding specs use `channel[:accountId]`. When `accountId` is omitted, OpenClaw may resolve account scope via channel defaults/plugin hooks; otherwise it is a channel binding without explicit account scope.
-Passing any explicit add flags switches the command into the non-interactive path. `main` is reserved and cannot be used as the new agent id.
+Passing any explicit add flags switches the command into the non-interactive path. `main` is reserved and cannot be used as the new agent id. New agent workspaces automatically ensure `<agent-workspace>/.codex/skills -> ../skills`.
 
 #### `agents bindings`
 
@@ -1086,6 +1086,16 @@ Notes:
 
 - `main` cannot be deleted.
 - Without `--force`, interactive confirmation is required.
+
+#### `agents repair`
+
+Repair `.codex/skills` links for configured agent workspaces.
+
+Notes:
+
+- Ensures `<agent-workspace>/.codex/skills -> ../skills` for each existing configured workspace.
+- Leaves non-symlink conflicts untouched and reports them as failures.
+- Skips missing workspace directories.
 
 #### `agents set-identity`
 
