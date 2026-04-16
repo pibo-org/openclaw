@@ -872,6 +872,70 @@ function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflig
   };
 }
 
+function buildWorkerFixableCloseoutInstruction(preflight: CloseoutPreflight): string[] {
+  if (preflight.dirtyPaths.length > 0) {
+    return [
+      `Clean the repo/worktree before DONE. Resolve or revert these dirty paths and then report the exact remaining git status: ${preflight.dirtyPaths.join(", ")}.`,
+    ];
+  }
+  if (preflight.checks.headIntegratedIntoBase === false) {
+    const baseRef = preflight.baseRef ?? "the integration branch";
+    return [
+      `Integrate the current HEAD into ${baseRef} before DONE, then report the exact merge-base evidence showing HEAD is integrated.`,
+    ];
+  }
+  return [
+    `Resolve the closeout preflight failure before DONE and report concrete verification evidence: ${preflight.reason}`,
+  ];
+}
+
+function buildCloseoutEscalationBlocker(preflight: CloseoutPreflight): string[] {
+  if (preflight.openWorktreePaths.length > 0) {
+    return [
+      `Additional linked worktrees must be closed or handed off outside this worker run: ${preflight.openWorktreePaths.join(", ")}.`,
+    ];
+  }
+  return [preflight.reason];
+}
+
+function remapInvalidDoneDecision(params: {
+  decision: ControllerDecision;
+  closeoutPreflight: CloseoutPreflight;
+  closeoutAssessment: CloseoutAssessment;
+}): {
+  decision: ControllerDecision;
+  enforcedCloseoutAssessment?: CloseoutAssessment;
+} {
+  const { decision, closeoutPreflight, closeoutAssessment } = params;
+  if (decision.decision !== "DONE" || closeoutPreflight.status !== "fail") {
+    return { decision };
+  }
+
+  const enforcedReason = `Controller DONE rejected because closeout preflight failed: ${closeoutPreflight.reason}`;
+  if (closeoutPreflight.failureClass === "worker_fixable") {
+    return {
+      decision: {
+        ...decision,
+        decision: "CONTINUE",
+        reason: uniqueLimited([enforcedReason, ...decision.reason], 3),
+        nextInstruction: buildWorkerFixableCloseoutInstruction(closeoutPreflight),
+        blocker: [],
+      },
+    };
+  }
+
+  return {
+    decision: {
+      ...decision,
+      decision: "ESCALATE_BLOCKED",
+      reason: uniqueLimited([enforcedReason, ...decision.reason], 3),
+      nextInstruction: [],
+      blocker: buildCloseoutEscalationBlocker(closeoutPreflight),
+    },
+    enforcedCloseoutAssessment: closeoutAssessment,
+  };
+}
+
 function formatCloseoutPreflightCheckValue(value: CloseoutPreflightCheckValue): string {
   return value === "unknown" ? "unknown" : value ? "true" : "false";
 }
@@ -2158,13 +2222,12 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         priorWorkers: workerHistory,
         priorControllers: controllerHistory,
       });
-      const closeoutPreflight = buildCloseoutPreflight(
-        assessCloseout({
-          workingDirectory: input.workingDirectory,
-          repoRoot: input.repoRoot,
-          closeoutContextSource: input.closeoutContextSource,
-        }),
-      );
+      const closeoutAssessment = assessCloseout({
+        workingDirectory: input.workingDirectory,
+        repoRoot: input.repoRoot,
+        closeoutContextSource: input.closeoutContextSource,
+      });
+      const closeoutPreflight = buildCloseoutPreflight(closeoutAssessment);
       const controllerMessage = buildControllerDeltaPrompt({
         round,
         maxRounds: input.maxRetries,
@@ -2215,7 +2278,12 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           outputLength: controllerRun.text.length,
         },
       });
-      const decision = parseControllerDecision(controllerRun.text);
+      const parsedDecision = parseControllerDecision(controllerRun.text);
+      const { decision, enforcedCloseoutAssessment } = remapInvalidDoneDecision({
+        decision: parsedDecision,
+        closeoutPreflight,
+        closeoutAssessment,
+      });
       enforceContinueGuardrails({ round, decision, drift });
       workerHistory.push(currentWorkerSummary);
       controllerHistory.push(summarizeControllerRound(round, decision));
@@ -2348,6 +2416,21 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         const blockedReason =
           [...decision.reason, ...decision.blocker].join(" ").trim() ||
           "Controller identified a real blocker.";
+        const closeoutArtifact = enforcedCloseoutAssessment
+          ? writeWorkflowArtifact(
+              ctx.runId,
+              "closeout-assessment.json",
+              buildCloseoutArtifact(enforcedCloseoutAssessment),
+            )
+          : null;
+        if (closeoutArtifact) {
+          emitArtifactWritten({
+            artifactPath: closeoutArtifact,
+            summary: "closeout assessment written",
+            round,
+            role: "controller",
+          });
+        }
         const summaryArtifact = writeWorkflowArtifact(
           ctx.runId,
           "run-summary.txt",
@@ -2357,6 +2440,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             reason: blockedReason,
             workerSession: codexSessionKey,
             controllerSession: sessions.orchestrator,
+            closeout: enforcedCloseoutAssessment,
           }),
         );
         emitArtifactWritten({
@@ -2372,6 +2456,16 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           role: "controller",
           status: "blocked",
           summary: blockedReason,
+          ...(enforcedCloseoutAssessment
+            ? {
+                payload: {
+                  closeoutStatus: enforcedCloseoutAssessment.status,
+                  closeoutReason: enforcedCloseoutAssessment.reason,
+                  closeoutTrace: enforcedCloseoutAssessment.trace,
+                  closeoutArtifact,
+                },
+              }
+            : {}),
         });
         await emitTracedWorkflowReportEvent({
           trace: ctx.trace,
@@ -2402,7 +2496,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           terminalReason: blockedReason,
           currentRound: round,
           maxRounds: input.maxRetries,
-          artifacts: [...record.artifacts, summaryArtifact],
+          artifacts: [
+            ...record.artifacts,
+            ...(closeoutArtifact ? [closeoutArtifact] : []),
+            summaryArtifact,
+          ],
           latestWorkerOutput: codexResult.text,
           latestCriticVerdict: controllerRun.text,
           createdAt: record.createdAt,
@@ -2491,4 +2589,5 @@ export const __testing = {
   summarizeWorkerRound,
   assessDrift,
   enforceContinueGuardrails,
+  remapInvalidDoneDecision,
 };

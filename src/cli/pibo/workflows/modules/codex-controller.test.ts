@@ -828,7 +828,7 @@ describe("codex_controller module", () => {
     expect(retryPhases).toEqual([]);
   });
 
-  it("blocks DONE closeout on dirty repo and writes closeout mismatch context", async () => {
+  it("remaps DONE on dirty repo preflight failure to continue instead of terminal closeout", async () => {
     mockCloseoutGitScenario({
       statusPorcelain: " M src/dirty.ts\n?? scratch.txt\n",
     });
@@ -840,39 +840,37 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          maxRetries: 1,
         },
       },
       createModuleContext("run-dirty"),
     );
 
-    expect(record.status).toBe("blocked");
-    expect(record.terminalReason).toContain("Closeout mismatch after controller DONE");
-    expect(record.terminalReason).toContain("repo/worktree is dirty");
-    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+    expect(record.status).toBe("max_rounds_reached");
+    expect(record.terminalReason).toBe("Controller retry budget exhausted.");
+    expect(record.currentTask).toContain("Clean the repo/worktree before DONE.");
+    expect(record.currentTask).toContain("src/dirty.ts, scratch.txt");
+    expect(record.latestCriticVerdict).toContain("MODULE_DECISION: DONE");
+    expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
       "run-dirty",
       "closeout-assessment.json",
-      expect.stringContaining('"code": "dirty_repo"'),
+      expect.any(String),
     );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-dirty",
       "run-summary.txt",
-      expect.stringContaining("closeout-status: blocked"),
-    );
-    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
-      "run-dirty",
-      "run-summary.txt",
-      expect.stringContaining("dirty_paths=src/dirty.ts,scratch.txt"),
+      expect.stringContaining("status: max_rounds_reached"),
     );
     expect(traceEmit).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "run_blocked",
-        status: "blocked",
-        summary: expect.stringContaining("Closeout mismatch after controller DONE"),
+        status: "max_rounds_reached",
+        summary: "Controller retry budget exhausted.",
       }),
     );
   });
 
-  it("blocks DONE closeout when additional linked worktrees are open", async () => {
+  it("remaps DONE on ambient open worktree preflight failure to blocked escalation", async () => {
     mockCloseoutGitScenario({
       worktreeList: [
         "worktree /repo",
@@ -891,13 +889,16 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          maxRetries: 1,
         },
       },
       createModuleContext("run-worktree"),
     );
 
     expect(record.status).toBe("blocked");
+    expect(record.terminalReason).toContain("Controller DONE rejected because closeout preflight failed");
     expect(record.terminalReason).toContain("open linked worktrees");
+    expect(record.terminalReason).not.toContain("Closeout mismatch after controller DONE");
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-worktree",
       "closeout-assessment.json",
@@ -906,11 +907,25 @@ describe("codex_controller module", () => {
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-worktree",
       "run-summary.txt",
+      expect.stringContaining("closeout-status: blocked"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-worktree",
+      "run-summary.txt",
       expect.stringContaining("open_worktrees=/repo,/repo-linked"),
+    );
+    expect(traceEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "run_blocked",
+        status: "blocked",
+        summary: expect.stringContaining(
+          "Controller DONE rejected because closeout preflight failed",
+        ),
+      }),
     );
   });
 
-  it("blocks DONE closeout when HEAD is not integrated into the mainline ref", async () => {
+  it("remaps DONE on not-integrated preflight failure to continue instead of terminal closeout", async () => {
     mockCloseoutGitScenario({
       head: "2222222222222222222222222222222222222222",
       mergeBase: "1111111111111111111111111111111111111111",
@@ -924,27 +939,25 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           repoRoot: "/repo",
+          maxRetries: 1,
         },
       },
       createModuleContext("run-integration"),
     );
 
-    expect(record.status).toBe("blocked");
-    expect(record.terminalReason).toContain("not integrated into origin/main");
-    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+    expect(record.status).toBe("max_rounds_reached");
+    expect(record.terminalReason).toBe("Controller retry budget exhausted.");
+    expect(record.currentTask).toContain("Integrate the current HEAD into origin/main before DONE");
+    expect(record.latestCriticVerdict).toContain("MODULE_DECISION: DONE");
+    expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
       "run-integration",
       "closeout-assessment.json",
-      expect.stringContaining('"code": "not_integrated"'),
+      expect.any(String),
     );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-integration",
       "run-summary.txt",
-      expect.stringContaining("closeout-base-ref: origin/main"),
-    );
-    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
-      "run-integration",
-      "run-summary.txt",
-      expect.stringContaining("merge_base=1111111111111111111111111111111111111111"),
+      expect.stringContaining("status: max_rounds_reached"),
     );
   });
 
