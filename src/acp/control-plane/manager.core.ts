@@ -1,5 +1,6 @@
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { readSessionMessages } from "../../gateway/session-utils.fs.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
@@ -89,6 +90,19 @@ const ACP_TURN_DISCONNECT_REASON = "turn-disconnected";
 const ACP_TURN_HEALTH_POLL_MS = 1_000;
 const ACP_BACKGROUND_TASK_TEXT_MAX_LENGTH = 160;
 const ACP_BACKGROUND_TASK_PROGRESS_MAX_LENGTH = 240;
+
+type SessionTranscriptMessage = {
+  role?: unknown;
+};
+
+function isAssistantTranscriptMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return false;
+  }
+  return (
+    normalizeLowercaseStringOrEmpty((message as SessionTranscriptMessage).role) === "assistant"
+  );
+}
 
 function summarizeBackgroundTaskText(text: string): string {
   const normalized = normalizeText(text) ?? "ACP background task";
@@ -1752,6 +1766,17 @@ export class AcpSessionManager {
         if (acpError.code !== "ACP_SESSION_INIT_FAILED") {
           throw acpError;
         }
+        const allowFreshPersistentRetry =
+          mode === "persistent" &&
+          this.isRecoverableMissingPersistentSessionError(acpError.message) &&
+          this.canRetryWithFreshPersistentSession({
+            cfg: params.cfg,
+            sessionKey: params.sessionKey,
+            meta: previousMeta,
+          });
+        if (!allowFreshPersistentRetry) {
+          throw acpError;
+        }
         logVerbose(
           `acp-manager: resume init failed for ${params.sessionKey}; retrying without persisted ACP session id: ${acpError.message}`,
         );
@@ -1768,18 +1793,13 @@ export class AcpSessionManager {
             state: "pending",
           };
         }
-        if (
-          mode === "persistent" &&
-          this.isRecoverableMissingPersistentSessionError(acpError.message)
-        ) {
-          await this.clearPersistedRuntimeResumeState({
-            cfg: params.cfg,
-            sessionKey: params.sessionKey,
-          });
-          await runtime.prepareFreshSession?.({
-            sessionKey: params.sessionKey,
-          });
-        }
+        await this.clearPersistedRuntimeResumeState({
+          cfg: params.cfg,
+          sessionKey: params.sessionKey,
+        });
+        await runtime.prepareFreshSession?.({
+          sessionKey: params.sessionKey,
+        });
         ensured = await ensureSession();
       }
     } else {
@@ -2010,7 +2030,12 @@ export class AcpSessionManager {
       !params.runtime ||
       !params.meta ||
       params.meta.mode !== "persistent" ||
-      !this.isRecoverableMissingPersistentSessionError(params.error.message)
+      !this.isRecoverableMissingPersistentSessionError(params.error.message) ||
+      !this.canRetryWithFreshPersistentSession({
+        cfg: params.cfg,
+        sessionKey: params.sessionKey,
+        meta: params.meta,
+      })
     ) {
       return false;
     }
@@ -2038,6 +2063,34 @@ export class AcpSessionManager {
       `acp-manager: retrying ${params.sessionKey} with a fresh persistent session after missing backend resume target: ${params.error.message}`,
     );
     return true;
+  }
+
+  private canRetryWithFreshPersistentSession(params: {
+    cfg: OpenClawConfig;
+    sessionKey: string;
+    meta?: SessionAcpMeta;
+  }): boolean {
+    const session = this.deps.readSessionEntry({
+      cfg: params.cfg,
+      sessionKey: params.sessionKey,
+    });
+    if (session?.storeReadFailed) {
+      logVerbose(
+        `acp-manager: keeping strict persistent resume for ${params.sessionKey} because the session store could not be read`,
+      );
+      return false;
+    }
+    const identity = resolveSessionIdentityFromMeta(params.meta ?? session?.acp);
+    if (normalizeText(identity?.agentSessionId)) {
+      return false;
+    }
+    const entry = session?.entry;
+    const storePath = session?.storePath;
+    if (!entry?.sessionId || !storePath) {
+      return true;
+    }
+    const messages = readSessionMessages(entry.sessionId, storePath, entry.sessionFile);
+    return !messages.some(isAssistantTranscriptMessage);
   }
 
   private isRecoverableAcpxExitError(message: string): boolean {
