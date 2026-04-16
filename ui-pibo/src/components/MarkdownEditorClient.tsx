@@ -1,4 +1,5 @@
 import "@tanstack/react-start/client-only";
+import "#/lib/prism-client";
 import type { MDXEditorMethods } from "@mdxeditor/editor";
 import {
   BlockTypeSelect,
