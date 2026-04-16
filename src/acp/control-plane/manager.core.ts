@@ -1768,6 +1768,18 @@ export class AcpSessionManager {
             state: "pending",
           };
         }
+        if (
+          mode === "persistent" &&
+          this.isRecoverableMissingPersistentSessionError(acpError.message)
+        ) {
+          await this.clearPersistedRuntimeResumeState({
+            cfg: params.cfg,
+            sessionKey: params.sessionKey,
+          });
+          await runtime.prepareFreshSession?.({
+            sessionKey: params.sessionKey,
+          });
+        }
         ensured = await ensureSession();
       }
     } else {
