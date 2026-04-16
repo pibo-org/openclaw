@@ -13,7 +13,10 @@ export const noopWorkflowModuleManifest = {
   requiredAgents: [],
   terminalStates: ["done", "aborted", "failed"],
   supportsAbort: true,
-  inputSchemaSummary: ["beliebiges JSON-Objekt oder String", "wird nur als Referenzinput gespeichert"],
+  inputSchemaSummary: [
+    "beliebiges JSON-Objekt oder String",
+    "wird nur als Referenzinput gespeichert",
+  ],
   artifactContract: ["keine Artefakte", "latestWorkerOutput enthält nur ein Input-Echo"],
 } satisfies WorkflowModuleManifest;
 
@@ -47,7 +50,7 @@ export const codexControllerWorkflowModuleManifest = {
   description:
     "Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
   kind: "agent_workflow",
-  version: "0.2.1",
+  version: "0.2.2",
   requiredAgents: ["codex", "codex-controller"],
   terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
   supportsAbort: false,

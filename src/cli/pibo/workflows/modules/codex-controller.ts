@@ -88,6 +88,33 @@ type CloseoutAssessment = {
   checks: CloseoutCheck[];
 };
 
+type CloseoutPreflightFailureClass =
+  | "worker_fixable"
+  | "ambient_repo_state"
+  | "operator_blocker"
+  | "unknown";
+
+type CloseoutPreflightCheckValue = boolean | "unknown";
+
+type CloseoutPreflight = {
+  status: "pass" | "fail" | "unknown";
+  failureClass: CloseoutPreflightFailureClass;
+  summary: string;
+  reason: string;
+  repoRoot: string | null;
+  workingDirectory: string;
+  baseRef: string | null;
+  head: string | null;
+  checks: {
+    repoClean: CloseoutPreflightCheckValue;
+    noOpenLinkedWorktrees: CloseoutPreflightCheckValue;
+    headIntegratedIntoBase: CloseoutPreflightCheckValue;
+  };
+  dirtyPaths: string[];
+  openWorktreePaths: string[];
+  trace: string[];
+};
+
 type ControllerDecision = {
   decision: "CONTINUE" | "ESCALATE_BLOCKED" | "DONE";
   reason: string[];
@@ -693,6 +720,10 @@ function buildControllerInitPrompt(params: {
     "- CONTINUE or GUIDE from the base prompt map to MODULE_DECISION: CONTINUE.",
     "- ASK_USER or STOP_BLOCKED from the base prompt map to MODULE_DECISION: ESCALATE_BLOCKED.",
     "- Use MODULE_DECISION: DONE only when the worker output is already sufficiently complete against the original task and success criteria.",
+    "- If CLOSEOUT_PREFLIGHT.status=fail, MODULE_DECISION must not be DONE.",
+    "- If CLOSEOUT_PREFLIGHT.failure_class=worker_fixable, NEXT_INSTRUCTION should name the concrete closeout fix still required.",
+    "- If CLOSEOUT_PREFLIGHT.failure_class=ambient_repo_state or operator_blocker, do not pretend another worker turn will magically fix it. Prefer ESCALATE_BLOCKED unless a narrow worker-fixable substep is explicit.",
+    "- If CLOSEOUT_PREFLIGHT.status=unknown, be conservative about DONE and prefer more verification or escalation over optimism.",
     "- If MODULE_DECISION is CONTINUE, NEXT_INSTRUCTION must be concrete, actionable, and evidence-seeking when drift signals exist.",
     "- If worker progress claims repeat without fresh concrete evidence, do not issue a bare continue. Provide corrective guidance that forces concrete implementation or verification evidence, or escalate if no viable next move remains.",
     "- Judge only from visible worker output, compact visible-history summaries, your own prior controller history, and runtime hints. Do not assume access to hidden reasoning.",
@@ -713,6 +744,131 @@ function buildControllerInitPrompt(params: {
   ].join("\n");
 }
 
+function closeoutCheckValue(
+  assessment: CloseoutAssessment,
+  code: CloseoutCheckCode,
+): CloseoutPreflightCheckValue {
+  const check = assessment.checks.find((entry) => entry.code === code);
+  return check ? check.ok : "unknown";
+}
+
+function pathIsInsideDirectory(targetPath: string, directory: string): boolean {
+  const relative = path.relative(directory, targetPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function classifyCloseoutPreflightFailure(
+  assessment: CloseoutAssessment,
+): CloseoutPreflightFailureClass {
+  if (assessment.status === "pass") {
+    return "unknown";
+  }
+  const failedCodes = new Set(
+    assessment.checks.filter((check) => !check.ok).map((check) => check.code),
+  );
+  if (
+    failedCodes.has("git_repo_missing") ||
+    failedCodes.has("git_head_missing") ||
+    failedCodes.has("integration_ref_missing") ||
+    failedCodes.has("integration_merge_base_missing")
+  ) {
+    return "operator_blocker";
+  }
+  if (failedCodes.has("dirty_repo")) {
+    const repoRoot = assessment.context.resolvedRepoRoot;
+    const workingDirectory = path.resolve(assessment.context.workingDirectory);
+    if (!repoRoot) {
+      return "unknown";
+    }
+    const allDirtyPathsInsideWorkingDirectory = assessment.git.dirtyPaths.every((dirtyPath) =>
+      pathIsInsideDirectory(path.resolve(repoRoot, dirtyPath), workingDirectory),
+    );
+    return allDirtyPathsInsideWorkingDirectory ? "worker_fixable" : "ambient_repo_state";
+  }
+  if (failedCodes.has("open_worktree")) {
+    const repoRoot = assessment.context.resolvedRepoRoot;
+    const workingDirectory = path.resolve(assessment.context.workingDirectory);
+    const extraWorktreePaths = assessment.git.worktreePaths.filter(
+      (worktreePath) => path.resolve(worktreePath) !== repoRoot,
+    );
+    if (
+      extraWorktreePaths.some((worktreePath) => path.resolve(worktreePath) === workingDirectory)
+    ) {
+      return "operator_blocker";
+    }
+    return extraWorktreePaths.length > 0 ? "ambient_repo_state" : "unknown";
+  }
+  if (failedCodes.has("not_integrated")) {
+    return "worker_fixable";
+  }
+  return "unknown";
+}
+
+function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflight {
+  const repoClean = closeoutCheckValue(assessment, "dirty_repo");
+  const noOpenLinkedWorktrees = closeoutCheckValue(assessment, "open_worktree");
+  const headIntegratedIntoBase = closeoutCheckValue(assessment, "not_integrated");
+  const failureClass = classifyCloseoutPreflightFailure(assessment);
+  const failedCodes = new Set(
+    assessment.checks.filter((check) => !check.ok).map((check) => check.code),
+  );
+  const status =
+    assessment.status === "pass"
+      ? "pass"
+      : failedCodes.has("dirty_repo") ||
+          failedCodes.has("open_worktree") ||
+          failedCodes.has("not_integrated")
+        ? "fail"
+        : "unknown";
+  const repoRoot = assessment.context.resolvedRepoRoot;
+  const openWorktreePaths = assessment.git.worktreePaths.filter(
+    (worktreePath) => path.resolve(worktreePath) !== repoRoot,
+  );
+  const failedCheckSummary =
+    assessment.checks.find((check) => !check.ok)?.summary ?? assessment.reason;
+  return {
+    status,
+    failureClass,
+    summary: failedCheckSummary,
+    reason: assessment.reason,
+    repoRoot,
+    workingDirectory: assessment.context.workingDirectory,
+    baseRef: assessment.git.baseRef,
+    head: assessment.git.head,
+    checks: {
+      repoClean,
+      noOpenLinkedWorktrees,
+      headIntegratedIntoBase,
+    },
+    dirtyPaths: assessment.git.dirtyPaths,
+    openWorktreePaths,
+    trace: assessment.trace,
+  };
+}
+
+function formatCloseoutPreflightCheckValue(value: CloseoutPreflightCheckValue): string {
+  return value === "unknown" ? "unknown" : value ? "true" : "false";
+}
+
+function buildCloseoutPreflightPrompt(preflight: CloseoutPreflight): string {
+  return [
+    `status=${preflight.status}`,
+    `failure_class=${preflight.failureClass}`,
+    `summary=${preflight.summary}`,
+    `repo_root=${preflight.repoRoot ?? "unresolved"}`,
+    `working_directory=${preflight.workingDirectory}`,
+    `base_ref=${preflight.baseRef ?? "unknown"}`,
+    `head=${preflight.head ?? "unknown"}`,
+    `repo_clean=${formatCloseoutPreflightCheckValue(preflight.checks.repoClean)}`,
+    `no_open_linked_worktrees=${formatCloseoutPreflightCheckValue(preflight.checks.noOpenLinkedWorktrees)}`,
+    `head_integrated_into_base=${formatCloseoutPreflightCheckValue(preflight.checks.headIntegratedIntoBase)}`,
+    `dirty_paths=${preflight.dirtyPaths.length ? preflight.dirtyPaths.join(",") : "none"}`,
+    `open_worktrees=${preflight.openWorktreePaths.length ? preflight.openWorktreePaths.join(",") : "none"}`,
+    "trace:",
+    ...uniqueLimited(preflight.trace, 6).map((line) => `- ${line}`),
+  ].join("\n");
+}
+
 function buildControllerDeltaPrompt(params: {
   round: number;
   maxRounds: number;
@@ -721,6 +877,7 @@ function buildControllerDeltaPrompt(params: {
   controllerHistory: ControllerRoundSummary[];
   currentWorkerSummary: WorkerRoundSummary;
   drift: DriftAssessment;
+  closeoutPreflight: CloseoutPreflight;
 }): string {
   return [
     `ROUND_CONTEXT: ${params.round}/${params.maxRounds}`,
@@ -735,6 +892,9 @@ function buildControllerDeltaPrompt(params: {
     "",
     "CURRENT_WORKER_STATUS_HINTS:",
     buildStatusHints(params.currentWorkerSummary, params.drift),
+    "",
+    "CLOSEOUT_PREFLIGHT:",
+    buildCloseoutPreflightPrompt(params.closeoutPreflight),
     "",
     "CURRENT_PROGRESS_EVIDENCE:",
     buildProgressEvidence(params.currentWorkerSummary),
@@ -1585,6 +1745,13 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         priorWorkers: workerHistory,
         priorControllers: controllerHistory,
       });
+      const closeoutPreflight = buildCloseoutPreflight(
+        assessCloseout({
+          workingDirectory: input.workingDirectory,
+          repoRoot: input.repoRoot,
+          closeoutContextSource: input.closeoutContextSource,
+        }),
+      );
       const controllerMessage = buildControllerDeltaPrompt({
         round,
         maxRounds: input.maxRetries,
@@ -1593,6 +1760,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         controllerHistory: recentControllerHistory,
         currentWorkerSummary,
         drift,
+        closeoutPreflight,
       });
       ctx.trace.emit({
         kind: "role_turn_started",
@@ -1903,6 +2071,7 @@ export const __testing = {
     cliPluginServicesWorkspaceDir = undefined;
   },
   buildControllerInitPrompt,
+  buildCloseoutPreflight,
   buildControllerDeltaPrompt,
   summarizeWorkerRound,
   assessDrift,

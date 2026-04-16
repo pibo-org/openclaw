@@ -958,6 +958,10 @@ describe("codex_controller module", () => {
     expect(initPrompt).toContain("ORIGINAL_TASK:");
     expect(initPrompt).toContain("SUCCESS_CRITERIA:");
     expect(initPrompt).toContain("CONSTRAINTS:");
+    expect(initPrompt).toContain(
+      "If CLOSEOUT_PREFLIGHT.status=fail, MODULE_DECISION must not be DONE.",
+    );
+    expect(initPrompt).toContain("If CLOSEOUT_PREFLIGHT.failure_class=worker_fixable");
     expect(initPrompt).not.toContain("RECENT_VISIBLE_WORKER_HISTORY:");
     expect(initPrompt).not.toContain("WORKER_OUTPUT:");
 
@@ -972,6 +976,11 @@ describe("codex_controller module", () => {
     expect(roundOneDelta).toContain("ROUND_CONTEXT: 1/2");
     expect(roundOneDelta).toContain("RECENT_VISIBLE_WORKER_HISTORY:");
     expect(roundOneDelta).toContain("CURRENT_WORKER_STATUS_HINTS:");
+    expect(roundOneDelta).toContain("CLOSEOUT_PREFLIGHT:");
+    expect(roundOneDelta).toContain("status=pass");
+    expect(roundOneDelta).toContain("failure_class=unknown");
+    expect(roundOneDelta).toContain("repo_clean=true");
+    expect(roundOneDelta).toContain("open_worktrees=none");
     expect(roundOneDelta).toContain("CURRENT_PROGRESS_EVIDENCE:");
     expect(roundOneDelta).toContain("CURRENT_DRIFT_SIGNALS:");
     expect(roundOneDelta).toContain("WORKER_OUTPUT:");
@@ -987,6 +996,9 @@ describe("codex_controller module", () => {
     expect(secondPrompt).toContain("round 2: status=claims_done");
     expect(secondPrompt).toContain("CONTROLLER_HISTORY:");
     expect(secondPrompt).toContain("decision=CONTINUE");
+    expect(secondPrompt).toContain("CLOSEOUT_PREFLIGHT:");
+    expect(secondPrompt).toContain("status=pass");
+    expect(secondPrompt).toContain("head_integrated_into_base=true");
     expect(secondPrompt).toContain("CURRENT_PROGRESS_EVIDENCE:");
     expect(secondPrompt).toContain("- none visible in worker output");
     expect(secondPrompt).toContain("CURRENT_DRIFT_SIGNALS:");
@@ -1000,6 +1012,108 @@ describe("codex_controller module", () => {
     expect(secondPrompt).not.toContain("SUCCESS_CRITERIA:");
     expect(secondPrompt).not.toContain("CONSTRAINTS:");
     expect(secondPrompt).not.toContain("stream: thought");
+  });
+
+  it("surfaces ambient dirty repo state in the controller preflight instead of framing it as worker-fixable", async () => {
+    mockCloseoutGitScenario({
+      statusPorcelain: " M pnpm-lock.yaml\n",
+    });
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: ESCALATE_BLOCKED",
+            "MODULE_REASON:",
+            "- Ambient repo state blocks clean closeout.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- Clean repo root first.",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      );
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo/slices/task",
+          repoRoot: "/repo",
+          maxRetries: 1,
+        },
+      },
+      {
+        runId: "run-ambient-preflight",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-ambient-preflight"),
+      },
+    );
+
+    const controllerPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    expect(controllerPrompt).toContain("CLOSEOUT_PREFLIGHT:");
+    expect(controllerPrompt).toContain("status=fail");
+    expect(controllerPrompt).toContain("failure_class=ambient_repo_state");
+    expect(controllerPrompt).toContain("dirty_paths=pnpm-lock.yaml");
+    expect(controllerPrompt).toContain("repo_root=/repo");
+    expect(controllerPrompt).toContain("working_directory=/repo/slices/task");
+  });
+
+  it("flags an open current linked worktree as an operator_blocker in the controller preflight", async () => {
+    mockCloseoutGitScenario({
+      worktreeList: [
+        "worktree /repo",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/main",
+        "worktree /repo/slices/task",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/codex/task",
+      ].join("\n"),
+    });
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce(controllerInitReady())
+      .mockResolvedValueOnce(
+        controllerRun(
+          [
+            "MODULE_DECISION: ESCALATE_BLOCKED",
+            "MODULE_REASON:",
+            "- Current linked worktree cannot be closed out from inside this active session.",
+            "NEXT_INSTRUCTION:",
+            "- none",
+            "BLOCKER:",
+            "- External closeout step required.",
+          ].join("\n"),
+          "controller-run-1",
+        ),
+      );
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo/slices/task",
+          repoRoot: "/repo",
+          maxRetries: 1,
+        },
+      },
+      {
+        runId: "run-worktree-preflight",
+        nowIso: () => "2026-04-10T00:00:00.000Z",
+        persist: () => {},
+        trace: createTraceMock("run-worktree-preflight"),
+      },
+    );
+
+    const controllerPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    expect(controllerPrompt).toContain("CLOSEOUT_PREFLIGHT:");
+    expect(controllerPrompt).toContain("status=fail");
+    expect(controllerPrompt).toContain("failure_class=operator_blocker");
+    expect(controllerPrompt).toContain("open_worktrees=/repo/slices/task");
+    expect(controllerPrompt).toContain("no_open_linked_worktrees=false");
   });
 
   it("filters hidden thinking and generic tool-call placeholders from visible worker output but keeps named tool calls", async () => {
