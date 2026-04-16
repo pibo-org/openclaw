@@ -11,6 +11,7 @@ export type WorkflowTraceEventKind =
   | "report_delivered"
   | "report_failed"
   | "run_completed"
+  | "run_aborted"
   | "run_blocked"
   | "run_failed"
   | "warning"

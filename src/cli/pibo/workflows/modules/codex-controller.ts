@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { getAcpSessionManager } from "../../../../acp/control-plane/manager.js";
 import {
   getAcpRuntimeBackend,
@@ -8,11 +9,17 @@ import {
 } from "../../../../acp/runtime/registry.js";
 import type { AcpRuntimeEvent } from "../../../../acp/runtime/types.js";
 import { resolveAgentWorkspaceDir } from "../../../../agents/agent-scope.js";
+import { describeFailoverError } from "../../../../agents/failover-error.js";
 import { ensureCliPluginRegistryLoaded } from "../../../../cli/plugin-registry-loader.js";
 import { loadConfig } from "../../../../config/config.js";
 import { findGitRoot } from "../../../../infra/git-root.js";
 import { getActivePluginRegistry } from "../../../../plugins/runtime.js";
 import { startPluginServices, type PluginServicesHandle } from "../../../../plugins/services.js";
+import {
+  createWorkflowAbortError,
+  isWorkflowAbortError,
+  throwIfWorkflowAbortRequested,
+} from "../abort.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
 import { writeWorkflowArtifact } from "../store.js";
 import type {
@@ -155,10 +162,29 @@ const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
 const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "off";
 const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
+const CODEX_WORKER_PROMPT_TIMEOUT_SECONDS = 300;
+const CODEX_WORKER_RETRY_DELAYS_MS = [1_000] as const;
+const RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE = [
+  /\btimed out after \d+ms\b/i,
+  /\brpc timeout\b/i,
+  /\bprompt(?:\s+\w+){0,6}\s+(?:timed out|timeout)\b/i,
+  /\bprompt completion failed\b.*\b(timeout|temporar|transient|overload|unavailable|connection|closed|reset|network|fetch failed)\b/i,
+  /\b(connection (?:closed|reset|error)|transport closed|fetch failed|econnreset|ehostdown|epipe|gateway timeout|service unavailable|temporarily unavailable|overloaded)\b/i,
+] as const;
+const NON_RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE = [
+  /\b(permission denied|unauthori(?:s|z)ed|forbidden|not accept config key|unsupported|invalid|not found|prompt exceeds maximum allowed size|tool approval|approval denied|schema|validation)\b/i,
+] as const;
 let cliPluginServicesHandlePromise: Promise<PluginServicesHandle> | null = null;
 let cliPluginServicesWorkspaceDir: string | undefined;
 type ProbeableAcpRuntime = {
   probeAvailability?: () => Promise<void>;
+};
+type CodexWorkerRetryClassification = {
+  retryable: boolean;
+  reason: "timeout" | "transient_prompt_failure" | "non_retryable";
+  errorCode?: string;
+  failoverReason?: string;
+  message: string;
 };
 
 function normalizeStringArray(value: unknown): string[] {
@@ -1355,6 +1381,8 @@ function buildRecord(params: {
     moduleId: "codex_controller",
     status: params.status,
     terminalReason: params.terminalReason,
+    abortRequested: false,
+    abortRequestedAt: null,
     currentRound: params.currentRound,
     maxRounds: params.maxRounds,
     input: params.input,
@@ -1444,6 +1472,7 @@ async function runCodexTurn(params: {
   text: string;
   requestId: string;
   contextWorkspaceDir?: string;
+  abortSignal?: AbortSignal;
 }): Promise<{
   text: string;
   outputEvents: string[];
@@ -1459,25 +1488,45 @@ async function runCodexTurn(params: {
     mode: "persistent",
     cwd: params.workingDirectory,
   });
+  await manager.updateSessionRuntimeOptions({
+    cfg,
+    sessionKey: params.sessionKey,
+    patch: {
+      timeoutSeconds: CODEX_WORKER_PROMPT_TIMEOUT_SECONDS,
+    },
+  });
 
   const outputEvents: string[] = [];
   const rawEvents: AcpRuntimeEvent[] = [];
-  await manager.runTurn({
-    cfg,
-    sessionKey: params.sessionKey,
-    text: params.text,
-    mode: "prompt",
-    requestId: params.requestId,
-    onEvent: (event) => {
-      rawEvents.push(event);
-      if (event.type === "text_delta" && event.stream !== "thought" && event.text) {
-        outputEvents.push(event.text);
-      }
-      if (event.type === "tool_call" && event.text && !isLowSignalToolCallText(event.text)) {
-        outputEvents.push(`[tool] ${event.text}`);
-      }
-    },
-  });
+  const onAbort = () => {
+    void manager.cancelSession({
+      cfg,
+      sessionKey: params.sessionKey,
+      reason: "workflow abort requested",
+    });
+  };
+  params.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await manager.runTurn({
+      cfg,
+      sessionKey: params.sessionKey,
+      text: params.text,
+      mode: "prompt",
+      requestId: params.requestId,
+      signal: params.abortSignal,
+      onEvent: (event) => {
+        rawEvents.push(event);
+        if (event.type === "text_delta" && event.stream !== "thought" && event.text) {
+          outputEvents.push(event.text);
+        }
+        if (event.type === "tool_call" && event.text && !isLowSignalToolCallText(event.text)) {
+          outputEvents.push(`[tool] ${event.text}`);
+        }
+      },
+    });
+  } finally {
+    params.abortSignal?.removeEventListener("abort", onAbort);
+  }
 
   const text = outputEvents.join("").trim();
   if (!text) {
@@ -1486,11 +1535,341 @@ async function runCodexTurn(params: {
   return { text, outputEvents, rawEvents };
 }
 
+function classifyCodexWorkerRetry(error: unknown): CodexWorkerRetryClassification {
+  const details = describeFailoverError(error);
+  const message = details.message.trim() || String(error);
+  const timeoutLike = details.reason === "timeout";
+  const transientPromptFailure =
+    !timeoutLike &&
+    !NON_RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE.some((pattern) => pattern.test(message)) &&
+    RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE.some((pattern) => pattern.test(message));
+  return {
+    retryable: timeoutLike || transientPromptFailure,
+    reason: timeoutLike
+      ? "timeout"
+      : transientPromptFailure
+        ? "transient_prompt_failure"
+        : "non_retryable",
+    errorCode: details.code,
+    failoverReason: details.reason ?? undefined,
+    message,
+  };
+}
+
+function buildCodexWorkerRetryMessage(params: {
+  phase:
+    | "worker_retry_scheduled"
+    | "worker_retry_started"
+    | "worker_retry_succeeded"
+    | "worker_retry_exhausted";
+  round: number;
+  maxRounds: number;
+  attempt: number;
+  maxAttempts: number;
+  delayMs?: number;
+  errorMessage?: string;
+  errorCode?: string;
+  retryReason?: CodexWorkerRetryClassification["reason"];
+  cleanupNotice?: string;
+}): string {
+  const headline =
+    params.phase === "worker_retry_scheduled"
+      ? "Worker retry scheduled."
+      : params.phase === "worker_retry_started"
+        ? "Worker retry started."
+        : params.phase === "worker_retry_succeeded"
+          ? "Worker retry succeeded."
+          : "Worker retry exhausted.";
+  const reasonLabel =
+    params.retryReason === "timeout"
+      ? "retryable timeout-style ACPX worker prompt failure"
+      : params.retryReason === "transient_prompt_failure"
+        ? "retryable transient ACPX worker prompt failure"
+        : undefined;
+  const lines = [
+    headline,
+    `Round: ${params.round}/${params.maxRounds}`,
+    `Attempt: ${params.attempt}/${params.maxAttempts}`,
+    `Worker prompt timeout: ${CODEX_WORKER_PROMPT_TIMEOUT_SECONDS}s`,
+    ...(typeof params.delayMs === "number" ? [`Retry delay: ${params.delayMs}ms`] : []),
+    ...(reasonLabel ? [`Reason: ${reasonLabel}`] : []),
+    ...(params.errorCode ? [`ACP error code: ${params.errorCode}`] : []),
+    ...(params.errorMessage ? [`Error: ${params.errorMessage}`] : []),
+    ...(params.cleanupNotice ? [`Cleanup: ${params.cleanupNotice}`] : []),
+  ];
+  return lines.join("\n");
+}
+
+async function emitCodexWorkerRetryEvent(params: {
+  trace: WorkflowModuleContext["trace"];
+  stepId: string;
+  moduleId: string;
+  runId: string;
+  round: number;
+  maxRounds: number;
+  sessionKey: string;
+  agentId: string;
+  phase:
+    | "worker_retry_scheduled"
+    | "worker_retry_started"
+    | "worker_retry_succeeded"
+    | "worker_retry_exhausted";
+  attempt: number;
+  maxAttempts: number;
+  delayMs?: number;
+  errorMessage?: string;
+  errorCode?: string;
+  retryReason?: CodexWorkerRetryClassification["reason"];
+  cleanupNotice?: string;
+  origin?: WorkflowStartRequest["origin"];
+  reporting?: WorkflowStartRequest["reporting"];
+}): Promise<void> {
+  const messageText = buildCodexWorkerRetryMessage(params);
+  params.trace.emit({
+    kind: params.phase === "worker_retry_exhausted" ? "warning" : "custom",
+    stepId: params.stepId,
+    round: params.round,
+    role: "worker",
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    status: params.phase === "worker_retry_exhausted" ? "failed" : "running",
+    summary: messageText.split("\n", 1)[0],
+    payload: {
+      phase: params.phase,
+      attempt: params.attempt,
+      maxAttempts: params.maxAttempts,
+      delayMs: params.delayMs,
+      errorCode: params.errorCode,
+      errorMessage: params.errorMessage,
+      retryReason: params.retryReason,
+      workerPromptTimeoutSeconds: CODEX_WORKER_PROMPT_TIMEOUT_SECONDS,
+      cleanupNotice: params.cleanupNotice,
+    },
+  });
+  await emitTracedWorkflowReportEvent({
+    trace: params.trace,
+    stepId: params.stepId,
+    moduleId: params.moduleId,
+    runId: params.runId,
+    phase: params.phase,
+    eventType: "milestone",
+    messageText,
+    emittingAgentId: params.agentId,
+    origin: params.origin,
+    reporting: params.reporting,
+    status: params.phase === "worker_retry_exhausted" ? "failed" : "running",
+    role: "worker",
+    round: params.round,
+    targetSessionKey: params.sessionKey,
+    traceSummary: messageText.split("\n", 1)[0],
+  });
+}
+
+async function resetCodexWorkerSessionForRetry(params: {
+  sessionKey: string;
+  contextWorkspaceDir?: string;
+}): Promise<string> {
+  const cfg = loadConfig();
+  await ensureCliAcpRuntimeReady(cfg, params.contextWorkspaceDir);
+  const result = await getAcpSessionManager().closeSession({
+    cfg,
+    sessionKey: params.sessionKey,
+    reason: "codex-controller-worker-retry",
+    allowBackendUnavailable: true,
+    discardPersistentState: false,
+    clearMeta: false,
+    requireAcpSession: false,
+  });
+  if (result.runtimeNotice) {
+    return `runtime close degraded but cached handle was cleared: ${result.runtimeNotice}`;
+  }
+  if (result.runtimeClosed) {
+    return "runtime handle closed and will be reinitialized on retry";
+  }
+  return "no active runtime handle remained; retry will reinitialize the worker session";
+}
+
+async function runCodexTurnWithRetry(params: {
+  sessionKey: string;
+  workingDirectory: string;
+  agentId: string;
+  text: string;
+  requestId: string;
+  contextWorkspaceDir?: string;
+  abortSignal?: AbortSignal;
+  trace: WorkflowModuleContext["trace"];
+  runId: string;
+  stepId: string;
+  round: number;
+  maxRounds: number;
+  origin?: WorkflowStartRequest["origin"];
+  reporting?: WorkflowStartRequest["reporting"];
+}): Promise<{
+  text: string;
+  outputEvents: string[];
+  rawEvents: AcpRuntimeEvent[];
+}> {
+  const maxAttempts = CODEX_WORKER_RETRY_DELAYS_MS.length + 1;
+  let lastRetryReason: CodexWorkerRetryClassification["reason"] | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    throwIfWorkflowAbortRequested(params.abortSignal);
+    try {
+      const result = await runCodexTurn({
+        sessionKey: params.sessionKey,
+        workingDirectory: params.workingDirectory,
+        agentId: params.agentId,
+        text: params.text,
+        requestId: `${params.requestId}:attempt:${attempt}`,
+        contextWorkspaceDir: params.contextWorkspaceDir,
+        abortSignal: params.abortSignal,
+      });
+      if (attempt > 1) {
+        await emitCodexWorkerRetryEvent({
+          trace: params.trace,
+          stepId: params.stepId,
+          moduleId: "codex_controller",
+          runId: params.runId,
+          round: params.round,
+          maxRounds: params.maxRounds,
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          phase: "worker_retry_succeeded",
+          attempt,
+          maxAttempts,
+          retryReason: lastRetryReason,
+          origin: params.origin,
+          reporting: params.reporting,
+        });
+      }
+      return result;
+    } catch (error) {
+      if (isWorkflowAbortError(error)) {
+        throw error;
+      }
+      const classification = classifyCodexWorkerRetry(error);
+      lastRetryReason = classification.reason;
+      const delayMs = CODEX_WORKER_RETRY_DELAYS_MS[attempt - 1];
+      if (!classification.retryable || delayMs === undefined) {
+        if (classification.retryable) {
+          await emitCodexWorkerRetryEvent({
+            trace: params.trace,
+            stepId: params.stepId,
+            moduleId: "codex_controller",
+            runId: params.runId,
+            round: params.round,
+            maxRounds: params.maxRounds,
+            sessionKey: params.sessionKey,
+            agentId: params.agentId,
+            phase: "worker_retry_exhausted",
+            attempt,
+            maxAttempts,
+            errorMessage: classification.message,
+            errorCode: classification.errorCode,
+            retryReason: classification.reason,
+            origin: params.origin,
+            reporting: params.reporting,
+          });
+          throw new Error(
+            `${classification.message} (worker retry exhausted after ${attempt} attempts).`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+      await emitCodexWorkerRetryEvent({
+        trace: params.trace,
+        stepId: params.stepId,
+        moduleId: "codex_controller",
+        runId: params.runId,
+        round: params.round,
+        maxRounds: params.maxRounds,
+        sessionKey: params.sessionKey,
+        agentId: params.agentId,
+        phase: "worker_retry_scheduled",
+        attempt,
+        maxAttempts,
+        delayMs,
+        errorMessage: classification.message,
+        errorCode: classification.errorCode,
+        retryReason: classification.reason,
+        origin: params.origin,
+        reporting: params.reporting,
+      });
+      let cleanupNotice: string;
+      try {
+        cleanupNotice = await resetCodexWorkerSessionForRetry({
+          sessionKey: params.sessionKey,
+          contextWorkspaceDir: params.contextWorkspaceDir,
+        });
+      } catch (cleanupError) {
+        const cleanupMessage =
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        await emitCodexWorkerRetryEvent({
+          trace: params.trace,
+          stepId: params.stepId,
+          moduleId: "codex_controller",
+          runId: params.runId,
+          round: params.round,
+          maxRounds: params.maxRounds,
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          phase: "worker_retry_exhausted",
+          attempt,
+          maxAttempts,
+          errorMessage: classification.message,
+          errorCode: classification.errorCode,
+          retryReason: classification.reason,
+          cleanupNotice: cleanupMessage,
+          origin: params.origin,
+          reporting: params.reporting,
+        });
+        throw new Error(
+          `Codex worker retry cleanup failed before attempt ${attempt + 1}: ${cleanupMessage}`,
+          { cause: cleanupError },
+        );
+      }
+      await Promise.race([
+        sleep(delayMs),
+        new Promise<never>((_, reject) => {
+          const onAbort = () => {
+            params.abortSignal?.removeEventListener("abort", onAbort);
+            reject(createWorkflowAbortError(params.abortSignal?.reason ?? error));
+          };
+          params.abortSignal?.addEventListener("abort", onAbort, { once: true });
+          if (params.abortSignal?.aborted) {
+            onAbort();
+          }
+        }),
+      ]);
+      await emitCodexWorkerRetryEvent({
+        trace: params.trace,
+        stepId: params.stepId,
+        moduleId: "codex_controller",
+        runId: params.runId,
+        round: params.round,
+        maxRounds: params.maxRounds,
+        sessionKey: params.sessionKey,
+        agentId: params.agentId,
+        phase: "worker_retry_started",
+        attempt: attempt + 1,
+        maxAttempts,
+        delayMs,
+        retryReason: classification.reason,
+        cleanupNotice,
+        origin: params.origin,
+        reporting: params.reporting,
+      });
+    }
+  }
+  throw new Error("Codex worker retry loop terminated unexpectedly.");
+}
+
 async function maybeCompactCodexSession(params: {
   input: NormalizedCodexControllerInput;
   sessionKey: string;
   round: number;
   contextWorkspaceDir?: string;
+  abortSignal?: AbortSignal;
 }): Promise<boolean> {
   if (params.input.workerCompactionMode === "off") {
     return false;
@@ -1509,19 +1888,33 @@ async function maybeCompactCodexSession(params: {
     mode: "persistent",
     cwd: params.input.workingDirectory,
   });
-  await manager.runTurn({
-    cfg,
-    sessionKey: params.sessionKey,
-    text: `/compact Focus on the original task, current code changes, remaining gaps, and blocker state for: ${params.input.task}`,
-    mode: "steer",
-    requestId: `${params.sessionKey}:compact:${params.round}`,
-  });
+  const onAbort = () => {
+    void manager.cancelSession({
+      cfg,
+      sessionKey: params.sessionKey,
+      reason: "workflow abort requested",
+    });
+  };
+  params.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await manager.runTurn({
+      cfg,
+      sessionKey: params.sessionKey,
+      text: `/compact Focus on the original task, current code changes, remaining gaps, and blocker state for: ${params.input.task}`,
+      mode: "steer",
+      requestId: `${params.sessionKey}:compact:${params.round}`,
+      signal: params.abortSignal,
+    });
+  } finally {
+    params.abortSignal?.removeEventListener("abort", onAbort);
+  }
   return true;
 }
 
 export const codexControllerWorkflowModule: WorkflowModule = {
   manifest: codexControllerWorkflowModuleManifest,
   async start(request, ctx: WorkflowModuleContext) {
+    ctx.throwIfAbortRequested?.();
     const input = normalizeInput(request);
     const cfg = loadConfig();
     const contextWorkspaceDir = resolveContextWorkspaceDir(input, cfg);
@@ -1537,6 +1930,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         },
       ],
     });
+    ctx.throwIfAbortRequested?.();
     const codexSessionKey = buildAcpWorkflowSessionKey({
       agentId: input.codexAgentId,
       runId: ctx.runId,
@@ -1556,6 +1950,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       controllerPromptPath: input.controllerPromptPath,
       workerCompactionMode: input.workerCompactionMode,
       workerCompactionAfterRound: String(input.workerCompactionAfterRound),
+      workerPromptTimeoutSeconds: String(CODEX_WORKER_PROMPT_TIMEOUT_SECONDS),
+      workerPromptRetryAttempts: String(CODEX_WORKER_RETRY_DELAYS_MS.length + 1),
     };
 
     let record = buildRecord({
@@ -1607,6 +2003,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       role: "orchestrator",
       targetSessionKey: sessions.orchestrator,
     });
+    ctx.throwIfAbortRequested?.();
     await runWorkflowAgentOnSession({
       sessionKey: sessions.orchestrator!,
       message: buildControllerInitPrompt({
@@ -1617,7 +2014,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       idempotencyKey: `${ctx.runId}:controller:init`,
       timeoutMs: 60 * 60 * 1000,
       ...(contextWorkspaceDir ? { workspaceDir: contextWorkspaceDir } : {}),
+      abortSignal: ctx.abortSignal,
     });
+    ctx.throwIfAbortRequested?.();
 
     let nextInstruction: string[] = [];
     const workerHistory: WorkerRoundSummary[] = [];
@@ -1639,6 +2038,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     };
 
     for (let round = 1; round <= input.maxRetries; round += 1) {
+      ctx.throwIfAbortRequested?.();
       const stepId = stepIdForRound(round);
       ctx.trace.emit({
         kind: "round_started",
@@ -1653,6 +2053,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           sessionKey: codexSessionKey,
           round,
           contextWorkspaceDir,
+          abortSignal: ctx.abortSignal,
         });
         if (compacted) {
           sessions.extras = {
@@ -1679,15 +2080,26 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       });
       let codexResult: Awaited<ReturnType<typeof runCodexTurn>>;
       try {
-        codexResult = await runCodexTurn({
+        codexResult = await runCodexTurnWithRetry({
           sessionKey: codexSessionKey,
           workingDirectory: input.workingDirectory,
           agentId: input.codexAgentId,
           text: codexPrompt,
           requestId: `${ctx.runId}:codex:${round}`,
           contextWorkspaceDir,
+          abortSignal: ctx.abortSignal,
+          trace: ctx.trace,
+          runId: ctx.runId,
+          stepId,
+          round,
+          maxRounds: input.maxRetries,
+          origin: request.origin,
+          reporting: request.reporting,
         });
       } catch (error) {
+        if (isWorkflowAbortError(error)) {
+          throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
           `Codex worker turn failed in round ${round}/${input.maxRetries} on session ${codexSessionKey}: ${message}`,
@@ -1736,6 +2148,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         reporting: request.reporting,
       });
       ctx.persist(record);
+      ctx.throwIfAbortRequested?.();
 
       const currentWorkerSummary = summarizeWorkerRound(round, codexResult.text);
       const recentWorkerHistory = [...workerHistory.slice(-2), currentWorkerSummary];
@@ -1777,6 +2190,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         idempotencyKey: `${ctx.runId}:controller:${round}`,
         timeoutMs: 60 * 60 * 1000,
         ...(contextWorkspaceDir ? { workspaceDir: contextWorkspaceDir } : {}),
+        abortSignal: ctx.abortSignal,
       });
       const controllerArtifact = writeWorkflowArtifact(
         ctx.runId,
@@ -1824,6 +2238,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         reporting: request.reporting,
       });
       ctx.persist(record);
+      ctx.throwIfAbortRequested?.();
 
       if (decision.decision === "DONE") {
         const closeout = assessCloseout({

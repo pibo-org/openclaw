@@ -238,6 +238,8 @@ function buildRecord(params: {
     moduleId: "langgraph_worker_critic",
     status: params.status,
     terminalReason: params.terminalReason,
+    abortRequested: false,
+    abortRequestedAt: null,
     currentRound: params.currentRound,
     maxRounds: params.maxRounds,
     input: params.input,
@@ -262,6 +264,7 @@ async function start(
   request: WorkflowStartRequest,
   ctx: WorkflowModuleContext,
 ): Promise<WorkflowRunRecord> {
+  ctx.throwIfAbortRequested?.();
   const input = normalizeInput(request.input);
   const createdAt = ctx.nowIso();
   const maxRounds = request.maxRounds && request.maxRounds > 0 ? request.maxRounds : 2;
@@ -309,6 +312,7 @@ async function start(
       },
     ],
   });
+  ctx.throwIfAbortRequested?.();
 
   const persist = (next: {
     status?: WorkflowRunRecord["status"];
@@ -382,8 +386,10 @@ async function start(
     role: "worker",
     targetSessionKey: sessions.worker,
   });
+  ctx.throwIfAbortRequested?.();
 
   for (let round = 1; round <= maxRounds; round += 1) {
+    ctx.throwIfAbortRequested?.();
     const stepId = stepIdForRound(round);
     ctx.trace.emit({
       kind: "round_started",
@@ -427,6 +433,7 @@ async function start(
       sessionKey: sessions.worker ?? "",
       message: workerPrompt,
       idempotencyKey: `${ctx.runId}:worker:${round}`,
+      abortSignal: ctx.abortSignal,
     });
     latestWorkerOutput = workerResult.text;
     const workerOutputArtifact = writeWorkflowArtifact(
@@ -454,6 +461,7 @@ async function start(
       },
     });
     persist({ currentRound: round });
+    ctx.throwIfAbortRequested?.();
 
     const criticPrompt = buildCriticPrompt({
       input,
@@ -490,6 +498,7 @@ async function start(
       sessionKey: sessions.critic ?? "",
       message: criticPrompt,
       idempotencyKey: `${ctx.runId}:critic:${round}`,
+      abortSignal: ctx.abortSignal,
     });
     latestCriticVerdict = criticResult.text;
     const criticOutputArtifact = writeWorkflowArtifact(
@@ -516,6 +525,7 @@ async function start(
         outputLength: criticResult.text.length,
       },
     });
+    ctx.throwIfAbortRequested?.();
 
     const verdict = parseCriticVerdict(criticResult.text);
     revisionRequest = verdict.revisionRequest.filter((entry) => entry.toLowerCase() !== "none");

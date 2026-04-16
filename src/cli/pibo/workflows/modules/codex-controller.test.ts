@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../../config/types.js";
+import { createWorkflowAbortError } from "../abort.js";
 import type { WorkflowTraceRuntime } from "../tracing/runtime.js";
 import type { WorkflowTraceSummary } from "../tracing/types.js";
 import type { WorkflowRunRecord } from "../types.js";
@@ -11,7 +12,10 @@ const writeWorkflowArtifact = vi.fn();
 const existsSync = vi.fn();
 const readFileSync = vi.fn();
 const initializeSession = vi.fn();
+const updateSessionRuntimeOptions = vi.fn();
 const runTurn = vi.fn();
+const closeSession = vi.fn();
+const cancelSession = vi.fn();
 const loadConfig = vi.fn<() => OpenClawConfig>(() => ({}));
 const ensureCliPluginRegistryLoaded = vi.fn(async () => {});
 const getActivePluginRegistry = vi.fn(() => ({ services: [] }));
@@ -127,6 +131,28 @@ function recordInput(record: WorkflowRunRecord): { agentId?: string } {
   return record.input as { agentId?: string };
 }
 
+function createModuleContext(runId: string, controller?: AbortController) {
+  const abortController = controller ?? new AbortController();
+  return {
+    runId,
+    nowIso: () => "2026-04-10T00:00:00.000Z",
+    persist: () => {},
+    abortSignal: abortController.signal,
+    throwIfAbortRequested: () => {
+      if (abortController.signal.aborted) {
+        throw createWorkflowAbortError(abortController.signal.reason);
+      }
+    },
+    trace: createTraceMock(runId),
+  };
+}
+
+function workflowReportCalls(): Array<{ phase?: string; messageText?: string }> {
+  return (emitTracedWorkflowReportEvent.mock.calls as unknown as Array<[unknown]>).map(
+    ([call]) => call as { phase?: string; messageText?: string },
+  );
+}
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
@@ -187,7 +213,10 @@ vi.mock("../../../../acp/runtime/registry.js", () => ({
 vi.mock("../../../../acp/control-plane/manager.js", () => ({
   getAcpSessionManager: () => ({
     initializeSession,
+    updateSessionRuntimeOptions,
     runTurn,
+    closeSession,
+    cancelSession,
   }),
 }));
 
@@ -216,6 +245,10 @@ describe("codex_controller module", () => {
     requireAcpRuntimeBackend.mockReturnValue(backend);
     writeWorkflowArtifact.mockImplementation((runId: string, name: string) => `${runId}/${name}`);
     initializeSession.mockResolvedValue(undefined);
+    updateSessionRuntimeOptions.mockResolvedValue({
+      cwd: "/repo",
+      timeoutSeconds: 300,
+    });
     runTurn.mockImplementation(
       async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
         if (typeof params.text === "string" && params.text.startsWith("/compact")) {
@@ -228,6 +261,11 @@ describe("codex_controller module", () => {
         });
       },
     );
+    closeSession.mockResolvedValue({
+      runtimeClosed: true,
+      metaCleared: false,
+    });
+    cancelSession.mockResolvedValue(undefined);
   });
 
   it("is registered in the native workflow runtime manifest list", async () => {
@@ -256,15 +294,67 @@ describe("codex_controller module", () => {
             repoPath: "/repo",
           },
         },
-        {
-          runId: "run-1",
-          nowIso: () => "2026-04-10T00:00:00.000Z",
-          persist: () => {},
-          trace: createTraceMock("run-1"),
-        },
+        createModuleContext("run-1"),
       ),
     ).rejects.toThrow(
       "codex_controller benötigt `input.workingDirectory`. Falls `repoPath` übergeben wurde, bitte in `workingDirectory` umbenennen.",
+    );
+  });
+
+  it("stops after an abort request and does not start controller follow-up or later rounds", async () => {
+    const mod = await import("./codex-controller.js");
+    mod.__testing.resetCliPluginServicesHandleForTests();
+    const { codexControllerWorkflowModule } = mod;
+    const abortController = new AbortController();
+    runWorkflowAgentOnSession.mockReset();
+    runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
+    runTurn.mockImplementationOnce(
+      async (params: {
+        onEvent?: (event: { type: string; stream?: string; text?: string }) => void;
+      }) => {
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "codex worker result",
+        });
+        abortController.abort(new Error("Abort requested by operator."));
+      },
+    );
+
+    await expect(
+      codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+          },
+        },
+        createModuleContext("run-1", abortController),
+      ),
+    ).rejects.toThrow("Abort requested by operator.");
+
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(1);
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:langgraph:workflow:run-1:orchestrator:main",
+        abortSignal: abortController.signal,
+      }),
+    );
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(cancelSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:codex:acp:workflow:run-1:worker:codex",
+      }),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "round-1-codex.txt",
+      expect.any(String),
+    );
+    expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
+      "run-1",
+      "round-1-controller.txt",
+      expect.any(String),
     );
   });
 
@@ -288,12 +378,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(recordInput(record).agentId).toBeUndefined();
@@ -340,12 +425,7 @@ describe("codex_controller module", () => {
           agentId: "writer",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(recordInput(record).agentId).toBe("writer");
@@ -392,12 +472,7 @@ describe("codex_controller module", () => {
           agentId: "writer",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(initializeSession).toHaveBeenCalledWith(
@@ -438,12 +513,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo-a",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     cfg = {
@@ -462,12 +532,7 @@ describe("codex_controller module", () => {
           agentId: "writer",
         },
       },
-      {
-        runId: "run-2",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-2"),
-      },
+      createModuleContext("run-2"),
     );
 
     expect(startPluginServices).toHaveBeenNthCalledWith(
@@ -512,12 +577,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(record.status).toBe("done");
@@ -581,6 +641,193 @@ describe("codex_controller module", () => {
     );
   });
 
+  it("uses the module-scoped worker timeout and succeeds on the first worker attempt without retry events", async () => {
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      createModuleContext("run-timeout-default"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(record.sessions.extras?.workerPromptTimeoutSeconds).toBe("300");
+    expect(updateSessionRuntimeOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:codex:acp:workflow:run-timeout-default:worker:codex",
+        patch: {
+          timeoutSeconds: 300,
+        },
+      }),
+    );
+    expect(closeSession).not.toHaveBeenCalled();
+    const retryPhases = workflowReportCalls()
+      .map((call) => call.phase)
+      .filter(
+        (phase): phase is string => typeof phase === "string" && phase.startsWith("worker_retry_"),
+      );
+    expect(retryPhases).toEqual([]);
+  });
+
+  it("retries a retryable ACPX worker timeout once, emits retry lifecycle events, and succeeds", async () => {
+    let promptAttempts = 0;
+    runTurn.mockImplementation(
+      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
+        if (typeof params.text === "string" && params.text.startsWith("/compact")) {
+          return;
+        }
+        promptAttempts += 1;
+        if (promptAttempts === 1) {
+          throw Object.assign(new Error("Timed out after 120000ms"), {
+            code: "ACP_TURN_FAILED",
+          });
+        }
+        params.onEvent?.({
+          type: "text_delta",
+          stream: "output",
+          text: "codex worker result after retry",
+        });
+      },
+    );
+    mockSingleRoundDoneLoop("Retry completed successfully.");
+
+    vi.useFakeTimers();
+    try {
+      const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+      const runPromise = codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+          },
+        },
+        createModuleContext("run-retry-success"),
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const record = await runPromise;
+
+      expect(record.status).toBe("done");
+      expect(promptAttempts).toBe(2);
+      expect(closeSession).toHaveBeenCalledTimes(1);
+      expect(closeSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionKey: "agent:codex:acp:workflow:run-retry-success:worker:codex",
+          reason: "codex-controller-worker-retry",
+          allowBackendUnavailable: true,
+          discardPersistentState: false,
+        }),
+      );
+      const retryCalls = workflowReportCalls().filter((call) =>
+        call.phase?.startsWith("worker_retry_"),
+      );
+      expect(retryCalls.map((call) => call.phase)).toEqual([
+        "worker_retry_scheduled",
+        "worker_retry_started",
+        "worker_retry_succeeded",
+      ]);
+      expect(retryCalls[0]?.messageText).toContain("Worker prompt timeout: 300s");
+      expect(retryCalls[0]?.messageText).toContain("ACP error code: ACP_TURN_FAILED");
+      expect(retryCalls[1]?.messageText).toContain("Cleanup:");
+      expect(retryCalls[2]?.messageText).toContain("Attempt: 2/2");
+      expect(traceEmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "custom",
+          summary: "Worker retry scheduled.",
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits retry exhaustion after the bounded retry also hits a retryable ACPX timeout", async () => {
+    runTurn.mockImplementation(async (params: { text?: string }) => {
+      if (typeof params.text === "string" && params.text.startsWith("/compact")) {
+        return;
+      }
+      throw Object.assign(new Error("Timed out after 120000ms"), {
+        code: "ACP_TURN_FAILED",
+      });
+    });
+    runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
+
+    vi.useFakeTimers();
+    try {
+      const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+      const runPromise = codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+          },
+        },
+        createModuleContext("run-retry-exhausted"),
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(runPromise).rejects.toThrow("worker retry exhausted after 2 attempts");
+      expect(closeSession).toHaveBeenCalledTimes(1);
+      const retryPhases = workflowReportCalls()
+        .map((call) => call.phase)
+        .filter(
+          (phase): phase is string =>
+            typeof phase === "string" && phase.startsWith("worker_retry_"),
+        );
+      expect(retryPhases).toEqual([
+        "worker_retry_scheduled",
+        "worker_retry_started",
+        "worker_retry_exhausted",
+      ]);
+      expect(traceEmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "warning",
+          summary: "Worker retry exhausted.",
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry non-retryable worker failures", async () => {
+    runTurn.mockImplementation(async (params: { text?: string }) => {
+      if (typeof params.text === "string" && params.text.startsWith("/compact")) {
+        return;
+      }
+      throw Object.assign(new Error("Permission denied writing /repo/src/foo.ts"), {
+        code: "ACP_TURN_FAILED",
+      });
+    });
+    runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    await expect(
+      codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+          },
+        },
+        createModuleContext("run-no-retry"),
+      ),
+    ).rejects.toThrow("Permission denied writing /repo/src/foo.ts");
+
+    expect(closeSession).not.toHaveBeenCalled();
+    const retryPhases = workflowReportCalls()
+      .map((call) => call.phase)
+      .filter(
+        (phase): phase is string => typeof phase === "string" && phase.startsWith("worker_retry_"),
+      );
+    expect(retryPhases).toEqual([]);
+  });
+
   it("blocks DONE closeout on dirty repo and writes closeout mismatch context", async () => {
     mockCloseoutGitScenario({
       statusPorcelain: " M src/dirty.ts\n?? scratch.txt\n",
@@ -595,12 +842,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
         },
       },
-      {
-        runId: "run-dirty",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-dirty"),
-      },
+      createModuleContext("run-dirty"),
     );
 
     expect(record.status).toBe("blocked");
@@ -651,12 +893,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
         },
       },
-      {
-        runId: "run-worktree",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-worktree"),
-      },
+      createModuleContext("run-worktree"),
     );
 
     expect(record.status).toBe("blocked");
@@ -689,12 +926,7 @@ describe("codex_controller module", () => {
           repoRoot: "/repo",
         },
       },
-      {
-        runId: "run-integration",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-integration"),
-      },
+      createModuleContext("run-integration"),
     );
 
     expect(record.status).toBe("blocked");
@@ -741,12 +973,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(record.status).toBe("blocked");
@@ -796,12 +1023,7 @@ describe("codex_controller module", () => {
           workerCompactionAfterRound: 2,
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(record.status).toBe("done");
@@ -856,12 +1078,7 @@ describe("codex_controller module", () => {
           workerCompactionAfterRound: 2,
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(record.status).toBe("done");
@@ -940,12 +1157,7 @@ describe("codex_controller module", () => {
           maxRetries: 2,
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(3);
@@ -1045,12 +1257,7 @@ describe("codex_controller module", () => {
           maxRetries: 1,
         },
       },
-      {
-        runId: "run-ambient-preflight",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-ambient-preflight"),
-      },
+      createModuleContext("run-ambient-preflight"),
     );
 
     const controllerPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
@@ -1100,12 +1307,7 @@ describe("codex_controller module", () => {
           maxRetries: 1,
         },
       },
-      {
-        runId: "run-worktree-preflight",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-worktree-preflight"),
-      },
+      createModuleContext("run-worktree-preflight"),
     );
 
     const controllerPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
@@ -1168,12 +1370,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
         },
       },
-      {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
-      },
+      createModuleContext("run-1"),
     );
 
     expect(record.latestWorkerOutput).toContain(
@@ -1199,12 +1396,7 @@ describe("codex_controller module", () => {
             workingDirectory: "/repo",
           },
         },
-        {
-          runId: "run-1",
-          nowIso: () => "2026-04-10T00:00:00.000Z",
-          persist: () => {},
-          trace: createTraceMock("run-1"),
-        },
+        createModuleContext("run-1"),
       ),
     ).rejects.toThrow(
       "Codex worker turn failed in round 1/10 on session agent:codex:acp:workflow:run-1:worker:codex: ACP worker disconnected before completion. reason: connection_close.",
@@ -1273,12 +1465,7 @@ describe("codex_controller module", () => {
             maxRetries: 2,
           },
         },
-        {
-          runId: "run-1",
-          nowIso: () => "2026-04-10T00:00:00.000Z",
-          persist: () => {},
-          trace: createTraceMock("run-1"),
-        },
+        createModuleContext("run-1"),
       ),
     ).rejects.toThrow(
       "Controller returned CONTINUE without corrective guidance despite drift/evidence warnings in round 1.",

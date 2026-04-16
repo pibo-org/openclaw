@@ -26,6 +26,8 @@ export interface WorkflowProgressSnapshot {
   moduleId: string;
   status: WorkflowRunStatus;
   isTerminal: boolean;
+  abortRequested: boolean;
+  abortRequestedAt: string | null;
   currentRound: number;
   maxRounds: number | null;
   traceLevel: WorkflowTraceLevel;
@@ -101,6 +103,8 @@ export interface WorkflowRunRecord {
   moduleId: string;
   status: WorkflowRunStatus;
   terminalReason: string | null;
+  abortRequested: boolean;
+  abortRequestedAt: string | null;
   currentRound: number;
   maxRounds: number | null;
   input: unknown;
@@ -134,6 +138,8 @@ export interface WorkflowModuleContext {
   runId: string;
   nowIso(): string;
   persist(record: WorkflowRunRecord): void;
+  abortSignal: AbortSignal;
+  throwIfAbortRequested(): void;
   trace: WorkflowTraceRuntime;
 }
 

@@ -189,6 +189,7 @@ export function deriveWorkflowTraceSummaryFromRun(record: WorkflowRunRecord): Wo
     artifactCount: record.artifacts.length,
     errorSummary:
       record.status === "failed" ||
+      record.status === "aborted" ||
       record.status === "blocked" ||
       record.status === "max_rounds_reached"
         ? record.terminalReason

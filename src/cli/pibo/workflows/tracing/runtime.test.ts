@@ -86,6 +86,8 @@ describe("workflow tracing runtime", () => {
         moduleId: "noop",
         status: "done",
         terminalReason: "ok",
+        abortRequested: false,
+        abortRequestedAt: null,
         currentRound: 0,
         maxRounds: null,
         input: {},

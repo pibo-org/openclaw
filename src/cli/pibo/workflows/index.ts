@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import fs, { readFileSync } from "node:fs";
 import path from "node:path";
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
+import {
+  createWorkflowAbortError,
+  isWorkflowAbortError,
+  throwIfWorkflowAbortRequested,
+  workflowAbortReasonFromError,
+} from "./abort.js";
 import { getWorkflowModule, listWorkflowModules } from "./modules/index.js";
 import {
   listRunRecords,
@@ -26,6 +32,7 @@ import type {
   WorkflowArtifactContent,
   WorkflowArtifactInfo,
   WorkflowModuleManifest,
+  WorkflowModuleContext,
   WorkflowProgressSnapshot,
   WorkflowReportingConfig,
   WorkflowRunRecord,
@@ -35,7 +42,12 @@ import type {
 } from "./types.js";
 import { emitTracedWorkflowReportEvent } from "./workflow-reporting.js";
 
-const activeWorkflowRuns = new Map<string, Promise<WorkflowRunRecord>>();
+type ActiveWorkflowRunHandle = {
+  promise: Promise<WorkflowRunRecord>;
+  abortController: AbortController;
+};
+
+const activeWorkflowRuns = new Map<string, ActiveWorkflowRunHandle>();
 const WORKFLOW_WAIT_POLL_MS = 250;
 const DEFAULT_WORKFLOW_WAIT_TIMEOUT_MS = 120_000;
 
@@ -109,6 +121,18 @@ function isTerminalStatus(status: WorkflowRunRecord["status"]) {
   );
 }
 
+function markAbortRequested(record: WorkflowRunRecord, requestedAt = nowIso()): WorkflowRunRecord {
+  if (record.abortRequested && record.abortRequestedAt) {
+    return record;
+  }
+  return {
+    ...record,
+    abortRequested: true,
+    abortRequestedAt: requestedAt,
+    updatedAt: requestedAt,
+  };
+}
+
 function startedReportWasAttempted(runId: string): boolean {
   return readWorkflowTraceEvents(runId, { kind: "report_delivery_attempted" }).some((event) => {
     const payload =
@@ -158,6 +182,8 @@ function buildFailedWorkflowRunRecord(params: {
     moduleId: persisted.moduleId,
     status: "failed",
     terminalReason: params.terminalReason,
+    abortRequested: persisted.abortRequested,
+    abortRequestedAt: persisted.abortRequestedAt,
     currentRound: persisted.currentRound,
     maxRounds: persisted.maxRounds,
     input: persisted.input,
@@ -173,6 +199,41 @@ function buildFailedWorkflowRunRecord(params: {
     createdAt: persisted.createdAt,
     updatedAt,
   };
+}
+
+function buildAbortedWorkflowRunRecord(params: {
+  terminalReason: string;
+  tracer: ReturnType<typeof createWorkflowTraceRuntime>;
+  persistedRecord: WorkflowRunRecord;
+}): WorkflowRunRecord {
+  const updatedAt = nowIso();
+  const persisted = markAbortRequested(params.persistedRecord, persistedAbortRequestedAt(params));
+  return {
+    runId: persisted.runId,
+    moduleId: persisted.moduleId,
+    status: "aborted",
+    terminalReason: params.terminalReason,
+    abortRequested: true,
+    abortRequestedAt: persisted.abortRequestedAt,
+    currentRound: persisted.currentRound,
+    maxRounds: persisted.maxRounds,
+    input: persisted.input,
+    artifacts: persisted.artifacts,
+    sessions: persisted.sessions,
+    latestWorkerOutput: persisted.latestWorkerOutput,
+    latestCriticVerdict: persisted.latestCriticVerdict,
+    originalTask: persisted.originalTask,
+    currentTask: persisted.currentTask,
+    ...(persisted.origin ? { origin: persisted.origin } : {}),
+    ...(persisted.reporting ? { reporting: persisted.reporting } : {}),
+    trace: params.tracer.getRef(updatedAt),
+    createdAt: persisted.createdAt,
+    updatedAt,
+  };
+}
+
+function persistedAbortRequestedAt(params: { persistedRecord: WorkflowRunRecord }) {
+  return params.persistedRecord.abortRequestedAt ?? nowIso();
 }
 
 async function emitEarlyStartFailureAnnouncement(params: {
@@ -217,6 +278,8 @@ function printStatusText(record: WorkflowRunRecord) {
   console.log(`Status: ${record.status}`);
   console.log(`Created: ${record.createdAt}`);
   console.log(`Updated: ${record.updatedAt}`);
+  console.log(`Abort requested: ${record.abortRequested ? "yes" : "no"}`);
+  console.log(`Abort requested at: ${record.abortRequestedAt ?? "n/a"}`);
   console.log(`Current round: ${record.currentRound}`);
   console.log(`Max rounds: ${record.maxRounds ?? "n/a"}`);
   console.log(`Terminal reason: ${record.terminalReason ?? "n/a"}`);
@@ -253,6 +316,8 @@ function printProgressText(progress: WorkflowProgressSnapshot) {
   console.log(`Module: ${progress.moduleId}`);
   console.log(`Status: ${progress.status}`);
   console.log(`Terminal: ${progress.isTerminal ? "yes" : "no"}`);
+  console.log(`Abort requested: ${progress.abortRequested ? "yes" : "no"}`);
+  console.log(`Abort requested at: ${progress.abortRequestedAt ?? "n/a"}`);
   console.log(`Current round: ${progress.currentRound}`);
   console.log(`Max rounds: ${progress.maxRounds ?? "n/a"}`);
   console.log(`Trace level: ${progress.traceLevel}`);
@@ -300,9 +365,18 @@ function printArtifactContentText(artifact: WorkflowArtifactContent) {
 
 function buildProgressHumanSummary(progress: Omit<WorkflowProgressSnapshot, "humanSummary">) {
   if (progress.status === "pending") {
+    if (progress.abortRequested) {
+      return "Abort wurde angefordert, bevor der Run gestartet hat.";
+    }
     return "Run ist angelegt und wartet auf die eigentliche Ausfuehrung.";
   }
   if (progress.status === "running") {
+    if (progress.abortRequested) {
+      if (progress.activeRole) {
+        return `Abort wurde angefordert; aktive Rolle ${progress.activeRole} wird beendet und es starten keine weiteren Runden.`;
+      }
+      return "Abort wurde angefordert; der laufende Schritt wird beendet und es starten keine weiteren Runden.";
+    }
     if (progress.activeRole) {
       const roundText = progress.currentRound > 0 ? ` Runde ${progress.currentRound}` : "";
       return `Run laeuft${roundText}; aktive Rolle: ${progress.activeRole}.`;
@@ -363,6 +437,8 @@ function buildInitialRunRecord(params: {
     moduleId: params.moduleId,
     status: params.status,
     terminalReason: null,
+    abortRequested: false,
+    abortRequestedAt: null,
     currentRound: 0,
     maxRounds:
       typeof params.request.maxRounds === "number" && Number.isFinite(params.request.maxRounds)
@@ -392,7 +468,10 @@ async function startWorkflowRunWithRunId(
   moduleId: string,
   request: WorkflowStartRequest,
   runId: string,
-  opts?: { initialPersistedRecord?: WorkflowRunRecord | null },
+  opts?: {
+    initialPersistedRecord?: WorkflowRunRecord | null;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<WorkflowRunRecord> {
   const module = getWorkflowModule(moduleId);
   if (!module) {
@@ -407,30 +486,67 @@ async function startWorkflowRunWithRunId(
   });
   let persistedRecord: WorkflowRunRecord | null = opts?.initialPersistedRecord ?? null;
   const persist = (record: WorkflowRunRecord) => {
-    if (persistedRecord?.status !== record.status) {
+    const effectiveRecord =
+      persistedRecord?.abortRequestedAt &&
+      (persistedRecord.abortRequested || record.abortRequested) &&
+      (!record.abortRequested || record.abortRequestedAt !== persistedRecord.abortRequestedAt)
+        ? {
+            ...record,
+            abortRequested: true,
+            abortRequestedAt: persistedRecord.abortRequestedAt,
+          }
+        : record;
+    if (persistedRecord?.status !== effectiveRecord.status) {
       tracer.emit({
         kind: "run_status_changed",
-        status: record.status,
-        summary: `status changed to ${record.status}`,
+        status: effectiveRecord.status,
+        summary: `status changed to ${effectiveRecord.status}`,
       });
     }
-    const tracedRecord = tracer.attachToRunRecord(record);
+    const tracedRecord = tracer.attachToRunRecord(effectiveRecord);
     persistedRecord = tracedRecord;
     writeRunRecord(tracedRecord);
   };
+  const ctx: WorkflowModuleContext = {
+    runId,
+    nowIso,
+    persist,
+    abortSignal: opts?.abortSignal ?? new AbortController().signal,
+    throwIfAbortRequested() {
+      throwIfWorkflowAbortRequested(this.abortSignal);
+    },
+    trace: tracer,
+  };
 
   try {
-    const record = await module.start(request, {
-      runId,
-      nowIso,
-      persist,
-      trace: tracer,
-    });
+    ctx.throwIfAbortRequested();
+    const record = await module.start(request, ctx);
     const tracedRecord = tracer.attachToRunRecord(record);
     writeRunRecord(tracedRecord);
     return tracedRecord;
   } catch (error) {
     const persisted = persistedRecord;
+    if (persisted === null) {
+      throw error;
+    }
+    const latestPersisted = readRunRecord(runId) ?? persisted;
+    if (isWorkflowAbortError(error)) {
+      const terminalReason = workflowAbortReasonFromError(error);
+      tracer.emit({
+        kind: "run_aborted",
+        stepId: "run",
+        status: "aborted",
+        summary: terminalReason,
+        payload: { terminalReason },
+      });
+      const aborted = buildAbortedWorkflowRunRecord({
+        terminalReason,
+        tracer,
+        persistedRecord: latestPersisted,
+      });
+      writeRunRecord(aborted);
+      return aborted;
+    }
     const terminalReason = error instanceof Error ? error.message : String(error);
     tracer.emit({
       kind: "run_failed",
@@ -439,13 +555,10 @@ async function startWorkflowRunWithRunId(
       summary: terminalReason,
       payload: { terminalReason },
     });
-    if (persisted === null) {
-      throw error;
-    }
     const failed = buildFailedWorkflowRunRecord({
       terminalReason,
       tracer,
-      persistedRecord: persisted,
+      persistedRecord: latestPersisted,
     });
     writeRunRecord(failed);
     try {
@@ -480,23 +593,46 @@ export async function startWorkflowRunAsync(
     status: "pending",
   });
   writeRunRecord(initialRecord);
+  const abortController = new AbortController();
 
-  const backgroundRun = Promise.resolve().then(async () => {
-    const runningRecord: WorkflowRunRecord = {
-      ...initialRecord,
-      status: "running",
-      updatedAt: nowIso(),
-    };
-    writeRunRecord(runningRecord);
-    return await startWorkflowRunWithRunId(moduleId, request, runId, {
-      initialPersistedRecord: runningRecord,
-    });
+  const backgroundRun = new Promise<WorkflowRunRecord>((resolve, reject) => {
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const latestRecord = readRunRecord(runId) ?? initialRecord;
+          if (latestRecord.abortRequested) {
+            abortController.abort(createWorkflowAbortError("Abort requested by operator."));
+          }
+          const runningRecord: WorkflowRunRecord = abortController.signal.aborted
+            ? latestRecord
+            : {
+                ...latestRecord,
+                status: "running",
+                updatedAt: nowIso(),
+              };
+          if (!abortController.signal.aborted) {
+            writeRunRecord(runningRecord);
+          }
+          resolve(
+            await startWorkflowRunWithRunId(moduleId, request, runId, {
+              initialPersistedRecord: runningRecord,
+              abortSignal: abortController.signal,
+            }),
+          );
+        } catch (error) {
+          reject(error);
+        }
+      })();
+    }, 0);
   });
 
-  activeWorkflowRuns.set(runId, backgroundRun);
+  activeWorkflowRuns.set(runId, {
+    promise: backgroundRun,
+    abortController,
+  });
   void backgroundRun.finally(() => {
     const active = activeWorkflowRuns.get(runId);
-    if (active === backgroundRun) {
+    if (active?.promise === backgroundRun) {
       activeWorkflowRuns.delete(runId);
     }
   });
@@ -544,7 +680,7 @@ export async function waitForWorkflowRun(
     const timeoutPromise = sleep(normalizedTimeout).then(() => ({ status: "timeout" as const }));
     try {
       const result = await Promise.race([
-        active.then((run) => ({ status: "ok" as const, run })),
+        active.promise.then((run) => ({ status: "ok" as const, run })),
         timeoutPromise,
       ]);
       if (result.status === "timeout") {
@@ -595,14 +731,18 @@ export function abortWorkflowRun(runId: string): WorkflowRunRecord {
   if (isTerminalStatus(record.status)) {
     return record;
   }
-  const aborted: WorkflowRunRecord = {
-    ...record,
-    status: "aborted",
-    terminalReason: record.terminalReason ?? "Aborted by operator.",
-    updatedAt: nowIso(),
-  };
-  writeRunRecord(aborted);
-  return aborted;
+  const requestedAt = record.abortRequestedAt ?? nowIso();
+  const abortRequestedRecord = markAbortRequested(record, requestedAt);
+  if (
+    abortRequestedRecord.abortRequested !== record.abortRequested ||
+    abortRequestedRecord.updatedAt !== record.updatedAt
+  ) {
+    writeRunRecord(abortRequestedRecord);
+  }
+  activeWorkflowRuns
+    .get(runId)
+    ?.abortController.abort(createWorkflowAbortError("Abort requested by operator."));
+  return readRunRecord(runId) ?? abortRequestedRecord;
 }
 
 export function listWorkflowRuns(limit = 20): WorkflowRunRecord[] {
@@ -656,6 +796,8 @@ export function getWorkflowProgress(runId: string): WorkflowProgressSnapshot {
     moduleId: record.moduleId,
     status: record.status,
     isTerminal: isTerminalStatus(record.status),
+    abortRequested: record.abortRequested,
+    abortRequestedAt: record.abortRequestedAt,
     currentRound: record.currentRound,
     maxRounds: record.maxRounds,
     traceLevel: summary.traceLevel,
@@ -911,6 +1053,7 @@ export function workflowsProgress(runId: string, opts: { json?: boolean }) {
 
 export function workflowsAbort(runId: string, opts: { json?: boolean }) {
   try {
+    const before = getWorkflowRunStatus(runId);
     const record = abortWorkflowRun(runId);
     if (opts.json) {
       printJson(record);
@@ -920,9 +1063,26 @@ export function workflowsAbort(runId: string, opts: { json?: boolean }) {
       console.log(`Run bereits terminal: ${record.runId} (${record.status})`);
       return;
     }
-    console.log(`Run abgebrochen: ${record.runId}`);
+    if (record.status === "aborted") {
+      console.log(
+        before.status === "aborted"
+          ? `Run bereits abgebrochen: ${record.runId}`
+          : `Run abgebrochen: ${record.runId}`,
+      );
+      console.log(`Status: ${record.status}`);
+      console.log(`Reason: ${record.terminalReason}`);
+      return;
+    }
+    console.log(
+      before.abortRequested
+        ? `Abort bereits angefordert: ${record.runId}`
+        : `Abort angefordert: ${record.runId}`,
+    );
     console.log(`Status: ${record.status}`);
-    console.log(`Reason: ${record.terminalReason}`);
+    console.log(`Abort requested: ${record.abortRequested ? "yes" : "no"}`);
+    console.log(
+      "Reason: Abort requested; wait for the active workflow step to stop before the run becomes terminal.",
+    );
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }

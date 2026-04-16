@@ -29,7 +29,7 @@ export const langgraphWorkerCriticModuleManifest = {
   version: "2.0.0",
   requiredAgents: ["langgraph", "critic"],
   terminalStates: ["done", "blocked", "failed", "aborted", "max_rounds_reached"],
-  supportsAbort: false,
+  supportsAbort: true,
   inputSchemaSummary: [
     "task: string (pflichtig)",
     "successCriteria: string[] (mindestens ein Eintrag)",
@@ -53,7 +53,7 @@ export const codexControllerWorkflowModuleManifest = {
   version: "0.2.2",
   requiredAgents: ["codex", "codex-controller"],
   terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
-  supportsAbort: false,
+  supportsAbort: true,
   inputSchemaSummary: [
     "task (string, required): original coding task passed directly to Codex.",
     "workingDirectory (string, required): absolute project/worktree path used as the persistent Codex ACP worker cwd.",

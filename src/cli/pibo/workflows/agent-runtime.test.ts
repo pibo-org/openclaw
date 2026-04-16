@@ -129,4 +129,47 @@ describe("runWorkflowAgentOnSession", () => {
       "No assistant output found in session agent:langgraph:workflow:test:orchestrator:main.",
     );
   });
+
+  it("aborts the active session turn when the workflow abort signal fires", async () => {
+    readLatestAssistantReplySnapshot.mockResolvedValue({});
+    const abortController = new AbortController();
+    agentCommand.mockImplementationOnce(async (params: { abortSignal?: AbortSignal }) => {
+      abortController.abort(new Error("Abort requested by operator."));
+      await new Promise<never>((_, reject) => {
+        const onAbort = () => {
+          const error = new Error("Abort requested by operator.");
+          error.name = "AbortError";
+          reject(error);
+        };
+        params.abortSignal?.addEventListener("abort", onAbort, { once: true });
+        if (params.abortSignal?.aborted) {
+          onAbort();
+        }
+      });
+    });
+    callWorkflowGatewayMethod.mockResolvedValueOnce({
+      status: "aborted",
+    });
+
+    const { runWorkflowAgentOnSession } = await import("./agent-runtime.js");
+    const runPromise = runWorkflowAgentOnSession({
+      sessionKey: "agent:langgraph:workflow:test:worker:main",
+      message: "test",
+      idempotencyKey: "idem-abort",
+      abortSignal: abortController.signal,
+    });
+
+    await expect(runPromise).rejects.toThrow("Abort requested by operator.");
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:langgraph:workflow:test:worker:main",
+        runId: "idem-abort",
+        abortSignal: abortController.signal,
+      }),
+    );
+    expect(callWorkflowGatewayMethod).toHaveBeenCalledWith("sessions.abort", {
+      key: "agent:langgraph:workflow:test:worker:main",
+      runId: "idem-abort",
+    });
+  });
 });

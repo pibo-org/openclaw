@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createWorkflowAbortError } from "../abort.js";
 import type { WorkflowTraceRuntime } from "../tracing/runtime.js";
 import type { WorkflowTraceSummary } from "../tracing/types.js";
 import type { WorkflowRunRecord } from "../types.js";
@@ -54,6 +55,22 @@ vi.mock("../workflow-reporting.js", () => ({
   emitTracedWorkflowReportEvent,
 }));
 
+function createModuleContext(runId: string, controller?: AbortController) {
+  const abortController = controller ?? new AbortController();
+  return {
+    runId,
+    nowIso: () => "2026-04-10T00:00:00.000Z",
+    persist: () => {},
+    abortSignal: abortController.signal,
+    throwIfAbortRequested: () => {
+      if (abortController.signal.aborted) {
+        throw createWorkflowAbortError(abortController.signal.reason);
+      }
+    },
+    trace: createTraceMock(runId),
+  };
+}
+
 describe("langgraph_worker_critic module", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -90,10 +107,7 @@ describe("langgraph_worker_critic module", () => {
         },
       },
       {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
+        ...createModuleContext("run-1"),
       },
     );
 
@@ -132,10 +146,7 @@ describe("langgraph_worker_critic module", () => {
         },
       },
       {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
+        ...createModuleContext("run-1"),
       },
     );
 
@@ -161,10 +172,7 @@ describe("langgraph_worker_critic module", () => {
         },
       },
       {
-        runId: "run-1",
-        nowIso: () => "2026-04-10T00:00:00.000Z",
-        persist: () => {},
-        trace: createTraceMock("run-1"),
+        ...createModuleContext("run-1"),
       },
     );
 
@@ -190,6 +198,51 @@ describe("langgraph_worker_critic module", () => {
         kind: "run_completed",
         status: "done",
       }),
+    );
+  });
+
+  it("stops after an abort request and does not start critic or later rounds", async () => {
+    const { langgraphWorkerCriticModule } = await import("./langgraph-worker-critic.js");
+    const abortController = new AbortController();
+    runWorkflowAgentOnSession.mockReset();
+    runWorkflowAgentOnSession.mockImplementationOnce(async () => {
+      abortController.abort(new Error("Abort requested by operator."));
+      return {
+        runId: "worker-run-1",
+        text: "worker result",
+        wait: { status: "ok" as const },
+        messages: [],
+      };
+    });
+
+    await expect(
+      langgraphWorkerCriticModule.start(
+        {
+          input: {
+            task: "Do the thing",
+            successCriteria: ["done"],
+          },
+        },
+        createModuleContext("run-1", abortController),
+      ),
+    ).rejects.toThrow("Abort requested by operator.");
+
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledTimes(1);
+    expect(runWorkflowAgentOnSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:langgraph:workflow:run-1:worker:main",
+        abortSignal: abortController.signal,
+      }),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "worker-round-1-prompt.md",
+      expect.any(String),
+    );
+    expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
+      "run-1",
+      "critic-round-1-prompt.md",
+      expect.any(String),
     );
   });
 });

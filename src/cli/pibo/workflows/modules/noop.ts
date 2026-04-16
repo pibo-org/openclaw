@@ -25,6 +25,7 @@ async function start(
   request: WorkflowStartRequest,
   ctx: WorkflowModuleContext,
 ): Promise<WorkflowRunRecord> {
+  ctx.throwIfAbortRequested?.();
   const now = ctx.nowIso();
   const normalized = normalizeInput(request.input);
   ctx.trace.emit({
@@ -54,6 +55,8 @@ async function start(
     moduleId: "noop",
     status: "done",
     terminalReason: "No-op reference workflow completed immediately.",
+    abortRequested: false,
+    abortRequestedAt: null,
     currentRound: 0,
     maxRounds: request.maxRounds ?? null,
     input: normalized,

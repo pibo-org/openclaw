@@ -13,6 +13,9 @@ function statusFromTerminalEvent(event: WorkflowTraceEvent): WorkflowRunStatus |
   if (event.kind === "run_completed") {
     return event.status ?? "done";
   }
+  if (event.kind === "run_aborted") {
+    return "aborted";
+  }
   if (event.kind === "run_blocked") {
     return event.status ?? "blocked";
   }
@@ -23,7 +26,12 @@ function statusFromTerminalEvent(event: WorkflowTraceEvent): WorkflowRunStatus |
 }
 
 function isTerminalEventKind(kind: WorkflowTraceEventKind): boolean {
-  return kind === "run_completed" || kind === "run_blocked" || kind === "run_failed";
+  return (
+    kind === "run_completed" ||
+    kind === "run_aborted" ||
+    kind === "run_blocked" ||
+    kind === "run_failed"
+  );
 }
 
 export function createWorkflowTraceSummaryState(params: {
@@ -78,7 +86,12 @@ export function applyTraceEventToSummaryState(
   if (isTerminalEventKind(event.kind)) {
     state.summary.endedAt = event.ts;
   }
-  if (event.kind === "warning" || event.kind === "report_failed" || event.kind === "run_failed") {
+  if (
+    event.kind === "warning" ||
+    event.kind === "report_failed" ||
+    event.kind === "run_failed" ||
+    event.kind === "run_aborted"
+  ) {
     state.summary.errorSummary = event.summary ?? state.summary.errorSummary ?? null;
   }
 

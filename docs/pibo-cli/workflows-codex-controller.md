@@ -1,6 +1,6 @@
 # `codex_controller` workflow module
 
-Date: 2026-04-14
+Date: 2026-04-16
 
 ## Documentation status
 
@@ -137,11 +137,44 @@ If manual ACP compaction is explicitly wanted, set:
 
 This is intentionally **not** wired to the generic OpenClaw session-compaction path such as `openclaw sessions compact`, because normal session compaction is not the same thing as semantic Codex ACP thread compaction.
 
+## Worker turn timeout and retry behavior
+
+`codex_controller` now sets a deliberate ACP runtime timeout on the persistent Codex worker session instead of relying on the ACPX implicit default.
+
+Current module-scoped policy:
+
+- worker prompt timeout: `300s`
+- retry budget for worker prompt turns: `2` total attempts (`1` automatic retry)
+- retry backoff: `1000ms`
+
+Why this is scoped here:
+
+- the observed failure was on the Codex worker prompt path around `client.prompt(...)`
+- controller turns and unrelated ACP workloads did not justify a broad global ACPX timeout change
+- the workflow should encode a safer default for heavy worker turns without masking unrelated failures across the repo
+
+Retryability is intentionally narrow.
+
+The workflow retries only when the worker turn fails like a retryable ACPX prompt/RPC timeout or another clearly transient ACPX prompt-completion failure. Deterministic failures such as permission problems, invalid runtime options, unsupported controls, prompt-size errors, and similar non-transient conditions still fail immediately without retry.
+
+Before the retry starts, the workflow closes the active ACP runtime handle for the worker session and lets the next attempt reinitialize the session. This avoids continuing on a poisoned worker-turn state while preserving the targeted workflow/session scope of the fix.
+
+Retry lifecycle observability:
+
+- trace event + milestone report attempt when a retry is scheduled
+- trace event + milestone report attempt when the retry starts
+- trace event + milestone report attempt when the retry succeeds
+- warning trace event + milestone report attempt when the retry budget is exhausted
+
+These events include attempt counts, the module-scoped worker timeout, and the underlying ACP error metadata.
+
 ## Verification checklist
 
 Recommended verification steps:
 
 ```bash
+node scripts/run-vitest.mjs run --config vitest.cli.config.ts \
+  src/cli/pibo/workflows/modules/codex-controller.test.ts
 node scripts/run-vitest.mjs run --config vitest.cli.config.ts \
   src/cli/pibo/workflows/agent-runtime.test.ts \
   src/cli/pibo/workflows/index.test.ts \
