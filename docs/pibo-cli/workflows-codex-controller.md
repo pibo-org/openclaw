@@ -16,11 +16,11 @@ Diese Datei bleibt nützlich für quellnahe technische Details, ist aber nicht a
 
 ## Purpose
 
-`codex_controller` is a native PIBO workflow module for supervised coding loops with a persistent Codex ACP worker and a separate controller agent.
+`codex_controller` is a native PIBO workflow module for supervised coding loops with a persistent Codex SDK worker and a separate controller agent.
 
 It is intended for tasks where:
 
-- the coding worker should keep its own persistent ACP thread
+- the coding worker should keep its own persistent Codex thread
 - the worker must stay anchored to an explicit `workingDirectory`
 - an optional `agentId` should be able to switch bootstrap/context resolution to a different agent workspace without moving the worker cwd
 - a controller should decide whether to continue, stop as done, or escalate a real blocker
@@ -33,25 +33,26 @@ It is intended for tasks where:
 - plugin/runtime bridge: `runtime.piboWorkflows`
 - agent/tool bridge: `pibo_workflow_start|status|describe|abort`
 
-## Why the worker uses ACP directly
+## Why the worker uses Codex SDK directly
 
-The Codex worker keeps a persistent ACP session and requires an explicit ACP `cwd`/working directory during initialization.
+The Codex worker now keeps a persistent Codex thread via `@openai/codex-sdk`, while the controller itself still runs on a normal native OpenClaw workflow session key.
 
-The controller itself runs on a normal native OpenClaw workflow session key, but the worker remains on the ACP session-manager path because that is the runtime path that currently exposes:
+This replaces the former ACP/ACPX worker path because the SDK/App-Server combination already exposes the pieces the workflow actually needs:
 
-- persistent ACP thread reuse
-- explicit ACP `cwd`
-- optional ACP control-command steering such as `/compact` when explicitly requested for debugging or specialized cases
+- persistent Codex thread reuse
+- explicit worker `cwd`
+- direct streamed item/turn events for telemetry
+- app-server compaction when explicitly requested for debugging or specialized cases
 
-This is deliberate, not accidental.
+This keeps the controller loop and workflow tracing intact while removing the extra ACP timeout/resume layer.
 
 ## Workspace semantics
 
 The module keeps two paths distinct when `agentId` is provided:
 
-- `workingDirectory`: the project repo/worktree used as the Codex ACP worker `cwd`
+- `workingDirectory`: the project repo/worktree used as the Codex SDK worker `cwd`
 - `repoRoot`: repo-root-first closeout target for the final read-only git/worktree/integration gate; falls back to `workingDirectory` if omitted
-- `agentId`: selects the agent workspace used for bootstrap files, system-prompt context, and plugin-service workspace resolution
+- `agentId`: selects the controller workspace and is also exposed to the worker as an additional readable directory; it does not move the worker `cwd`
 
 If `agentId` is omitted, the prior behavior stays unchanged.
 
@@ -126,20 +127,21 @@ Artifacts now include:
 
 `workerCompactionMode` defaults to `off`.
 
-That means the normal workflow path does **not** send `/compact ...` into the persistent Codex ACP thread.
+That means the normal workflow path does **not** trigger manual compaction between rounds.
 
-Codex should normally manage its own context and compaction behavior inside the worker session. Workflow-driven manual ACP compaction remains available only as an explicit exception path for debugging or specialized cases.
+Codex should normally manage its own context and compaction behavior inside the worker thread. Workflow-driven manual compaction remains available only as an explicit exception path for debugging or specialized cases.
 
-If manual ACP compaction is explicitly wanted, set:
+If manual compaction is explicitly wanted, set:
 
-- `workerCompactionMode: "acp_control_command"`
-- optionally `workerCompactionAfterRound` to delay the first manual `/compact`
+- `workerCompactionMode: "app_server"`
+- `workerCompactionMode: "acp_control_command"` also still works as a legacy alias
+- optionally `workerCompactionAfterRound` to delay the first manual compaction
 
-This is intentionally **not** wired to the generic OpenClaw session-compaction path such as `openclaw sessions compact`, because normal session compaction is not the same thing as semantic Codex ACP thread compaction.
+The implementation now uses the Codex app server (`thread/resume` + `thread/compact/start`), not ACP control commands.
 
 ## Worker turn timeout and retry behavior
 
-`codex_controller` now sets a deliberate ACP runtime timeout on the persistent Codex worker session instead of relying on the ACPX implicit default.
+`codex_controller` now applies its own deliberate worker turn timeout around the Codex SDK turn instead of relying on ACPX defaults.
 
 Current module-scoped policy:
 
@@ -149,15 +151,15 @@ Current module-scoped policy:
 
 Why this is scoped here:
 
-- the observed failure was on the Codex worker prompt path around `client.prompt(...)`
-- controller turns and unrelated ACP workloads did not justify a broad global ACPX timeout change
+- the observed failure was on the Codex worker prompt path, not on the controller loop
+- controller turns and unrelated OpenClaw workloads should not inherit worker-specific timeout policy
 - the workflow should encode a safer default for heavy worker turns without masking unrelated failures across the repo
 
 Retryability is intentionally narrow.
 
-The workflow retries only when the worker turn fails like a retryable ACPX prompt/RPC timeout or another clearly transient ACPX prompt-completion failure. Deterministic failures such as permission problems, invalid runtime options, unsupported controls, prompt-size errors, and similar non-transient conditions still fail immediately without retry.
+The workflow retries only when the worker turn fails like a retryable Codex turn timeout or another clearly transient Codex transport/prompt-completion failure. Deterministic failures such as permission problems, invalid runtime options, unsupported controls, prompt-size errors, and similar non-transient conditions still fail immediately without retry.
 
-Before the retry starts, the workflow closes the active ACP runtime handle for the worker session and lets the next attempt reinitialize the session. This avoids continuing on a poisoned worker-turn state while preserving the targeted workflow/session scope of the fix.
+Before the retry starts, the workflow discards the in-memory SDK thread handle and lets the next attempt resume the same Codex thread via a fresh CLI exec process. This keeps retries local to the worker turn without reintroducing ACP runtime state.
 
 Retry lifecycle observability:
 
@@ -166,7 +168,7 @@ Retry lifecycle observability:
 - trace event + milestone report attempt when the retry succeeds
 - warning trace event + milestone report attempt when the retry budget is exhausted
 
-These events include attempt counts, the module-scoped worker timeout, and the underlying ACP error metadata.
+These events include attempt counts, the module-scoped worker timeout, and the underlying worker error metadata.
 
 ## Verification checklist
 
@@ -198,4 +200,4 @@ pnpm openclaw -- pibo workflows start codex_controller \
   --output-json
 ```
 
-Use a real repo path and only run this where Codex ACP is available and configured.
+Use a real repo path and only run this where Codex CLI/SDK is available and configured.

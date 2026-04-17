@@ -1338,6 +1338,7 @@
     "@matrix-org/matrix-sdk-crypto-wasm": "18.0.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@mozilla/readability": "^0.6.0",
+    "@openai/codex-sdk": "0.121.0",
     "@sinclair/typebox": "0.34.49",
     "@slack/bolt": "^4.6.0",
     "@slack/web-api": "^7.15.0",

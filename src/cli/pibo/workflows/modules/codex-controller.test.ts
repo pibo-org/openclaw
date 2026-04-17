@@ -11,17 +11,16 @@ const runWorkflowAgentOnSession = vi.fn();
 const writeWorkflowArtifact = vi.fn();
 const existsSync = vi.fn();
 const readFileSync = vi.fn();
-const initializeSession = vi.fn();
-const updateSessionRuntimeOptions = vi.fn();
-const runTurn = vi.fn();
-const closeSession = vi.fn();
-const cancelSession = vi.fn();
 const loadConfig = vi.fn<() => OpenClawConfig>(() => ({}));
-const ensureCliPluginRegistryLoaded = vi.fn(async () => {});
-const getActivePluginRegistry = vi.fn(() => ({ services: [] }));
-const startPluginServices = vi.fn(async () => ({ stop: async () => {} }));
-const getAcpRuntimeBackend = vi.fn();
-const requireAcpRuntimeBackend = vi.fn();
+const resolveCodexWorkerDefaultOptions = vi.fn(() => ({}));
+const createCodexSdkWorkerRuntime = vi.fn();
+const workerRunTurn = vi.fn();
+const workerCompactThread = vi.fn();
+const workerPrepareForRetry = vi.fn(
+  () => "Codex SDK will resume thread thread-1 with a fresh CLI exec process on retry.",
+);
+const workerGetThreadId = vi.fn(() => "thread-1");
+const workerGetTracePath = vi.fn(() => "/home/pibo/.codex/sessions/2026/04/17/thread-1.jsonl");
 const emitTracedWorkflowReportEvent = vi.fn(async () => ({
   attempted: true,
   delivered: true,
@@ -172,13 +171,6 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 vi.mock("../workflow-session-helper.js", () => ({
   ensureWorkflowSessions,
-  buildAcpWorkflowSessionKey: (params: {
-    agentId: string;
-    runId: string;
-    role: string;
-    name?: string;
-  }) =>
-    `agent:${params.agentId}:acp:workflow:${params.runId}:${params.role}:${params.name ?? "main"}`,
 }));
 
 vi.mock("../agent-runtime.js", () => ({
@@ -193,31 +185,9 @@ vi.mock("../../../../config/config.js", () => ({
   loadConfig,
 }));
 
-vi.mock("../../../../cli/plugin-registry-loader.js", () => ({
-  ensureCliPluginRegistryLoaded,
-}));
-
-vi.mock("../../../../plugins/runtime.js", () => ({
-  getActivePluginRegistry,
-}));
-
-vi.mock("../../../../plugins/services.js", () => ({
-  startPluginServices,
-}));
-
-vi.mock("../../../../acp/runtime/registry.js", () => ({
-  getAcpRuntimeBackend,
-  requireAcpRuntimeBackend,
-}));
-
-vi.mock("../../../../acp/control-plane/manager.js", () => ({
-  getAcpSessionManager: () => ({
-    initializeSession,
-    updateSessionRuntimeOptions,
-    runTurn,
-    closeSession,
-    cancelSession,
-  }),
+vi.mock("./codex-sdk-runtime.js", () => ({
+  resolveCodexWorkerDefaultOptions,
+  createCodexSdkWorkerRuntime,
 }));
 
 vi.mock("../workflow-reporting.js", () => ({
@@ -230,42 +200,36 @@ describe("codex_controller module", () => {
     vi.resetModules();
     existsSync.mockReturnValue(true);
     readFileSync.mockReturnValue("controller prompt template");
+    resolveCodexWorkerDefaultOptions.mockImplementation(
+      (params?: { model?: string; reasoningEffort?: string }) => ({
+        ...(params?.model ? { model: params.model } : {}),
+        ...(params?.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
+      }),
+    );
     mockCloseoutGitScenario();
     ensureWorkflowSessions.mockResolvedValue({
       orchestrator: "agent:langgraph:workflow:run-1:orchestrator:main",
     });
-    const backend = {
-      id: "acpx",
-      runtime: {
-        probeAvailability: vi.fn(async () => {}),
-      },
-      healthy: () => true,
-    };
-    getAcpRuntimeBackend.mockReturnValue(backend);
-    requireAcpRuntimeBackend.mockReturnValue(backend);
     writeWorkflowArtifact.mockImplementation((runId: string, name: string) => `${runId}/${name}`);
-    initializeSession.mockResolvedValue(undefined);
-    updateSessionRuntimeOptions.mockResolvedValue({
-      cwd: "/repo",
-      timeoutSeconds: 300,
-    });
-    runTurn.mockImplementation(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        if (typeof params.text === "string" && params.text.startsWith("/compact")) {
-          return;
-        }
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "codex worker result",
-        });
+    workerRunTurn.mockResolvedValue({
+      text: "codex worker result",
+      threadId: "thread-1",
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cached_input_tokens: 2,
       },
-    );
-    closeSession.mockResolvedValue({
-      runtimeClosed: true,
-      metaCleared: false,
+      eventSummaries: ["turn.started", "turn.completed input=10 output=5 cached=2"],
+      tracePath: "/home/pibo/.codex/sessions/2026/04/17/thread-1.jsonl",
     });
-    cancelSession.mockResolvedValue(undefined);
+    workerCompactThread.mockResolvedValue(null);
+    createCodexSdkWorkerRuntime.mockImplementation(() => ({
+      runTurn: workerRunTurn,
+      compactThread: workerCompactThread,
+      prepareForRetry: workerPrepareForRetry,
+      getThreadId: workerGetThreadId,
+      getTracePath: workerGetTracePath,
+    }));
   });
 
   it("is registered in the native workflow runtime manifest list", async () => {
@@ -279,7 +243,7 @@ describe("codex_controller module", () => {
     expect(manifest.description).toContain("Codex");
     expect(manifest.requiredAgents).toEqual(["codex", "codex-controller"]);
     expect(manifest.inputSchemaSummary).toContain(
-      "agentId (string, optional): agent workspace used for bootstrap/context/system-prompt resolution; does not change workingDirectory or worker cwd.",
+      "agentId (string, optional): agent workspace used for controller bootstrap plus Codex additional-directory context; does not change workingDirectory or worker cwd.",
     );
   });
 
@@ -302,24 +266,20 @@ describe("codex_controller module", () => {
   });
 
   it("stops after an abort request and does not start controller follow-up or later rounds", async () => {
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const abortController = new AbortController();
     runWorkflowAgentOnSession.mockReset();
     runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
-    runTurn.mockImplementationOnce(
-      async (params: {
-        onEvent?: (event: { type: string; stream?: string; text?: string }) => void;
-      }) => {
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "codex worker result",
-        });
-        abortController.abort(new Error("Abort requested by operator."));
-      },
-    );
+    workerRunTurn.mockImplementationOnce(async () => {
+      abortController.abort(new Error("Abort requested by operator."));
+      return {
+        text: "codex worker result",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      };
+    });
 
     await expect(
       codexControllerWorkflowModule.start(
@@ -340,12 +300,7 @@ describe("codex_controller module", () => {
         abortSignal: abortController.signal,
       }),
     );
-    expect(runTurn).toHaveBeenCalledTimes(1);
-    expect(cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionKey: "agent:codex:acp:workflow:run-1:worker:codex",
-      }),
-    );
+    expect(workerRunTurn).toHaveBeenCalledTimes(1);
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-1",
       "round-1-codex.txt",
@@ -368,9 +323,7 @@ describe("codex_controller module", () => {
     });
     mockSingleRoundDoneLoop();
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
       {
         input: {
@@ -388,14 +341,9 @@ describe("codex_controller module", () => {
     expect(runWorkflowAgentOnSession.mock.calls.every(([call]) => !("workspaceDir" in call))).toBe(
       true,
     );
-    expect(startPluginServices).toHaveBeenCalledWith(
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceDir: "/workspace/default",
-      }),
-    );
-    expect(initializeSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cwd: "/repo",
+        workingDirectory: "/repo",
       }),
     );
   });
@@ -414,9 +362,7 @@ describe("codex_controller module", () => {
     });
     mockSingleRoundDoneLoop();
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
       {
         input: {
@@ -443,9 +389,10 @@ describe("codex_controller module", () => {
         workspaceDir: "/workspace/writer",
       }),
     );
-    expect(startPluginServices).toHaveBeenCalledWith(
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceDir: "/workspace/writer",
+        workingDirectory: "/repo",
+        contextWorkspaceDir: "/workspace/writer",
       }),
     );
   });
@@ -461,9 +408,7 @@ describe("codex_controller module", () => {
     });
     mockSingleRoundDoneLoop();
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     await codexControllerWorkflowModule.start(
       {
         input: {
@@ -475,23 +420,20 @@ describe("codex_controller module", () => {
       createModuleContext("run-1"),
     );
 
-    expect(initializeSession).toHaveBeenCalledWith(
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
-        cwd: "/repo",
-        sessionKey: "agent:codex:acp:workflow:run-1:worker:codex",
+        workingDirectory: "/repo",
+        contextWorkspaceDir: "/workspace/writer",
       }),
     );
-    expect(initializeSession).not.toHaveBeenCalledWith(
+    expect(createCodexSdkWorkerRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        cwd: "/workspace/writer",
+        workingDirectory: "/workspace/writer",
       }),
     );
   });
 
-  it("restarts plugin services when the workflow context workspace changes between runs", async () => {
-    const firstHandle = { stop: vi.fn(async () => {}) };
-    const secondHandle = { stop: vi.fn(async () => {}) };
-    startPluginServices.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
+  it("rebuilds worker runtime options when the workflow context workspace changes between runs", async () => {
     let cfg: OpenClawConfig = {
       agents: {
         defaults: {
@@ -503,9 +445,7 @@ describe("codex_controller module", () => {
     mockSingleRoundDoneLoop("First run complete.");
     mockSingleRoundDoneLoop("Second run complete.");
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     await codexControllerWorkflowModule.start(
       {
         input: {
@@ -535,20 +475,19 @@ describe("codex_controller module", () => {
       createModuleContext("run-2"),
     );
 
-    expect(startPluginServices).toHaveBeenNthCalledWith(
+    expect(createCodexSdkWorkerRuntime).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        workspaceDir: "/workspace/default",
+        workingDirectory: "/repo-a",
       }),
     );
-    expect(startPluginServices).toHaveBeenNthCalledWith(
+    expect(createCodexSdkWorkerRuntime).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        workspaceDir: "/workspace/writer",
+        workingDirectory: "/repo-b",
+        contextWorkspaceDir: "/workspace/writer",
       }),
     );
-    expect(firstHandle.stop).toHaveBeenCalledTimes(1);
-    expect(secondHandle.stop).not.toHaveBeenCalled();
   });
 
   it("maps normalized controller DONE output to done only after clean closeout success", async () => {
@@ -589,8 +528,12 @@ describe("codex_controller module", () => {
         closeoutContextSource: "workingDirectory",
       }),
     );
-    expect(record.sessions.worker).toBe("agent:codex:acp:workflow:run-1:worker:codex");
+    expect(record.sessions.worker).toBe("codex-thread:thread-1");
     expect(record.sessions.orchestrator).toBe("agent:langgraph:workflow:run-1:orchestrator:main");
+    expect(record.sessions.extras?.codexThreadId).toBe("thread-1");
+    expect(record.sessions.extras?.codexTracePath).toBe(
+      "/home/pibo/.codex/sessions/2026/04/17/thread-1.jsonl",
+    );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-1",
       "closeout-assessment.json",
@@ -608,15 +551,13 @@ describe("codex_controller module", () => {
         "closeout-reason: Closeout passed: repo clean, no extra worktrees, HEAD integrated into origin/main.",
       ),
     );
-    expect(runTurn).toHaveBeenCalledWith(
+    expect(workerRunTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("FINISH_QUALITY:"),
+        hardTimeoutSeconds: 7_200,
+        idleTimeoutSeconds: 480,
       }),
     );
-    expect(ensureCliPluginRegistryLoaded).toHaveBeenCalledWith({
-      scope: "all",
-    });
-    expect(startPluginServices).toHaveBeenCalledTimes(1);
     expect(emitTracedWorkflowReportEvent).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -656,16 +597,14 @@ describe("codex_controller module", () => {
     );
 
     expect(record.status).toBe("done");
-    expect(record.sessions.extras?.workerPromptTimeoutSeconds).toBe("300");
-    expect(updateSessionRuntimeOptions).toHaveBeenCalledWith(
+    expect(record.sessions.extras?.workerPromptTimeoutSeconds).toBe("7200");
+    expect(record.sessions.extras?.workerIdleTimeoutSeconds).toBe("480");
+    expect(workerRunTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: "agent:codex:acp:workflow:run-timeout-default:worker:codex",
-        patch: {
-          timeoutSeconds: 300,
-        },
+        hardTimeoutSeconds: 7_200,
+        idleTimeoutSeconds: 480,
       }),
     );
-    expect(closeSession).not.toHaveBeenCalled();
     const retryPhases = workflowReportCalls()
       .map((call) => call.phase)
       .filter(
@@ -674,26 +613,23 @@ describe("codex_controller module", () => {
     expect(retryPhases).toEqual([]);
   });
 
-  it("retries a retryable ACPX worker timeout once, emits retry lifecycle events, and succeeds", async () => {
+  it("retries a retryable Codex worker timeout once, emits retry lifecycle events, and succeeds", async () => {
     let promptAttempts = 0;
-    runTurn.mockImplementation(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        if (typeof params.text === "string" && params.text.startsWith("/compact")) {
-          return;
-        }
-        promptAttempts += 1;
-        if (promptAttempts === 1) {
-          throw Object.assign(new Error("Timed out after 120000ms"), {
-            code: "ACP_TURN_FAILED",
-          });
-        }
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "codex worker result after retry",
+    workerRunTurn.mockImplementation(async () => {
+      promptAttempts += 1;
+      if (promptAttempts === 1) {
+        throw Object.assign(new Error("Timed out after 120000ms"), {
+          code: "CODEX_TIMEOUT",
         });
-      },
-    );
+      }
+      return {
+        text: "codex worker result after retry",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      };
+    });
     mockSingleRoundDoneLoop("Retry completed successfully.");
 
     vi.useFakeTimers();
@@ -714,15 +650,7 @@ describe("codex_controller module", () => {
 
       expect(record.status).toBe("done");
       expect(promptAttempts).toBe(2);
-      expect(closeSession).toHaveBeenCalledTimes(1);
-      expect(closeSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionKey: "agent:codex:acp:workflow:run-retry-success:worker:codex",
-          reason: "codex-controller-worker-retry",
-          allowBackendUnavailable: true,
-          discardPersistentState: false,
-        }),
-      );
+      expect(workerPrepareForRetry).toHaveBeenCalledTimes(1);
       const retryCalls = workflowReportCalls().filter((call) =>
         call.phase?.startsWith("worker_retry_"),
       );
@@ -731,8 +659,9 @@ describe("codex_controller module", () => {
         "worker_retry_started",
         "worker_retry_succeeded",
       ]);
-      expect(retryCalls[0]?.messageText).toContain("Worker prompt timeout: 300s");
-      expect(retryCalls[0]?.messageText).toContain("ACP error code: ACP_TURN_FAILED");
+      expect(retryCalls[0]?.messageText).toContain("Worker hard timeout: 7200s");
+      expect(retryCalls[0]?.messageText).toContain("Worker idle timeout: 480s");
+      expect(retryCalls[0]?.messageText).toContain("Worker error code: CODEX_TIMEOUT");
       expect(retryCalls[1]?.messageText).toContain("Cleanup:");
       expect(retryCalls[2]?.messageText).toContain("Attempt: 2/2");
       expect(traceEmit).toHaveBeenCalledWith(
@@ -746,13 +675,119 @@ describe("codex_controller module", () => {
     }
   });
 
-  it("emits retry exhaustion after the bounded retry also hits a retryable ACPX timeout", async () => {
-    runTurn.mockImplementation(async (params: { text?: string }) => {
-      if (typeof params.text === "string" && params.text.startsWith("/compact")) {
-        return;
+  it("retries when a worker turn reports a transport fallback interruption", async () => {
+    let promptAttempts = 0;
+    workerRunTurn.mockImplementation(async () => {
+      promptAttempts += 1;
+      if (promptAttempts === 1) {
+        throw new Error(
+          "Codex worker transport fallback interrupted the turn before concrete output was produced. Notices: Falling back from WebSockets to HTTPS transport. timeout waiting for child process to exit. Remaining output: none.",
+        );
       }
+      return {
+        text: "Updated `src/cli/pibo-cli.ts` and ran `pnpm vitest run src/cli/pibo-cli.test.ts`.",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      };
+    });
+    mockSingleRoundDoneLoop("Retry completed after transport fallback cleanup.");
+
+    vi.useFakeTimers();
+    try {
+      const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+      const runPromise = codexControllerWorkflowModule.start(
+        {
+          input: {
+            task: "Ship the fix",
+            workingDirectory: "/repo",
+          },
+        },
+        createModuleContext("run-transport-retry"),
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const record = await runPromise;
+
+      expect(record.status).toBe("done");
+      expect(promptAttempts).toBe(2);
+      expect(workerPrepareForRetry).toHaveBeenCalledTimes(1);
+      expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+        "run-transport-retry",
+        "round-1-codex.txt",
+        expect.stringContaining("Updated `src/cli/pibo-cli.ts`"),
+      );
+      expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
+        "run-transport-retry",
+        "round-1-codex.txt",
+        expect.stringContaining("Falling back from WebSockets"),
+      );
+      const retryCalls = workflowReportCalls().filter((call) =>
+        call.phase?.startsWith("worker_retry_"),
+      );
+      expect(retryCalls.map((call) => call.phase)).toEqual([
+        "worker_retry_scheduled",
+        "worker_retry_started",
+        "worker_retry_succeeded",
+      ]);
+      expect(retryCalls[0]?.messageText).toContain(
+        "Codex worker transport fallback interrupted the turn before concrete output was produced.",
+      );
+      expect(retryCalls[1]?.messageText).toContain("Cleanup:");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps transport fallback notices in trace payloads without exposing them in worker output", async () => {
+    workerRunTurn.mockResolvedValue({
+      text: "Updated `src/cli/pibo-cli.ts` and verified the change with `pnpm vitest run src/cli/pibo-cli.test.ts`.",
+      threadId: "thread-1",
+      usage: null,
+      eventSummaries: [
+        "turn.started",
+        "connection transitioned from WebSockets to HTTPS transport",
+        "turn.completed input=10 output=10 cached=0",
+      ],
+      tracePath: null,
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      createModuleContext("run-transport-evidence"),
+    );
+
+    expect(record.status).toBe("done");
+    const retryPhases = workflowReportCalls()
+      .map((call) => call.phase)
+      .filter(
+        (phase): phase is string => typeof phase === "string" && phase.startsWith("worker_retry_"),
+      );
+    expect(retryPhases).toEqual([]);
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-transport-evidence",
+      "round-1-codex.txt",
+      expect.stringContaining("Updated `src/cli/pibo-cli.ts`"),
+    );
+    expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
+      "run-transport-evidence",
+      "round-1-codex.txt",
+      expect.stringContaining("WebSockets"),
+    );
+  });
+
+  it("emits retry exhaustion after the bounded retry also hits a retryable Codex worker timeout", async () => {
+    workerRunTurn.mockImplementation(async () => {
       throw Object.assign(new Error("Timed out after 120000ms"), {
-        code: "ACP_TURN_FAILED",
+        code: "CODEX_TIMEOUT",
       });
     });
     runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
@@ -772,7 +807,7 @@ describe("codex_controller module", () => {
 
       await vi.advanceTimersByTimeAsync(1_000);
       await expect(runPromise).rejects.toThrow("worker retry exhausted after 2 attempts");
-      expect(closeSession).toHaveBeenCalledTimes(1);
+      expect(workerPrepareForRetry).toHaveBeenCalledTimes(1);
       const retryPhases = workflowReportCalls()
         .map((call) => call.phase)
         .filter(
@@ -796,12 +831,9 @@ describe("codex_controller module", () => {
   });
 
   it("does not retry non-retryable worker failures", async () => {
-    runTurn.mockImplementation(async (params: { text?: string }) => {
-      if (typeof params.text === "string" && params.text.startsWith("/compact")) {
-        return;
-      }
+    workerRunTurn.mockImplementation(async () => {
       throw Object.assign(new Error("Permission denied writing /repo/src/foo.ts"), {
-        code: "ACP_TURN_FAILED",
+        code: "CODEX_ERROR",
       });
     });
     runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
@@ -819,7 +851,7 @@ describe("codex_controller module", () => {
       ),
     ).rejects.toThrow("Permission denied writing /repo/src/foo.ts");
 
-    expect(closeSession).not.toHaveBeenCalled();
+    expect(workerPrepareForRetry).not.toHaveBeenCalled();
     const retryPhases = workflowReportCalls()
       .map((call) => call.phase)
       .filter(
@@ -896,7 +928,9 @@ describe("codex_controller module", () => {
     );
 
     expect(record.status).toBe("blocked");
-    expect(record.terminalReason).toContain("Controller DONE rejected because closeout preflight failed");
+    expect(record.terminalReason).toContain(
+      "Controller DONE rejected because closeout preflight failed",
+    );
     expect(record.terminalReason).toContain("open linked worktrees");
     expect(record.terminalReason).not.toContain("Closeout mismatch after controller DONE");
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
@@ -994,7 +1028,7 @@ describe("codex_controller module", () => {
     expect(record.terminalReason).toContain("architecture A and B");
   });
 
-  it("keeps manual ACP compaction off by default", async () => {
+  it("keeps manual Codex app-server compaction off by default", async () => {
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
       .mockResolvedValueOnce(
@@ -1025,9 +1059,7 @@ describe("codex_controller module", () => {
         ),
       );
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
       {
         input: {
@@ -1040,15 +1072,10 @@ describe("codex_controller module", () => {
     );
 
     expect(record.status).toBe("done");
-    const compactCalls = runTurn.mock.calls.filter(
-      ([params]: Array<{ text?: string }>) =>
-        typeof params.text === "string" && params.text.startsWith("/compact"),
-    );
-    expect(compactCalls).toHaveLength(0);
-    expect(startPluginServices).toHaveBeenCalledTimes(1);
+    expect(workerCompactThread).not.toHaveBeenCalled();
   });
 
-  it("continues on legacy GUIDE output and triggers ACP compaction only after the configured round when explicitly enabled", async () => {
+  it("continues on legacy GUIDE output and triggers app-server compaction only after the configured round when explicitly enabled", async () => {
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
       .mockResolvedValueOnce(
@@ -1079,9 +1106,13 @@ describe("codex_controller module", () => {
         ),
       );
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    workerCompactThread.mockResolvedValueOnce({
+      threadId: "thread-1",
+      compactionTurnId: "compact-1",
+      notificationSummaries: ["thread/compacted thread_id=thread-1 turn_id=compact-1"],
+      tracePath: "/home/pibo/.codex/sessions/2026/04/17/thread-1.jsonl",
+    });
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     const record = await codexControllerWorkflowModule.start(
       {
         input: {
@@ -1095,39 +1126,30 @@ describe("codex_controller module", () => {
     );
 
     expect(record.status).toBe("done");
-    const compactCalls = runTurn.mock.calls.filter(
-      ([params]: Array<{ text?: string }>) =>
-        typeof params.text === "string" && params.text.startsWith("/compact"),
-    );
-    expect(compactCalls).toHaveLength(1);
-    expect(runTurn).toHaveBeenCalledWith(
+    expect(workerCompactThread).toHaveBeenCalledTimes(1);
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: "agent:codex:acp:workflow:run-1:worker:codex",
-        mode: "prompt",
+        workingDirectory: "/repo",
       }),
     );
-    expect(startPluginServices).toHaveBeenCalledTimes(1);
   });
 
   it("sends stable controller context once at init and keeps later controller turns delta-only", async () => {
-    runTurn.mockImplementationOnce(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "Implemented parser changes in src/foo.ts and ran pnpm vitest.",
-        });
-      },
-    );
-    runTurn.mockImplementationOnce(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "Progress update: implementation is complete. Progress update: implementation is complete.",
-        });
-      },
-    );
+    workerRunTurn
+      .mockResolvedValueOnce({
+        text: "Implemented parser changes in src/foo.ts and ran pnpm vitest.",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      })
+      .mockResolvedValueOnce({
+        text: "Progress update: implementation is complete. Progress update: implementation is complete.",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      });
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
       .mockResolvedValueOnce(
@@ -1159,9 +1181,7 @@ describe("codex_controller module", () => {
         ),
       );
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     await codexControllerWorkflowModule.start(
       {
         input: {
@@ -1331,33 +1351,18 @@ describe("codex_controller module", () => {
     expect(controllerPrompt).toContain("no_open_linked_worktrees=false");
   });
 
-  it("filters hidden thinking and generic tool-call placeholders from visible worker output but keeps named tool calls", async () => {
-    runTurn.mockImplementationOnce(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "thought",
-          text: "hidden reasoning",
-        });
-        params.onEvent?.({
-          type: "tool_call",
-          text: "tool call",
-        });
-        params.onEvent?.({
-          type: "tool_call",
-          text: "tool call (completed)",
-        });
-        params.onEvent?.({
-          type: "tool_call",
-          text: "Run pnpm vitest run src/foo.test.ts (completed)",
-        });
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "Implemented the fix and verified it.",
-        });
-      },
-    );
+  it("keeps visible worker output limited to assistant messages while trace payloads retain event summaries", async () => {
+    workerRunTurn.mockResolvedValueOnce({
+      text: "Implemented the fix and verified it.",
+      threadId: "thread-1",
+      usage: null,
+      eventSummaries: [
+        "turn.started",
+        "item.completed command_execution status=completed exit_code=0 command=pnpm vitest run src/foo.test.ts",
+        "turn.completed input=10 output=10 cached=0",
+      ],
+      tracePath: null,
+    });
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
       .mockResolvedValueOnce(
@@ -1386,17 +1391,23 @@ describe("codex_controller module", () => {
       createModuleContext("run-1"),
     );
 
-    expect(record.latestWorkerOutput).toContain(
-      "[tool] Run pnpm vitest run src/foo.test.ts (completed)",
-    );
     expect(record.latestWorkerOutput).toContain("Implemented the fix and verified it.");
-    expect(record.latestWorkerOutput).not.toContain("hidden reasoning");
-    expect(record.latestWorkerOutput).not.toContain("[tool] tool call");
+    expect(record.latestWorkerOutput).not.toContain("pnpm vitest");
+    expect(traceEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "role_turn_completed",
+        payload: expect.objectContaining({
+          eventSummaries: expect.arrayContaining([
+            "item.completed command_execution status=completed exit_code=0 command=pnpm vitest run src/foo.test.ts",
+          ]),
+        }),
+      }),
+    );
   });
 
   it("surfaces codex worker disconnects with round and session context", async () => {
-    runTurn.mockRejectedValueOnce(
-      new Error("ACP worker disconnected before completion. reason: connection_close."),
+    workerRunTurn.mockRejectedValueOnce(
+      new Error("Codex worker disconnected before completion. reason: connection_close."),
     );
     runWorkflowAgentOnSession.mockResolvedValueOnce(controllerInitReady());
 
@@ -1412,29 +1423,26 @@ describe("codex_controller module", () => {
         createModuleContext("run-1"),
       ),
     ).rejects.toThrow(
-      "Codex worker turn failed in round 1/10 on session agent:codex:acp:workflow:run-1:worker:codex: ACP worker disconnected before completion. reason: connection_close.",
+      "Codex worker turn failed in round 1/10 on session codex-thread:thread-1: Codex worker disconnected before completion. reason: connection_close.",
     );
   });
 
   it("rejects blind CONTINUE when drift warnings exist but next instruction is not corrective", async () => {
-    runTurn.mockImplementationOnce(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "Progress update: implementation is complete.",
-        });
-      },
-    );
-    runTurn.mockImplementationOnce(
-      async (params: { text?: string; onEvent?: (event: unknown) => void }) => {
-        params.onEvent?.({
-          type: "text_delta",
-          stream: "output",
-          text: "Progress update: implementation is complete.",
-        });
-      },
-    );
+    workerRunTurn
+      .mockResolvedValueOnce({
+        text: "Progress update: implementation is complete.",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      })
+      .mockResolvedValueOnce({
+        text: "Progress update: implementation is complete.",
+        threadId: "thread-1",
+        usage: null,
+        eventSummaries: [],
+        tracePath: null,
+      });
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
       .mockResolvedValueOnce(
@@ -1466,9 +1474,7 @@ describe("codex_controller module", () => {
         ),
       );
 
-    const mod = await import("./codex-controller.js");
-    mod.__testing.resetCliPluginServicesHandleForTests();
-    const { codexControllerWorkflowModule } = mod;
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
     await expect(
       codexControllerWorkflowModule.start(
         {

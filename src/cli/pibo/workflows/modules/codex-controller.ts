@@ -2,19 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { getAcpSessionManager } from "../../../../acp/control-plane/manager.js";
-import {
-  getAcpRuntimeBackend,
-  requireAcpRuntimeBackend,
-} from "../../../../acp/runtime/registry.js";
-import type { AcpRuntimeEvent } from "../../../../acp/runtime/types.js";
 import { resolveAgentWorkspaceDir } from "../../../../agents/agent-scope.js";
-import { describeFailoverError } from "../../../../agents/failover-error.js";
-import { ensureCliPluginRegistryLoaded } from "../../../../cli/plugin-registry-loader.js";
 import { loadConfig } from "../../../../config/config.js";
 import { findGitRoot } from "../../../../infra/git-root.js";
-import { getActivePluginRegistry } from "../../../../plugins/runtime.js";
-import { startPluginServices, type PluginServicesHandle } from "../../../../plugins/services.js";
 import {
   createWorkflowAbortError,
   isWorkflowAbortError,
@@ -29,10 +19,18 @@ import type {
   WorkflowStartRequest,
 } from "../types.js";
 import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
-import { buildAcpWorkflowSessionKey, ensureWorkflowSessions } from "../workflow-session-helper.js";
+import { ensureWorkflowSessions } from "../workflow-session-helper.js";
+import {
+  createCodexSdkWorkerRuntime,
+  resolveCodexWorkerDefaultOptions,
+  type CodexWorkerCompactionResult,
+  type CodexWorkerReasoningEffort,
+  type CodexWorkerRuntime,
+  type CodexWorkerTurnResult,
+} from "./codex-sdk-runtime.js";
 import { codexControllerWorkflowModuleManifest } from "./manifests.js";
 
-type WorkerCompactionMode = "off" | "acp_control_command";
+type WorkerCompactionMode = "off" | "app_server";
 
 type CodexControllerInput = {
   task: string;
@@ -45,12 +43,19 @@ type CodexControllerInput = {
   codexAgentId: string;
   controllerAgentId: string;
   controllerPromptPath: string;
+  workerModel?: string;
+  workerReasoningEffort?: CodexWorkerReasoningEffort;
   workerCompactionMode?: WorkerCompactionMode;
   workerCompactionAfterRound?: number;
 };
 
-type NormalizedCodexControllerInput = Omit<Required<CodexControllerInput>, "agentId"> & {
+type NormalizedCodexControllerInput = Omit<
+  Required<CodexControllerInput>,
+  "agentId" | "workerModel" | "workerReasoningEffort"
+> & {
   agentId?: string;
+  workerModel?: string;
+  workerReasoningEffort?: CodexWorkerReasoningEffort;
   closeoutContextSource: "repoRoot" | "workingDirectory";
 };
 
@@ -162,28 +167,26 @@ const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
 const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "off";
 const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
-const CODEX_WORKER_PROMPT_TIMEOUT_SECONDS = 300;
+const CODEX_WORKER_HARD_TURN_TIMEOUT_SECONDS = 2 * 60 * 60;
+const CODEX_WORKER_IDLE_TIMEOUT_SECONDS = 8 * 60;
 const CODEX_WORKER_RETRY_DELAYS_MS = [1_000] as const;
+const CODEX_WORKER_TRANSPORT_TRANSITION_RETRY_DELAY_MS = 250;
 const RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE = [
   /\btimed out after \d+ms\b/i,
   /\brpc timeout\b/i,
   /\bprompt(?:\s+\w+){0,6}\s+(?:timed out|timeout)\b/i,
   /\bprompt completion failed\b.*\b(timeout|temporar|transient|overload|unavailable|connection|closed|reset|network|fetch failed)\b/i,
   /\b(connection (?:closed|reset|error)|transport closed|fetch failed|econnreset|ehostdown|epipe|gateway timeout|service unavailable|temporarily unavailable|overloaded)\b/i,
+  /\b(falling back from websockets to https transport|reconnecting\.\.\.|transport fallback)\b/i,
+  /\btimeout waiting for child process to exit\b/i,
 ] as const;
 const NON_RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE = [
   /\b(permission denied|unauthori(?:s|z)ed|forbidden|not accept config key|unsupported|invalid|not found|prompt exceeds maximum allowed size|tool approval|approval denied|schema|validation)\b/i,
 ] as const;
-let cliPluginServicesHandlePromise: Promise<PluginServicesHandle> | null = null;
-let cliPluginServicesWorkspaceDir: string | undefined;
-type ProbeableAcpRuntime = {
-  probeAvailability?: () => Promise<void>;
-};
 type CodexWorkerRetryClassification = {
   retryable: boolean;
-  reason: "timeout" | "transient_prompt_failure" | "non_retryable";
+  reason: "timeout" | "transient_prompt_failure" | "transport_transition" | "non_retryable";
   errorCode?: string;
-  failoverReason?: string;
   message: string;
 };
 
@@ -205,8 +208,8 @@ function normalizePositiveInteger(value: unknown): number | undefined {
 }
 
 function normalizeCompactionMode(value: unknown): WorkerCompactionMode {
-  if (value === "acp_control_command") {
-    return "acp_control_command";
+  if (value === "app_server" || value === "acp_control_command") {
+    return "app_server";
   }
   return DEFAULT_WORKER_COMPACTION_MODE;
 }
@@ -236,6 +239,13 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
     normalizePositiveInteger(record.maxRetries) ??
     normalizePositiveInteger(request.maxRounds) ??
     DEFAULT_MAX_ROUNDS;
+  const workerDefaults = resolveCodexWorkerDefaultOptions({
+    model:
+      typeof record.workerModel === "string" && record.workerModel.trim()
+        ? record.workerModel.trim()
+        : undefined,
+    reasoningEffort: record.workerReasoningEffort,
+  });
   return {
     task,
     workingDirectory,
@@ -256,6 +266,8 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
       typeof record.controllerPromptPath === "string" && record.controllerPromptPath.trim()
         ? record.controllerPromptPath.trim()
         : DEFAULT_CONTROLLER_PROMPT_PATH,
+    workerModel: workerDefaults.model,
+    workerReasoningEffort: workerDefaults.reasoningEffort,
     workerCompactionMode: normalizeCompactionMode(record.workerCompactionMode),
     workerCompactionAfterRound:
       normalizePositiveInteger(record.workerCompactionAfterRound) ??
@@ -445,9 +457,12 @@ function normalizeForComparison(value: string): string {
     .trim();
 }
 
-function isLowSignalToolCallText(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return /^tool call(?:\s+\((?:in_progress|completed|failed)\))?$/.test(normalized);
+function isCodexWorkerTransportTransitionMessage(message: string): boolean {
+  return (
+    /\bcodex worker transport fallback interrupted the turn before concrete output was produced\b/i.test(
+      message,
+    ) || /\bfalling back from websockets to https transport\b/i.test(message)
+  );
 }
 
 function claimsLookRepeated(currentClaims: string[], priorClaims: string[]): boolean {
@@ -1003,6 +1018,10 @@ function buildWorkflowStartedMessage(input: NormalizedCodexControllerInput): str
     `Round budget: ${input.maxRetries}`,
     `Worker cwd: ${input.workingDirectory}`,
     `Closeout repo root: ${input.repoRoot} (${input.closeoutContextSource})`,
+    ...(input.workerModel ? [`Worker model: ${input.workerModel}`] : []),
+    ...(input.workerReasoningEffort
+      ? [`Worker reasoning effort: ${input.workerReasoningEffort}`]
+      : []),
     ...(input.agentId ? [`Context workspace agent: ${input.agentId}`] : []),
     ...(input.successCriteria.length
       ? [`Success criteria: ${input.successCriteria.join("; ")}`]
@@ -1467,58 +1486,6 @@ function stepIdForRound(round: number): string {
   return `round-${round}`;
 }
 
-function normalizeWorkspaceOverride(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-async function ensureCliAcpRuntimeReady(
-  cfg: ReturnType<typeof loadConfig>,
-  contextWorkspaceDir?: string,
-): Promise<void> {
-  const desiredWorkspaceDir =
-    normalizeWorkspaceOverride(contextWorkspaceDir) ??
-    normalizeWorkspaceOverride(cfg.agents?.defaults?.workspace);
-  await ensureCliPluginRegistryLoaded({ scope: "all" });
-  if (cliPluginServicesHandlePromise && cliPluginServicesWorkspaceDir !== desiredWorkspaceDir) {
-    const activeHandle = await cliPluginServicesHandlePromise.catch(() => null);
-    cliPluginServicesHandlePromise = null;
-    cliPluginServicesWorkspaceDir = undefined;
-    await activeHandle?.stop();
-  }
-  if (!cliPluginServicesHandlePromise) {
-    const registry = getActivePluginRegistry();
-    if (!registry) {
-      throw new Error("CLI plugin registry did not load for codex_controller ACP runtime.");
-    }
-    const startPromise = startPluginServices({
-      registry,
-      config: cfg,
-      workspaceDir: desiredWorkspaceDir,
-    });
-    cliPluginServicesWorkspaceDir = desiredWorkspaceDir;
-    cliPluginServicesHandlePromise = startPromise.catch((error) => {
-      if (cliPluginServicesHandlePromise === startPromise) {
-        cliPluginServicesHandlePromise = null;
-        cliPluginServicesWorkspaceDir = undefined;
-      }
-      throw error;
-    });
-  }
-  await cliPluginServicesHandlePromise;
-
-  const backendId =
-    cfg.acp && typeof cfg.acp.backend === "string" && cfg.acp.backend.trim()
-      ? cfg.acp.backend.trim()
-      : undefined;
-  const backend = getAcpRuntimeBackend(backendId);
-  const runtime = backend?.runtime as ProbeableAcpRuntime | undefined;
-  if (backend?.healthy?.() === false && typeof runtime?.probeAvailability === "function") {
-    await runtime.probeAvailability();
-  }
-  requireAcpRuntimeBackend(backendId);
-}
-
 function resolveContextWorkspaceDir(
   input: NormalizedCodexControllerInput,
   cfg: ReturnType<typeof loadConfig>,
@@ -1529,93 +1496,37 @@ function resolveContextWorkspaceDir(
   return resolveAgentWorkspaceDir(cfg, input.agentId);
 }
 
-async function runCodexTurn(params: {
-  sessionKey: string;
-  workingDirectory: string;
-  agentId: string;
-  text: string;
-  requestId: string;
-  contextWorkspaceDir?: string;
-  abortSignal?: AbortSignal;
-}): Promise<{
-  text: string;
-  outputEvents: string[];
-  rawEvents: AcpRuntimeEvent[];
-}> {
-  const cfg = loadConfig();
-  await ensureCliAcpRuntimeReady(cfg, params.contextWorkspaceDir);
-  const manager = getAcpSessionManager();
-  await manager.initializeSession({
-    cfg,
-    sessionKey: params.sessionKey,
-    agent: params.agentId,
-    mode: "persistent",
-    cwd: params.workingDirectory,
-  });
-  await manager.updateSessionRuntimeOptions({
-    cfg,
-    sessionKey: params.sessionKey,
-    patch: {
-      timeoutSeconds: CODEX_WORKER_PROMPT_TIMEOUT_SECONDS,
-    },
-  });
+function buildPendingCodexWorkerSessionLabel(runId: string): string {
+  return `codex-thread:pending:${runId}`;
+}
 
-  const outputEvents: string[] = [];
-  const rawEvents: AcpRuntimeEvent[] = [];
-  const onAbort = () => {
-    void manager.cancelSession({
-      cfg,
-      sessionKey: params.sessionKey,
-      reason: "workflow abort requested",
-    });
-  };
-  params.abortSignal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    await manager.runTurn({
-      cfg,
-      sessionKey: params.sessionKey,
-      text: params.text,
-      mode: "prompt",
-      requestId: params.requestId,
-      signal: params.abortSignal,
-      onEvent: (event) => {
-        rawEvents.push(event);
-        if (event.type === "text_delta" && event.stream !== "thought" && event.text) {
-          outputEvents.push(event.text);
-        }
-        if (event.type === "tool_call" && event.text && !isLowSignalToolCallText(event.text)) {
-          outputEvents.push(`[tool] ${event.text}`);
-        }
-      },
-    });
-  } finally {
-    params.abortSignal?.removeEventListener("abort", onAbort);
-  }
-
-  const text = outputEvents.join("").trim();
-  if (!text) {
-    throw new Error(`Codex worker produced no output on session ${params.sessionKey}.`);
-  }
-  return { text, outputEvents, rawEvents };
+function buildCodexWorkerSessionLabel(threadId: string): string {
+  return `codex-thread:${threadId}`;
 }
 
 function classifyCodexWorkerRetry(error: unknown): CodexWorkerRetryClassification {
-  const details = describeFailoverError(error);
-  const message = details.message.trim() || String(error);
-  const timeoutLike = details.reason === "timeout";
+  const message = error instanceof Error ? error.message.trim() : String(error);
+  const errorCode =
+    typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+      ? error.code
+      : undefined;
+  const transportTransition = isCodexWorkerTransportTransitionMessage(message);
+  const timeoutLike = !transportTransition && /\btimed out after \d+ms\b/i.test(message);
   const transientPromptFailure =
     !timeoutLike &&
+    !transportTransition &&
     !NON_RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE.some((pattern) => pattern.test(message)) &&
     RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE.some((pattern) => pattern.test(message));
   return {
-    retryable: timeoutLike || transientPromptFailure,
+    retryable: timeoutLike || transportTransition || transientPromptFailure,
     reason: timeoutLike
       ? "timeout"
-      : transientPromptFailure
-        ? "transient_prompt_failure"
-        : "non_retryable",
-    errorCode: details.code,
-    failoverReason: details.reason ?? undefined,
+      : transportTransition
+        ? "transport_transition"
+        : transientPromptFailure
+          ? "transient_prompt_failure"
+          : "non_retryable",
+    errorCode,
     message,
   };
 }
@@ -1646,18 +1557,21 @@ function buildCodexWorkerRetryMessage(params: {
           : "Worker retry exhausted.";
   const reasonLabel =
     params.retryReason === "timeout"
-      ? "retryable timeout-style ACPX worker prompt failure"
-      : params.retryReason === "transient_prompt_failure"
-        ? "retryable transient ACPX worker prompt failure"
-        : undefined;
+      ? "retryable Codex worker turn timeout"
+      : params.retryReason === "transport_transition"
+        ? "worker transport transition to HTTPS fallback"
+        : params.retryReason === "transient_prompt_failure"
+          ? "retryable transient Codex worker turn failure"
+          : undefined;
   const lines = [
     headline,
     `Round: ${params.round}/${params.maxRounds}`,
     `Attempt: ${params.attempt}/${params.maxAttempts}`,
-    `Worker prompt timeout: ${CODEX_WORKER_PROMPT_TIMEOUT_SECONDS}s`,
+    `Worker hard timeout: ${CODEX_WORKER_HARD_TURN_TIMEOUT_SECONDS}s`,
+    `Worker idle timeout: ${CODEX_WORKER_IDLE_TIMEOUT_SECONDS}s`,
     ...(typeof params.delayMs === "number" ? [`Retry delay: ${params.delayMs}ms`] : []),
     ...(reasonLabel ? [`Reason: ${reasonLabel}`] : []),
-    ...(params.errorCode ? [`ACP error code: ${params.errorCode}`] : []),
+    ...(params.errorCode ? [`Worker error code: ${params.errorCode}`] : []),
     ...(params.errorMessage ? [`Error: ${params.errorMessage}`] : []),
     ...(params.cleanupNotice ? [`Cleanup: ${params.cleanupNotice}`] : []),
   ];
@@ -1706,7 +1620,8 @@ async function emitCodexWorkerRetryEvent(params: {
       errorCode: params.errorCode,
       errorMessage: params.errorMessage,
       retryReason: params.retryReason,
-      workerPromptTimeoutSeconds: CODEX_WORKER_PROMPT_TIMEOUT_SECONDS,
+      workerPromptTimeoutSeconds: CODEX_WORKER_HARD_TURN_TIMEOUT_SECONDS,
+      workerIdleTimeoutSeconds: CODEX_WORKER_IDLE_TIMEOUT_SECONDS,
       cleanupNotice: params.cleanupNotice,
     },
   });
@@ -1729,37 +1644,11 @@ async function emitCodexWorkerRetryEvent(params: {
   });
 }
 
-async function resetCodexWorkerSessionForRetry(params: {
-  sessionKey: string;
-  contextWorkspaceDir?: string;
-}): Promise<string> {
-  const cfg = loadConfig();
-  await ensureCliAcpRuntimeReady(cfg, params.contextWorkspaceDir);
-  const result = await getAcpSessionManager().closeSession({
-    cfg,
-    sessionKey: params.sessionKey,
-    reason: "codex-controller-worker-retry",
-    allowBackendUnavailable: true,
-    discardPersistentState: false,
-    clearMeta: false,
-    requireAcpSession: false,
-  });
-  if (result.runtimeNotice) {
-    return `runtime close degraded but cached handle was cleared: ${result.runtimeNotice}`;
-  }
-  if (result.runtimeClosed) {
-    return "runtime handle closed and will be reinitialized on retry";
-  }
-  return "no active runtime handle remained; retry will reinitialize the worker session";
-}
-
 async function runCodexTurnWithRetry(params: {
-  sessionKey: string;
-  workingDirectory: string;
+  workerRuntime: CodexWorkerRuntime;
+  workerSessionLabel: string;
   agentId: string;
   text: string;
-  requestId: string;
-  contextWorkspaceDir?: string;
   abortSignal?: AbortSignal;
   trace: WorkflowModuleContext["trace"];
   runId: string;
@@ -1768,23 +1657,16 @@ async function runCodexTurnWithRetry(params: {
   maxRounds: number;
   origin?: WorkflowStartRequest["origin"];
   reporting?: WorkflowStartRequest["reporting"];
-}): Promise<{
-  text: string;
-  outputEvents: string[];
-  rawEvents: AcpRuntimeEvent[];
-}> {
+}): Promise<CodexWorkerTurnResult> {
   const maxAttempts = CODEX_WORKER_RETRY_DELAYS_MS.length + 1;
   let lastRetryReason: CodexWorkerRetryClassification["reason"] | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfWorkflowAbortRequested(params.abortSignal);
     try {
-      const result = await runCodexTurn({
-        sessionKey: params.sessionKey,
-        workingDirectory: params.workingDirectory,
-        agentId: params.agentId,
+      const result = await params.workerRuntime.runTurn({
         text: params.text,
-        requestId: `${params.requestId}:attempt:${attempt}`,
-        contextWorkspaceDir: params.contextWorkspaceDir,
+        hardTimeoutSeconds: CODEX_WORKER_HARD_TURN_TIMEOUT_SECONDS,
+        idleTimeoutSeconds: CODEX_WORKER_IDLE_TIMEOUT_SECONDS,
         abortSignal: params.abortSignal,
       });
       if (attempt > 1) {
@@ -1795,7 +1677,7 @@ async function runCodexTurnWithRetry(params: {
           runId: params.runId,
           round: params.round,
           maxRounds: params.maxRounds,
-          sessionKey: params.sessionKey,
+          sessionKey: buildCodexWorkerSessionLabel(result.threadId),
           agentId: params.agentId,
           phase: "worker_retry_succeeded",
           attempt,
@@ -1807,12 +1689,15 @@ async function runCodexTurnWithRetry(params: {
       }
       return result;
     } catch (error) {
-      if (isWorkflowAbortError(error)) {
-        throw error;
+      if (isWorkflowAbortError(error) || params.abortSignal?.aborted) {
+        throw createWorkflowAbortError(params.abortSignal?.reason ?? error);
       }
       const classification = classifyCodexWorkerRetry(error);
       lastRetryReason = classification.reason;
-      const delayMs = CODEX_WORKER_RETRY_DELAYS_MS[attempt - 1];
+      const delayMs =
+        classification.reason === "transport_transition"
+          ? CODEX_WORKER_TRANSPORT_TRANSITION_RETRY_DELAY_MS
+          : CODEX_WORKER_RETRY_DELAYS_MS[attempt - 1];
       if (!classification.retryable || delayMs === undefined) {
         if (classification.retryable) {
           await emitCodexWorkerRetryEvent({
@@ -1822,7 +1707,9 @@ async function runCodexTurnWithRetry(params: {
             runId: params.runId,
             round: params.round,
             maxRounds: params.maxRounds,
-            sessionKey: params.sessionKey,
+            sessionKey: params.workerRuntime.getThreadId()
+              ? buildCodexWorkerSessionLabel(params.workerRuntime.getThreadId()!)
+              : params.workerSessionLabel,
             agentId: params.agentId,
             phase: "worker_retry_exhausted",
             attempt,
@@ -1847,7 +1734,9 @@ async function runCodexTurnWithRetry(params: {
         runId: params.runId,
         round: params.round,
         maxRounds: params.maxRounds,
-        sessionKey: params.sessionKey,
+        sessionKey: params.workerRuntime.getThreadId()
+          ? buildCodexWorkerSessionLabel(params.workerRuntime.getThreadId()!)
+          : params.workerSessionLabel,
         agentId: params.agentId,
         phase: "worker_retry_scheduled",
         attempt,
@@ -1859,39 +1748,7 @@ async function runCodexTurnWithRetry(params: {
         origin: params.origin,
         reporting: params.reporting,
       });
-      let cleanupNotice: string;
-      try {
-        cleanupNotice = await resetCodexWorkerSessionForRetry({
-          sessionKey: params.sessionKey,
-          contextWorkspaceDir: params.contextWorkspaceDir,
-        });
-      } catch (cleanupError) {
-        const cleanupMessage =
-          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-        await emitCodexWorkerRetryEvent({
-          trace: params.trace,
-          stepId: params.stepId,
-          moduleId: "codex_controller",
-          runId: params.runId,
-          round: params.round,
-          maxRounds: params.maxRounds,
-          sessionKey: params.sessionKey,
-          agentId: params.agentId,
-          phase: "worker_retry_exhausted",
-          attempt,
-          maxAttempts,
-          errorMessage: classification.message,
-          errorCode: classification.errorCode,
-          retryReason: classification.reason,
-          cleanupNotice: cleanupMessage,
-          origin: params.origin,
-          reporting: params.reporting,
-        });
-        throw new Error(
-          `Codex worker retry cleanup failed before attempt ${attempt + 1}: ${cleanupMessage}`,
-          { cause: cleanupError },
-        );
-      }
+      const cleanupNotice = params.workerRuntime.prepareForRetry();
       await Promise.race([
         sleep(delayMs),
         new Promise<never>((_, reject) => {
@@ -1912,7 +1769,9 @@ async function runCodexTurnWithRetry(params: {
         runId: params.runId,
         round: params.round,
         maxRounds: params.maxRounds,
-        sessionKey: params.sessionKey,
+        sessionKey: params.workerRuntime.getThreadId()
+          ? buildCodexWorkerSessionLabel(params.workerRuntime.getThreadId()!)
+          : params.workerSessionLabel,
         agentId: params.agentId,
         phase: "worker_retry_started",
         attempt: attempt + 1,
@@ -1929,50 +1788,21 @@ async function runCodexTurnWithRetry(params: {
 }
 
 async function maybeCompactCodexSession(params: {
-  input: NormalizedCodexControllerInput;
-  sessionKey: string;
+  workerRuntime: CodexWorkerRuntime;
+  workerCompactionMode: WorkerCompactionMode;
+  workerCompactionAfterRound: number;
   round: number;
-  contextWorkspaceDir?: string;
   abortSignal?: AbortSignal;
-}): Promise<boolean> {
-  if (params.input.workerCompactionMode === "off") {
-    return false;
+}): Promise<CodexWorkerCompactionResult | null> {
+  if (params.workerCompactionMode === "off") {
+    return null;
   }
-  if (params.round < params.input.workerCompactionAfterRound) {
-    return false;
+  if (params.round < params.workerCompactionAfterRound) {
+    return null;
   }
-
-  const cfg = loadConfig();
-  await ensureCliAcpRuntimeReady(cfg, params.contextWorkspaceDir);
-  const manager = getAcpSessionManager();
-  await manager.initializeSession({
-    cfg,
-    sessionKey: params.sessionKey,
-    agent: params.input.codexAgentId,
-    mode: "persistent",
-    cwd: params.input.workingDirectory,
+  return params.workerRuntime.compactThread({
+    abortSignal: params.abortSignal,
   });
-  const onAbort = () => {
-    void manager.cancelSession({
-      cfg,
-      sessionKey: params.sessionKey,
-      reason: "workflow abort requested",
-    });
-  };
-  params.abortSignal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    await manager.runTurn({
-      cfg,
-      sessionKey: params.sessionKey,
-      text: `/compact Focus on the original task, current code changes, remaining gaps, and blocker state for: ${params.input.task}`,
-      mode: "steer",
-      requestId: `${params.sessionKey}:compact:${params.round}`,
-      signal: params.abortSignal,
-    });
-  } finally {
-    params.abortSignal?.removeEventListener("abort", onAbort);
-  }
-  return true;
 }
 
 export const codexControllerWorkflowModule: WorkflowModule = {
@@ -1995,26 +1825,31 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       ],
     });
     ctx.throwIfAbortRequested?.();
-    const codexSessionKey = buildAcpWorkflowSessionKey({
-      agentId: input.codexAgentId,
-      runId: ctx.runId,
-      role: "worker",
-      name: "codex",
+    const workerRuntime = createCodexSdkWorkerRuntime({
+      workingDirectory: input.workingDirectory,
+      contextWorkspaceDir,
+      model: input.workerModel,
+      reasoningEffort: input.workerReasoningEffort,
     });
-    sessions.worker = codexSessionKey;
+    sessions.worker = buildPendingCodexWorkerSessionLabel(ctx.runId);
     sessions.extras = {
       ...sessions.extras,
-      codexWorkerRuntime: "acp",
-      codexWorkerSessionKind: "persistent_acp_thread",
+      codexWorkerRuntime: "codex_sdk",
+      codexWorkerSessionKind: "codex_sdk_thread",
       workingDirectory: input.workingDirectory,
       repoRoot: input.repoRoot,
       closeoutContextSource: input.closeoutContextSource,
       ...(input.agentId ? { contextAgentId: input.agentId } : {}),
       ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
       controllerPromptPath: input.controllerPromptPath,
+      ...(input.workerModel ? { workerModel: input.workerModel } : {}),
+      ...(input.workerReasoningEffort
+        ? { workerReasoningEffort: input.workerReasoningEffort }
+        : {}),
       workerCompactionMode: input.workerCompactionMode,
       workerCompactionAfterRound: String(input.workerCompactionAfterRound),
-      workerPromptTimeoutSeconds: String(CODEX_WORKER_PROMPT_TIMEOUT_SECONDS),
+      workerPromptTimeoutSeconds: String(CODEX_WORKER_HARD_TURN_TIMEOUT_SECONDS),
+      workerIdleTimeoutSeconds: String(CODEX_WORKER_IDLE_TIMEOUT_SECONDS),
       workerPromptRetryAttempts: String(CODEX_WORKER_RETRY_DELAYS_MS.length + 1),
     };
 
@@ -2050,6 +1885,10 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
         codexAgentId: input.codexAgentId,
         controllerAgentId: input.controllerAgentId,
+        ...(input.workerModel ? { workerModel: input.workerModel } : {}),
+        ...(input.workerReasoningEffort
+          ? { workerReasoningEffort: input.workerReasoningEffort }
+          : {}),
       },
     });
     await emitTracedWorkflowReportEvent({
@@ -2104,6 +1943,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     for (let round = 1; round <= input.maxRetries; round += 1) {
       ctx.throwIfAbortRequested?.();
       const stepId = stepIdForRound(round);
+      const currentWorkerSessionLabel =
+        sessions.worker ?? buildPendingCodexWorkerSessionLabel(ctx.runId);
       ctx.trace.emit({
         kind: "round_started",
         stepId,
@@ -2113,17 +1954,35 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       });
       if (round > 1) {
         const compacted = await maybeCompactCodexSession({
-          input,
-          sessionKey: codexSessionKey,
+          workerRuntime,
+          workerCompactionMode: input.workerCompactionMode,
+          workerCompactionAfterRound: input.workerCompactionAfterRound,
           round,
-          contextWorkspaceDir,
           abortSignal: ctx.abortSignal,
         });
         if (compacted) {
+          sessions.worker = buildCodexWorkerSessionLabel(compacted.threadId);
           sessions.extras = {
             ...sessions.extras,
+            codexThreadId: compacted.threadId,
+            ...(compacted.tracePath ? { codexTracePath: compacted.tracePath } : {}),
             lastCompactedBeforeRound: String(round),
           };
+          ctx.trace.emit({
+            kind: "custom",
+            stepId,
+            round,
+            role: "worker",
+            sessionKey: sessions.worker,
+            agentId: input.codexAgentId,
+            summary: "Codex thread compaction completed.",
+            payload: {
+              threadId: compacted.threadId,
+              compactionTurnId: compacted.compactionTurnId,
+              notificationSummaries: compacted.notificationSummaries,
+              tracePath: compacted.tracePath,
+            },
+          });
         }
       }
 
@@ -2138,19 +1997,17 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         stepId,
         round,
         role: "worker",
-        sessionKey: codexSessionKey,
+        sessionKey: currentWorkerSessionLabel,
         agentId: input.codexAgentId,
         summary: "codex worker turn started",
       });
-      let codexResult: Awaited<ReturnType<typeof runCodexTurn>>;
+      let codexResult: CodexWorkerTurnResult;
       try {
         codexResult = await runCodexTurnWithRetry({
-          sessionKey: codexSessionKey,
-          workingDirectory: input.workingDirectory,
+          workerRuntime,
+          workerSessionLabel: currentWorkerSessionLabel,
           agentId: input.codexAgentId,
           text: codexPrompt,
-          requestId: `${ctx.runId}:codex:${round}`,
-          contextWorkspaceDir,
           abortSignal: ctx.abortSignal,
           trace: ctx.trace,
           runId: ctx.runId,
@@ -2165,11 +2022,20 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           throw error;
         }
         const message = error instanceof Error ? error.message : String(error);
+        const failedWorkerSessionLabel = workerRuntime.getThreadId()
+          ? buildCodexWorkerSessionLabel(workerRuntime.getThreadId()!)
+          : currentWorkerSessionLabel;
         throw new Error(
-          `Codex worker turn failed in round ${round}/${input.maxRetries} on session ${codexSessionKey}: ${message}`,
+          `Codex worker turn failed in round ${round}/${input.maxRetries} on session ${failedWorkerSessionLabel}: ${message}`,
           { cause: error },
         );
       }
+      sessions.worker = buildCodexWorkerSessionLabel(codexResult.threadId);
+      sessions.extras = {
+        ...sessions.extras,
+        codexThreadId: codexResult.threadId,
+        ...(codexResult.tracePath ? { codexTracePath: codexResult.tracePath } : {}),
+      };
       const workerArtifact = writeWorkflowArtifact(
         ctx.runId,
         `round-${round}-codex.txt`,
@@ -2186,11 +2052,15 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         stepId,
         round,
         role: "worker",
-        sessionKey: codexSessionKey,
+        sessionKey: sessions.worker,
         agentId: input.codexAgentId,
         summary: "codex worker output captured",
         payload: {
           outputLength: codexResult.text.length,
+          threadId: codexResult.threadId,
+          usage: codexResult.usage,
+          eventSummaries: codexResult.eventSummaries.slice(-12),
+          tracePath: codexResult.tracePath,
         },
       });
 
@@ -2336,7 +2206,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             status: closeoutBlocked ? "blocked" : "done",
             round,
             reason: finalReason,
-            workerSession: codexSessionKey,
+            workerSession: sessions.worker ?? buildPendingCodexWorkerSessionLabel(ctx.runId),
             controllerSession: sessions.orchestrator,
             closeout,
           }),
@@ -2438,7 +2308,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             status: "blocked",
             round,
             reason: blockedReason,
-            workerSession: codexSessionKey,
+            workerSession: sessions.worker ?? buildPendingCodexWorkerSessionLabel(ctx.runId),
             controllerSession: sessions.orchestrator,
             closeout: enforcedCloseoutAssessment,
           }),
@@ -2521,7 +2391,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         status: "max_rounds_reached",
         round: input.maxRetries,
         reason: "Controller retry budget exhausted.",
-        workerSession: codexSessionKey,
+        workerSession: sessions.worker ?? buildPendingCodexWorkerSessionLabel(ctx.runId),
         controllerSession: sessions.orchestrator,
       }),
     );
@@ -2579,10 +2449,6 @@ export const codexControllerWorkflowModule: WorkflowModule = {
 };
 
 export const __testing = {
-  resetCliPluginServicesHandleForTests() {
-    cliPluginServicesHandlePromise = null;
-    cliPluginServicesWorkspaceDir = undefined;
-  },
   buildControllerInitPrompt,
   buildCloseoutPreflight,
   buildControllerDeltaPrompt,
@@ -2590,4 +2456,5 @@ export const __testing = {
   assessDrift,
   enforceContinueGuardrails,
   remapInvalidDoneDecision,
+  classifyCodexWorkerRetry,
 };

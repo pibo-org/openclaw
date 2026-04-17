@@ -170,6 +170,19 @@ function buildEarlyStartFailureMessage(params: {
   ].join("\n");
 }
 
+function buildPostStartFailureMessage(params: {
+  moduleId: string;
+  runId: string;
+  terminalReason: string;
+}): string {
+  return [
+    "Workflow failed after the regular start/reporting path and has reached terminal failure state.",
+    `Module: ${params.moduleId}`,
+    `Run: ${params.runId}`,
+    `Reason: ${params.terminalReason}`,
+  ].join("\n");
+}
+
 function buildFailedWorkflowRunRecord(params: {
   terminalReason: string;
   tracer: ReturnType<typeof createWorkflowTraceRuntime>;
@@ -236,17 +249,14 @@ function persistedAbortRequestedAt(params: { persistedRecord: WorkflowRunRecord 
   return params.persistedRecord.abortRequestedAt ?? nowIso();
 }
 
-async function emitEarlyStartFailureAnnouncement(params: {
+async function emitVisibleFailureAnnouncement(params: {
   runId: string;
   moduleId: string;
   tracer: ReturnType<typeof createWorkflowTraceRuntime>;
   terminalReason: string;
   persistedRecord: WorkflowRunRecord;
 }) {
-  if (startedReportWasAttempted(params.runId)) {
-    return;
-  }
-
+  const startedReportAttempted = startedReportWasAttempted(params.runId);
   const targetSessionKey =
     params.persistedRecord.sessions.orchestrator ?? params.persistedRecord.origin?.ownerSessionKey;
   const emittingAgentId = resolveAgentIdFromSessionKey(targetSessionKey);
@@ -255,20 +265,28 @@ async function emitEarlyStartFailureAnnouncement(params: {
     stepId: "run",
     moduleId: params.moduleId,
     runId: params.runId,
-    phase: "run_start_failed",
+    phase: startedReportAttempted ? "workflow_failed" : "run_start_failed",
     eventType: "blocked",
-    messageText: buildEarlyStartFailureMessage({
-      moduleId: params.moduleId,
-      runId: params.runId,
-      terminalReason: params.terminalReason,
-    }),
+    messageText: startedReportAttempted
+      ? buildPostStartFailureMessage({
+          moduleId: params.moduleId,
+          runId: params.runId,
+          terminalReason: params.terminalReason,
+        })
+      : buildEarlyStartFailureMessage({
+          moduleId: params.moduleId,
+          runId: params.runId,
+          terminalReason: params.terminalReason,
+        }),
     emittingAgentId,
     origin: params.persistedRecord.origin,
     reporting: ensureFailureReporting(params.persistedRecord.reporting),
     status: "failed",
     role: "orchestrator",
     targetSessionKey,
-    traceSummary: "early start failure announcement attempted",
+    traceSummary: startedReportAttempted
+      ? "terminal failure announcement attempted"
+      : "early start failure announcement attempted",
   });
 }
 
@@ -562,7 +580,7 @@ async function startWorkflowRunWithRunId(
     });
     writeRunRecord(failed);
     try {
-      await emitEarlyStartFailureAnnouncement({
+      await emitVisibleFailureAnnouncement({
         runId,
         moduleId,
         tracer,
