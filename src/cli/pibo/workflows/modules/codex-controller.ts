@@ -64,6 +64,8 @@ type CloseoutContext = Pick<
   "workingDirectory" | "repoRoot" | "closeoutContextSource"
 >;
 
+type CloseoutMode = "repo_integrated" | "linked_worktree_local";
+
 type CloseoutCheckCode =
   | "git_repo_missing"
   | "git_head_missing"
@@ -88,6 +90,7 @@ type CloseoutAssessment = {
     workingDirectory: string;
     requestedRepoRoot: string;
     closeoutContextSource: CloseoutContext["closeoutContextSource"];
+    closeoutMode: CloseoutMode;
     resolvedRepoRoot: string | null;
   };
   git: {
@@ -113,6 +116,7 @@ type CloseoutPreflight = {
   failureClass: CloseoutPreflightFailureClass;
   summary: string;
   reason: string;
+  mode: CloseoutMode;
   repoRoot: string | null;
   workingDirectory: string;
   baseRef: string | null;
@@ -862,9 +866,12 @@ function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflig
         ? "fail"
         : "unknown";
   const repoRoot = assessment.context.resolvedRepoRoot;
-  const openWorktreePaths = assessment.git.worktreePaths.filter(
-    (worktreePath) => path.resolve(worktreePath) !== repoRoot,
-  );
+  const openWorktreePaths =
+    assessment.context.closeoutMode === "linked_worktree_local"
+      ? []
+      : assessment.git.worktreePaths.filter(
+          (worktreePath) => path.resolve(worktreePath) !== repoRoot,
+        );
   const failedCheckSummary =
     assessment.checks.find((check) => !check.ok)?.summary ?? assessment.reason;
   return {
@@ -872,6 +879,7 @@ function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflig
     failureClass,
     summary: failedCheckSummary,
     reason: assessment.reason,
+    mode: assessment.context.closeoutMode,
     repoRoot,
     workingDirectory: assessment.context.workingDirectory,
     baseRef: assessment.git.baseRef,
@@ -957,6 +965,7 @@ function formatCloseoutPreflightCheckValue(value: CloseoutPreflightCheckValue): 
 
 function buildCloseoutPreflightPrompt(preflight: CloseoutPreflight): string {
   return [
+    `mode=${preflight.mode}`,
     `status=${preflight.status}`,
     `failure_class=${preflight.failureClass}`,
     `summary=${preflight.summary}`,
@@ -1084,6 +1093,33 @@ function chooseIntegrationBaseRef(refs: string[]): string | null {
   return null;
 }
 
+function detectCloseoutMode(
+  context: CloseoutContext,
+  resolvedRepoRoot: string,
+): {
+  mode: CloseoutMode;
+  absoluteGitDir: string | null;
+  commonGitDir: string | null;
+} {
+  const absoluteGitDir = runGitReadOnly(resolvedRepoRoot, ["rev-parse", "--absolute-git-dir"]);
+  const commonGitDirRaw =
+    runGitReadOnly(resolvedRepoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]) ??
+    runGitReadOnly(resolvedRepoRoot, ["rev-parse", "--git-common-dir"]);
+  const commonGitDir = commonGitDirRaw ? path.resolve(resolvedRepoRoot, commonGitDirRaw) : null;
+  const mode =
+    context.closeoutContextSource === "workingDirectory" &&
+    absoluteGitDir &&
+    commonGitDir &&
+    path.resolve(absoluteGitDir) !== commonGitDir
+      ? "linked_worktree_local"
+      : "repo_integrated";
+  return {
+    mode,
+    absoluteGitDir: absoluteGitDir ? path.resolve(absoluteGitDir) : null,
+    commonGitDir,
+  };
+}
+
 function assessCloseout(context: CloseoutContext): CloseoutAssessment {
   const requestedRepoRoot = context.repoRoot;
   const directRequestedRepoRoot = runGitReadOnly(requestedRepoRoot, [
@@ -1131,6 +1167,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode: "repo_integrated",
         resolvedRepoRoot: null,
       },
       git: {
@@ -1142,6 +1179,19 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       },
       checks,
     };
+  }
+
+  const {
+    mode: closeoutMode,
+    absoluteGitDir,
+    commonGitDir,
+  } = detectCloseoutMode(context, resolvedRepoRoot);
+  trace.push(`closeout_mode=${closeoutMode}`);
+  if (absoluteGitDir) {
+    trace.push(`git_dir=${absoluteGitDir}`);
+  }
+  if (commonGitDir) {
+    trace.push(`git_common_dir=${commonGitDir}`);
   }
 
   const head = runGitReadOnly(resolvedRepoRoot, ["rev-parse", "HEAD"]);
@@ -1160,6 +1210,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
         resolvedRepoRoot,
       },
       git: {
@@ -1193,6 +1244,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
         resolvedRepoRoot,
       },
       git: {
@@ -1215,6 +1267,44 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
     runGitReadOnly(resolvedRepoRoot, ["worktree", "list", "--porcelain"]),
   );
   trace.push(`worktree_count=${worktreePaths.length}`);
+  if (closeoutMode === "linked_worktree_local") {
+    checks.push({
+      code: "open_worktree",
+      ok: true,
+      summary: "Linked worktree closeout allows sibling worktrees when repoRoot is omitted.",
+    });
+    checks.push({
+      code: "not_integrated",
+      ok: true,
+      summary: "Linked worktree closeout does not require self-integration into mainline.",
+    });
+    trace.push(
+      `linked_worktree_closeout=current_worktree_only${worktreePaths.length ? `:${worktreePaths.join(",")}` : ""}`,
+    );
+    trace.push("closeout=pass");
+    return {
+      status: "pass",
+      reason:
+        "Closeout passed: linked worktree is clean; sibling worktrees and mainline integration are deferred until an explicit repoRoot closeout.",
+      trace,
+      context: {
+        workingDirectory: context.workingDirectory,
+        requestedRepoRoot,
+        closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
+        resolvedRepoRoot,
+      },
+      git: {
+        head,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths,
+      },
+      checks,
+    };
+  }
+
   if (worktreePaths.length > 1) {
     checks.push({
       code: "open_worktree",
@@ -1231,6 +1321,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
         resolvedRepoRoot,
       },
       git: {
@@ -1275,6 +1366,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
         resolvedRepoRoot,
       },
       git: {
@@ -1305,6 +1397,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
         resolvedRepoRoot,
       },
       git: {
@@ -1335,6 +1428,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
         workingDirectory: context.workingDirectory,
         requestedRepoRoot,
         closeoutContextSource: context.closeoutContextSource,
+        closeoutMode,
         resolvedRepoRoot,
       },
       git: {
@@ -1362,6 +1456,7 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       workingDirectory: context.workingDirectory,
       requestedRepoRoot,
       closeoutContextSource: context.closeoutContextSource,
+      closeoutMode,
       resolvedRepoRoot,
     },
     git: {
@@ -1394,6 +1489,7 @@ function buildRunSummary(params: {
       `reason: ${params.reason}`,
       `worker-session: ${params.workerSession}`,
       `controller-session: ${params.controllerSession ?? "n/a"}`,
+      `closeout-mode: ${params.closeout?.context.closeoutMode ?? "not_run"}`,
       `closeout-status: ${params.closeout?.status ?? "not_run"}`,
       `closeout-reason: ${params.closeout?.reason ?? "not_run"}`,
       `closeout-repo-root: ${params.closeout?.context.resolvedRepoRoot ?? "n/a"}`,

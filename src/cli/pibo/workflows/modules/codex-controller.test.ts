@@ -46,6 +46,8 @@ type CloseoutGitScenario = {
   statusPorcelain?: string;
   worktreeList?: string;
   refs?: string;
+  absoluteGitDir?: string;
+  commonGitDir?: string;
 };
 
 function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
@@ -58,6 +60,15 @@ function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
     const mergeBase = scenario.mergeBase ?? head;
     if (joined === "rev-parse --show-toplevel") {
       return `${cwd}\n`;
+    }
+    if (joined === "rev-parse --absolute-git-dir") {
+      return `${scenario.absoluteGitDir ?? `${cwd}/.git`}\n`;
+    }
+    if (joined === "rev-parse --path-format=absolute --git-common-dir") {
+      return `${scenario.commonGitDir ?? `${cwd}/.git`}\n`;
+    }
+    if (joined === "rev-parse --git-common-dir") {
+      return `${scenario.commonGitDir ?? `${cwd}/.git`}\n`;
     }
     if (joined === "rev-parse HEAD") {
       return `${head}\n`;
@@ -957,6 +968,66 @@ describe("codex_controller module", () => {
         ),
       }),
     );
+  });
+
+  it("treats a linked workingDirectory without explicit repoRoot as worktree-local closeout", async () => {
+    mockCloseoutGitScenario({
+      head: "2222222222222222222222222222222222222222",
+      mergeBase: "1111111111111111111111111111111111111111",
+      absoluteGitDir: "/repo/.git/worktrees/task",
+      commonGitDir: "/repo/.git",
+      worktreeList: [
+        "worktree /repo",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/main",
+        "worktree /repo/slices/task",
+        "HEAD 2222222222222222222222222222222222222222",
+        "branch refs/heads/codex/task",
+      ].join("\n"),
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo/slices/task",
+        },
+      },
+      createModuleContext("run-linked-worktree-done"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(record.input).toEqual(
+      expect.objectContaining({
+        workingDirectory: "/repo/slices/task",
+        repoRoot: "/repo/slices/task",
+        closeoutContextSource: "workingDirectory",
+      }),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-linked-worktree-done",
+      "closeout-assessment.json",
+      expect.stringContaining('"closeoutMode": "linked_worktree_local"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-linked-worktree-done",
+      "run-summary.txt",
+      expect.stringContaining("closeout-mode: linked_worktree_local"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-linked-worktree-done",
+      "run-summary.txt",
+      expect.stringContaining(
+        "closeout-reason: Closeout passed: linked worktree is clean; sibling worktrees and mainline integration are deferred until an explicit repoRoot closeout.",
+      ),
+    );
+    const controllerPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    expect(controllerPrompt).toContain("mode=linked_worktree_local");
+    expect(controllerPrompt).toContain("status=pass");
+    expect(controllerPrompt).toContain("open_worktrees=none");
+    expect(controllerPrompt).toContain("head_integrated_into_base=true");
   });
 
   it("remaps DONE on not-integrated preflight failure to continue instead of terminal closeout", async () => {

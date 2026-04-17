@@ -51,8 +51,10 @@ This keeps the controller loop and workflow tracing intact while removing the ex
 The module keeps two paths distinct when `agentId` is provided:
 
 - `workingDirectory`: the project repo/worktree used as the Codex SDK worker `cwd`
-- `repoRoot`: repo-root-first closeout target for the final read-only git/worktree/integration gate; falls back to `workingDirectory` if omitted
+- `repoRoot`: explicit strict closeout target for the final read-only git/worktree/integration gate
 - `agentId`: selects the controller workspace and is also exposed to the worker as an additional readable directory; it does not move the worker `cwd`
+
+If `repoRoot` is omitted and `workingDirectory` is an active linked git worktree, closeout is scoped to that current worktree: the run must still end clean, but it does not need to self-integrate into `main` or close sibling worktrees just to report success. Provide `repoRoot` when the product needs shared-repo integration semantics instead.
 
 If `agentId` is omitted, the prior behavior stays unchanged.
 
@@ -113,8 +115,8 @@ The runtime now executes a read-only closeout assessment on the real DONE -> ter
 
 - resolve the effective closeout repo from `repoRoot` first, with `workingDirectory` fallback
 - require a clean repo/worktree
-- require no additional linked worktrees
-- require `HEAD` to be integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
+- if `repoRoot` is explicit, require no additional linked worktrees and require `HEAD` to be integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
+- if `repoRoot` is omitted and the worker is running in a linked worktree, treat closeout as worktree-local and defer sibling-worktree cleanup plus mainline integration to a later explicit repo-root closeout step
 
 If that closeout gate fails, the workflow ends as `blocked` instead of `done`.
 

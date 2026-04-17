@@ -57,7 +57,7 @@ export const codexControllerWorkflowModuleManifest = {
   inputSchemaSummary: [
     "task (string, required): original coding task passed directly to Codex.",
     "workingDirectory (string, required): absolute project/worktree path used as the persistent Codex SDK worker cwd.",
-    "repoRoot (string, optional): repo-root-first closeout path used for final read-only git/worktree/integration assessment; defaults to workingDirectory for backward compatibility.",
+    "repoRoot (string, optional): explicit strict closeout target for final read-only git/worktree/integration assessment. If omitted, linked-worktree runs close out against the current worktree instead of self-integrating into the shared repo root.",
     "agentId (string, optional): agent workspace used for controller bootstrap plus Codex additional-directory context; does not change workingDirectory or worker cwd.",
     "maxRetries|maxRounds (number, optional): controller loop budget; defaults to 10.",
     "successCriteria (string[], optional): additional completion criteria.",
