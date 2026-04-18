@@ -8,6 +8,9 @@ import { createWorkflowAbortError, throwIfWorkflowAbortRequested } from "./abort
 import { callWorkflowGatewayMethod } from "./workflow-gateway.js";
 
 const WORKFLOW_HISTORY_LIMIT = 100;
+// Workflow runtime reuses assistant replies as machine state, so it must bypass
+// the UI-safe 12k chat.history default while staying inside the RPC schema cap.
+const WORKFLOW_HISTORY_MAX_CHARS = 500_000;
 const TRANSCRIPT_SETTLE_WAIT_MS = 1_500;
 const TRANSCRIPT_SETTLE_INTERVAL_MS = 100;
 
@@ -37,6 +40,7 @@ async function readUpdatedAssistantReplyWithRetry(params: {
     latest = await readLatestAssistantReplySnapshot({
       sessionKey: params.sessionKey,
       limit: WORKFLOW_HISTORY_LIMIT,
+      maxChars: WORKFLOW_HISTORY_MAX_CHARS,
       callGateway: params.callGateway,
     });
     if (
@@ -83,6 +87,7 @@ export async function runWorkflowAgentOnSession(params: {
   const baseline = await readLatestAssistantReplySnapshot({
     sessionKey: params.sessionKey,
     limit: WORKFLOW_HISTORY_LIMIT,
+    maxChars: WORKFLOW_HISTORY_MAX_CHARS,
     callGateway,
   });
   throwIfWorkflowAbortRequested(params.abortSignal);
@@ -133,6 +138,7 @@ export async function runWorkflowAgentOnSession(params: {
   const history = await callWorkflowGatewayMethod<{ messages?: unknown[] }>("chat.history", {
     sessionKey: params.sessionKey,
     limit: WORKFLOW_HISTORY_LIMIT,
+    maxChars: WORKFLOW_HISTORY_MAX_CHARS,
   });
   if (!settledReply) {
     throw new Error(`No assistant output found in session ${params.sessionKey}.`);

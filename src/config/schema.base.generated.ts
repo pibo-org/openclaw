@@ -20756,7 +20756,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 maximum: 500000,
                 title: "WebChat History Max Chars",
                 description:
-                  "Max characters per text field in chat.history responses before truncation (default: 12000).",
+                  "Max characters per text field in UI/operator chat.history responses before truncation (default: 12000).",
               },
             },
             additionalProperties: false,
@@ -24036,7 +24036,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     },
     "gateway.webchat.chatHistoryMaxChars": {
       label: "WebChat History Max Chars",
-      help: "Max characters per text field in chat.history responses before truncation (default: 12000).",
+      help: "Max characters per text field in UI/operator chat.history responses before truncation (default: 12000).",
       tags: ["network", "performance"],
     },
     "nodeHost.browserProxy": {

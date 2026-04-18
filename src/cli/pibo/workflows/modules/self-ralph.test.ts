@@ -655,6 +655,74 @@ describe("self_ralph module", () => {
     ]);
   });
 
+  it("persists and reuses long worker outputs without injecting truncation markers", async () => {
+    const { selfRalphWorkflowModule } = await import("./self-ralph.js");
+
+    mockGitEvidence({
+      byCwd: {
+        "/repo-existing": {
+          repoRoot: "/repo-existing",
+        },
+      },
+    });
+    queueApprovedPlanningAndBacklog(
+      JSON.stringify(
+        {
+          stories: [
+            {
+              id: "story-1",
+              title: "Long output story",
+              task: "Produce a large evidence-heavy update.",
+              acceptanceCriteria: ["Full evidence is preserved"],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    const longWorkerOutput = ["ROUND 10", "TAIL_MARKER", "A".repeat(20_000)].join("\n");
+    runWorkflowAgentOnSession
+      .mockResolvedValueOnce(workflowRun(longWorkerOutput, "exec-1-worker"))
+      .mockResolvedValueOnce(
+        workflowRun(
+          [
+            "DECISION: DONE",
+            "REASON:",
+            "- The full worker evidence is available.",
+            "LEARNINGS:",
+            "- Preserve machine-faithful worker outputs across rounds.",
+            "NEXT_TASK:",
+            "- none",
+          ].join("\n"),
+          "exec-1-review",
+        ),
+      );
+
+    const record = await selfRalphWorkflowModule.start(
+      {
+        input: {
+          direction: "Erstelle eine Social Media App",
+          workingDirectory: "/workspace",
+          executionMode: "existing_repo",
+          repoRoot: "/repo-existing",
+          maxBrainstormingRounds: 1,
+          maxSpecsRounds: 1,
+          maxPRDRounds: 1,
+          maxExecutionRounds: 1,
+        },
+      },
+      createModuleContext("run-1"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(getLastArtifactContent("execution-round-1-worker.txt")).toBe(longWorkerOutput);
+    expect(getLastArtifactContent("execution-round-1-review-prompt.md")).toContain("TAIL_MARKER");
+    expect(getLastArtifactContent("execution-round-1-review-prompt.md")).not.toContain(
+      "...(truncated)...",
+    );
+  });
+
   it("bootstraps a fresh project repo under workingDirectory before execution", async () => {
     const { selfRalphWorkflowModule } = await import("./self-ralph.js");
 

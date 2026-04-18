@@ -130,6 +130,40 @@ describe("readLatestAssistantReply", () => {
 
     expect(result).toBe("Hi there");
   });
+
+  it("allows workflow-style machine reads to override the UI-safe history truncation default", async () => {
+    const fullText = "A".repeat(20_000);
+    callGatewayMock.mockImplementation(
+      async (opts: { method: string; params?: { maxChars?: number } }) => ({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text:
+                  opts.params?.maxChars === 500_000
+                    ? fullText
+                    : `${fullText.slice(0, 12_000)}\n...(truncated)...`,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const result = await readLatestAssistantReplySnapshot({
+      sessionKey: "agent:main:child",
+      maxChars: 500_000,
+    });
+
+    expect(result.text).toBe(fullText);
+    expect(result.text).not.toContain("...(truncated)...");
+    expect(callGatewayMock).toHaveBeenCalledWith({
+      method: "chat.history",
+      params: { sessionKey: "agent:main:child", limit: 50, maxChars: 500_000 },
+    });
+  });
 });
 
 describe("waitForAgentRun", () => {

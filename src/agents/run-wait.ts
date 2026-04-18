@@ -88,13 +88,18 @@ function resolveLatestAssistantReplySnapshot(messages: unknown[]): AssistantRepl
 export async function readLatestAssistantReplySnapshot(params: {
   sessionKey: string;
   limit?: number;
+  maxChars?: number;
   callGateway?: GatewayCaller;
 }): Promise<AssistantReplySnapshot> {
   const history = await (params.callGateway ?? runWaitDeps.callGateway)<{
     messages: Array<unknown>;
   }>({
     method: "chat.history",
-    params: { sessionKey: params.sessionKey, limit: params.limit ?? 50 },
+    params: {
+      sessionKey: params.sessionKey,
+      limit: params.limit ?? 50,
+      ...(typeof params.maxChars === "number" ? { maxChars: params.maxChars } : {}),
+    },
   });
   return resolveLatestAssistantReplySnapshot(
     stripToolMessages(Array.isArray(history?.messages) ? history.messages : []),
@@ -104,12 +109,14 @@ export async function readLatestAssistantReplySnapshot(params: {
 export async function readLatestAssistantReply(params: {
   sessionKey: string;
   limit?: number;
+  maxChars?: number;
   callGateway?: GatewayCaller;
 }): Promise<string | undefined> {
   return (
     await readLatestAssistantReplySnapshot({
       sessionKey: params.sessionKey,
       limit: params.limit,
+      maxChars: params.maxChars,
       callGateway: params.callGateway,
     })
   ).text;
@@ -151,6 +158,7 @@ export async function waitForAgentRunAndReadUpdatedAssistantReply(params: {
   sessionKey: string;
   timeoutMs: number;
   limit?: number;
+  maxChars?: number;
   baseline?: AssistantReplySnapshot;
   callGateway?: GatewayCaller;
 }): Promise<AgentWaitResult & { replyText?: string }> {
@@ -166,6 +174,7 @@ export async function waitForAgentRunAndReadUpdatedAssistantReply(params: {
   const latestReply = await readLatestAssistantReplySnapshot({
     sessionKey: params.sessionKey,
     limit: params.limit,
+    maxChars: params.maxChars,
     callGateway: params.callGateway,
   });
   const baselineFingerprint = params.baseline?.fingerprint;

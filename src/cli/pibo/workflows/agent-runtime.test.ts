@@ -18,6 +18,8 @@ vi.mock("../../../agents/run-wait.js", () => ({
 }));
 
 describe("runWorkflowAgentOnSession", () => {
+  const workflowHistoryMaxChars = 500_000;
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -50,12 +52,26 @@ describe("runWorkflowAgentOnSession", () => {
     expect(callWorkflowGatewayMethod).toHaveBeenNthCalledWith(1, "chat.history", {
       sessionKey: "agent:codex:workflow:test:orchestrator:main",
       limit: 100,
+      maxChars: workflowHistoryMaxChars,
     });
     expect(result).toEqual({
       runId: "idem-1",
       text: "DECISION: DONE\nMODULE_REASON: probe ok",
       wait: { status: "ok" },
       messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+    });
+    expect(readLatestAssistantReplySnapshot).toHaveBeenNthCalledWith(1, {
+      sessionKey: "agent:codex:workflow:test:orchestrator:main",
+      limit: 100,
+      maxChars: workflowHistoryMaxChars,
+      callGateway: expect.any(Function),
+    });
+    expect(readLatestAssistantReplySnapshot).toHaveBeenNthCalledWith(2, {
+      sessionKey: "agent:codex:workflow:test:orchestrator:main",
+      limit: 100,
+      maxChars: workflowHistoryMaxChars,
+      callGateway: expect.any(Function),
+      abortSignal: undefined,
     });
   });
 
@@ -170,6 +186,48 @@ describe("runWorkflowAgentOnSession", () => {
     expect(callWorkflowGatewayMethod).toHaveBeenCalledWith("sessions.abort", {
       key: "agent:langgraph:workflow:test:worker:main",
       runId: "idem-abort",
+    });
+  });
+
+  it("returns long workflow replies without inheriting the 12k UI truncation default", async () => {
+    const longReply = `ROUND 10\n${"A".repeat(20_000)}`;
+    readLatestAssistantReplySnapshot.mockResolvedValueOnce({}).mockResolvedValueOnce({
+      text: longReply,
+      fingerprint: "reply-long",
+    });
+    callWorkflowGatewayMethod.mockResolvedValueOnce({
+      messages: [{ role: "assistant", content: [{ type: "text", text: longReply }] }],
+    });
+
+    const { runWorkflowAgentOnSession } = await import("./agent-runtime.js");
+    const result = await runWorkflowAgentOnSession({
+      sessionKey: "agent:codex:workflow:test:self-ralph:worker",
+      message: "produce a full draft",
+      idempotencyKey: "idem-long",
+    });
+
+    expect(result.text).toBe(longReply);
+    expect(result.text).not.toContain("...(truncated)...");
+    expect(result.messages).toEqual([
+      { role: "assistant", content: [{ type: "text", text: longReply }] },
+    ]);
+    expect(callWorkflowGatewayMethod).toHaveBeenNthCalledWith(1, "chat.history", {
+      sessionKey: "agent:codex:workflow:test:self-ralph:worker",
+      limit: 100,
+      maxChars: workflowHistoryMaxChars,
+    });
+    expect(readLatestAssistantReplySnapshot).toHaveBeenNthCalledWith(1, {
+      sessionKey: "agent:codex:workflow:test:self-ralph:worker",
+      limit: 100,
+      maxChars: workflowHistoryMaxChars,
+      callGateway: expect.any(Function),
+    });
+    expect(readLatestAssistantReplySnapshot).toHaveBeenNthCalledWith(2, {
+      sessionKey: "agent:codex:workflow:test:self-ralph:worker",
+      limit: 100,
+      maxChars: workflowHistoryMaxChars,
+      callGateway: expect.any(Function),
+      abortSignal: undefined,
     });
   });
 });
