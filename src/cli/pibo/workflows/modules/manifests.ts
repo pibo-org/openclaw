@@ -76,11 +76,44 @@ export const codexControllerWorkflowModuleManifest = {
   ],
 } satisfies WorkflowModuleManifest;
 
+export const selfRalphWorkflowModuleManifest = {
+  moduleId: "self_ralph",
+  displayName: "Self Ralph",
+  description:
+    "Runs a native ideation-first self-Ralph workflow with critique-gated planning artifacts and a fresh-worker story execution loop.",
+  kind: "agent_workflow",
+  version: "0.4.0",
+  requiredAgents: ["codex", "codex-controller"],
+  terminalStates: ["done", "planning_done", "blocked", "aborted", "max_rounds_reached", "failed"],
+  supportsAbort: true,
+  inputSchemaSummary: [
+    "direction (string, required): broad product direction used for ideation-first planning.",
+    "workingDirectory (string, required): existing writable workspace root for planning artifacts and optional later project bootstrap.",
+    'executionMode ("plan_only"|"existing_repo"|"bootstrap_project", optional): defaults to bootstrap_project.',
+    "repoRoot (string, optional): required only for executionMode=existing_repo.",
+    "projectSlug|bootstrapTemplate (string, optional): bootstrap hints for executionMode=bootstrap_project.",
+    "successCriteria (string[], optional): workflow-level acceptance criteria carried through planning and execution.",
+    "constraints (string[], optional): global constraints for planning and execution.",
+    "maxBrainstormingRounds|maxSpecsRounds|maxPRDRounds (number, optional): critique/revision budget per planning phase; defaults to 2 each.",
+    "maxExecutionRounds|maxRounds (number, optional): Ralph execution budget; defaults to 6.",
+    "maxStories (number, optional): backlog planner cap independent from the execution round budget.",
+    "plannerAgentId|reviewerAgentId|workerAgentId (string, optional): defaults to codex-controller, codex-controller, codex.",
+    "plannerModel|reviewerModel|workerModel (string, optional): model overrides per role.",
+  ],
+  artifactContract: [
+    "brainstorming/specs/prd phase prompt, draft, and review artifacts per round in the workflow artifact store.",
+    "brainstorming-final.md, optional brainstorming-options.json, specs-final.md, prd-final.md, story-backlog.json, execution-state.json, and run-summary.txt mirrored into <workingDirectory>/self-ralph/.",
+    "executionMode=bootstrap_project additionally writes project-bootstrap.json into workflow artifacts and <workingDirectory>/self-ralph/.",
+    "execution round worker/review prompts and outputs stay in workflow artifacts; execution-round-<n>-evidence.json is additionally mirrored into <workingDirectory>/self-ralph/.",
+  ],
+} satisfies WorkflowModuleManifest;
+
 const workflowModuleManifestMap = new Map(
   [
     noopWorkflowModuleManifest,
     langgraphWorkerCriticModuleManifest,
     codexControllerWorkflowModuleManifest,
+    selfRalphWorkflowModuleManifest,
   ].map((manifest) => [manifest.moduleId, manifest] as const),
 );
 

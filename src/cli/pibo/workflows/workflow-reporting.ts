@@ -23,7 +23,7 @@ export type WorkflowReportEvent = {
   emittingAgentId: string;
   origin?: WorkflowOriginContext;
   reporting?: WorkflowReportingConfig;
-  status?: "running" | "blocked" | "done" | "failed" | "max_rounds_reached";
+  status?: "running" | "blocked" | "done" | "planning_done" | "failed" | "max_rounds_reached";
   role?: string;
   round?: number;
   targetSessionKey?: string;

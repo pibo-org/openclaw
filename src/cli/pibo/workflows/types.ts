@@ -4,6 +4,7 @@ export type WorkflowModuleKind = "agent_workflow" | "analysis_workflow" | "maint
 
 export type WorkflowTerminalState =
   | "done"
+  | "planning_done"
   | "blocked"
   | "aborted"
   | "failed"

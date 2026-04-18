@@ -114,6 +114,7 @@ function artifactNameFromPath(artifactPath?: string | null) {
 function isTerminalStatus(status: WorkflowRunRecord["status"]) {
   return (
     status === "done" ||
+    status === "planning_done" ||
     status === "blocked" ||
     status === "aborted" ||
     status === "failed" ||

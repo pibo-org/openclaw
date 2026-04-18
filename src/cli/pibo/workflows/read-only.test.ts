@@ -19,9 +19,10 @@ describe("pibo workflows read-only", () => {
     workflowsList({ json: false });
 
     expect(stdoutSpy.mock.calls.map(([line]: [string, ...unknown[]]) => line)).toEqual([
-      "- codex_controller: Runs a persistent Codex ACP worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
+      "- codex_controller: Runs a persistent Codex SDK worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
       "- langgraph_worker_critic: Führt einen expliziten Worker/Critic-Loop mit `langgraph` als Worker und `critic` als Review-Agent aus.",
       "- noop: Minimal referenzierbares Workflow-Modul zum Testen von start/status/describe/runs.",
+      "- self_ralph: Runs a native ideation-first self-Ralph workflow with critique-gated planning artifacts and a fresh-worker story execution loop.",
     ]);
   });
 
