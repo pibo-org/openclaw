@@ -1,10 +1,12 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import process from "process";
 
 const MODEL = "minimax/MiniMax-M2.7-highspeed";
 const AGENT = "explore";
+const FINDER_COMMAND = "opencode";
+const HEARTBEAT_INTERVAL_MS = 10_000;
 const DOCS_PROMPT = `Du bist ein Finder-Agent für das Dokumentenwesen in diesem Arbeitsverzeichnis.
 
 Aufgabe:
@@ -90,12 +92,14 @@ interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  elapsedMs: number;
   error?: string;
 }
 
 export async function findRun(prompt: string, options: FindOptions): Promise<void> {
   const selectedTargets = getSelectedTargets(options);
   ensurePromptFilesExist(selectedTargets);
+  ensureFinderCommandAvailable();
 
   const results = await Promise.all(selectedTargets.map((target) => runTarget(target, prompt)));
   let successCount = 0;
@@ -166,19 +170,84 @@ function ensurePromptFilesExist(targets: FindTarget[]): void {
   }
 }
 
+function ensureFinderCommandAvailable(): void {
+  const probe = spawnSync(FINDER_COMMAND, ["--version"], { stdio: "ignore" });
+  if (!probe.error) {
+    return;
+  }
+
+  const code =
+    typeof probe.error === "object" && probe.error && "code" in probe.error
+      ? String(probe.error.code)
+      : "";
+
+  if (code === "ENOENT") {
+    throw new Error(
+      `OpenCode CLI nicht gefunden: '${FINDER_COMMAND}' ist nicht im PATH. ` +
+        "Bitte OpenCode installieren oder PATH korrigieren, bevor 'openclaw pibo find' gestartet wird.",
+    );
+  }
+
+  throw new Error(`OpenCode CLI konnte nicht gestartet werden: ${probe.error.message}`);
+}
+
+function writeStatusLine(target: FindTarget, message: string): void {
+  process.stderr.write(`[openclaw pibo find] ${target.label}: ${message}\n`);
+}
+
+function formatElapsedMs(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, elapsedMs) / 1000;
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(1)}s`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
 async function runTarget(target: FindTarget, userPrompt: string): Promise<RunResult> {
   const promptPath = path.join(getWorkspacePromptsDir(), target.promptFile);
   const basePrompt = fs.readFileSync(promptPath, "utf8").trim();
   const finalPrompt = `${basePrompt}\n\n${userPrompt}`;
+  const startedAt = Date.now();
+
+  writeStatusLine(target, `started in ${resolveTargetWorkdir(target)}`);
 
   return new Promise<RunResult>((resolve) => {
-    const child = spawn("opencode", ["run", "--agent", AGENT, "-m", MODEL, finalPrompt], {
+    const heartbeat = setInterval(() => {
+      writeStatusLine(
+        target,
+        `still searching (${formatElapsedMs(Date.now() - startedAt)} elapsed)`,
+      );
+    }, HEARTBEAT_INTERVAL_MS);
+    heartbeat.unref?.();
+
+    const child = spawn(FINDER_COMMAND, ["run", "--agent", AGENT, "-m", MODEL, finalPrompt], {
       cwd: resolveTargetWorkdir(target),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+
+    const finish = (result: Omit<RunResult, "elapsedMs">) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(heartbeat);
+      const elapsedMs = Date.now() - startedAt;
+      const status = result.success ? "finished" : "failed";
+      const detail =
+        result.error || (!result.success ? `exit ${result.exitCode ?? "unknown"}` : undefined);
+      writeStatusLine(
+        target,
+        `${status} in ${formatElapsedMs(elapsedMs)}${detail ? ` (${detail})` : ""}`,
+      );
+      resolve({ ...result, elapsedMs });
+    };
 
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
@@ -189,7 +258,7 @@ async function runTarget(target: FindTarget, userPrompt: string): Promise<RunRes
     });
 
     child.on("error", (error) => {
-      resolve({
+      finish({
         target,
         success: false,
         stdout,
@@ -200,7 +269,7 @@ async function runTarget(target: FindTarget, userPrompt: string): Promise<RunRes
     });
 
     child.on("close", (exitCode) => {
-      resolve({
+      finish({
         target,
         success: exitCode === 0,
         stdout,
