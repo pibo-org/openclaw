@@ -44,29 +44,81 @@ export function registerPiboCli(program: Command) {
   const pibo = program.command("pibo").description("PIBo CLI modules ported into OpenClaw");
 
   const twitter = pibo.command("twitter").description("Twitter/X tools");
-  twitter
+  const addTwitterFeedCheckOptions = (command: Command) =>
+    command
+      .option("--new <n>", "Target number of new tweets to collect", "20")
+      .option("--max-scanned <n>", "Hard cap for scanned tweet candidates", "1000")
+      .option("--ignore-state", "Do not read saved state for dedupe")
+      .option("--no-write-state", "Do not write updated state after this run")
+      .option("--stateless", "Convenience flag for --ignore-state plus --no-write-state")
+      .option("--json", "Emit structured JSON output (default)");
+
+  const twitterCheck = twitter
     .command("check")
-    .description("Following Feed checken — nur neue Tweets")
-    .option("--cold-start", "Cold Start — alle Tweets holen, nichts senden")
-    .option("--verbose", "Volle Ausgabe, keine Zusammenfassung")
-    .action(async (opts) => {
-      const { twitterCheck } = await loadTwitterModule();
-      await twitterCheck(opts);
+    .description("Scrape Twitter/X feeds and return raw tweet data");
+
+  addTwitterFeedCheckOptions(
+    twitterCheck
+      .command("following")
+      .description("Scrape the Following feed")
+      .action(async (opts) => {
+        const { twitterCheckFeed } = await loadTwitterModule();
+        await twitterCheckFeed("following", opts);
+      }),
+  );
+
+  addTwitterFeedCheckOptions(
+    twitterCheck
+      .command("for-you")
+      .description("Scrape the For You feed")
+      .action(async (opts) => {
+        const { twitterCheckFeed } = await loadTwitterModule();
+        await twitterCheckFeed("for-you", opts);
+      }),
+  );
+
+  addTwitterFeedCheckOptions(
+    twitterCheck.action(async (opts) => {
+      const { twitterCheckDeprecatedAlias } = await loadTwitterModule();
+      await twitterCheckDeprecatedAlias("following", opts);
+    }),
+  );
+
+  const twitterState = twitter.command("state").description("Twitter/X feed state");
+  twitterState
+    .command("status")
+    .description("Show saved tweet dedupe state for a feed")
+    .option("--feed <feed>", "Feed name (following|for-you)", "following")
+    .action(async (opts: { feed: string }) => {
+      const { twitterStatus } = await loadTwitterModule();
+      await twitterStatus(opts);
     });
+  twitterState
+    .command("reset")
+    .description("Reset saved tweet dedupe state for a feed")
+    .option("--feed <feed>", "Feed name (following|for-you)", "following")
+    .option("-y", "Skip confirmation")
+    .action(async (opts: { feed: string; y?: boolean }) => {
+      const { twitterReset } = await loadTwitterModule();
+      await twitterReset(opts);
+    });
+
   twitter
     .command("status")
-    .description("Heartbeat-State anzeigen")
-    .action(async () => {
+    .description("Show saved tweet dedupe state for a feed")
+    .option("--feed <feed>", "Feed name (following|for-you)", "following")
+    .action(async (opts: { feed: string }) => {
       const { twitterStatus } = await loadTwitterModule();
-      await twitterStatus();
+      await twitterStatus(opts);
     });
   twitter
     .command("reset")
-    .description("Heartbeat-State zurücksetzen")
-    .option("-y", "Keine Nachfrage")
-    .action(async (opts) => {
+    .description("Reset saved tweet dedupe state for a feed")
+    .option("--feed <feed>", "Feed name (following|for-you)", "following")
+    .option("-y", "Skip confirmation")
+    .action(async (opts: { feed: string; y?: boolean }) => {
       const { twitterReset } = await loadTwitterModule();
-      await twitterReset(opts.y);
+      await twitterReset(opts);
     });
 
   const agents = pibo.command("agents").description("Agent Task Management");

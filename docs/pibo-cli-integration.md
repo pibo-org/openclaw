@@ -43,3 +43,14 @@ The old active runtime path was the globally linked `pibo-cli` package and its `
 For local development from the repo checkout, the intended entrypoint is:
 
 - `pnpm openclaw -- pibo ...`
+
+## Twitter feed surface
+
+The native Twitter/X CLI is now a general feed scraper instead of a specialized checker.
+
+- `openclaw pibo twitter check following --new 20 --max-scanned 1000`
+- `openclaw pibo twitter check for-you --stateless`
+- `openclaw pibo twitter state status --feed following`
+- `openclaw pibo twitter state reset --feed for-you`
+
+The scrape commands return structured raw tweet data with feed-specific dedupe state keyed by `statusId`.

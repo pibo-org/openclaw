@@ -1,5 +1,4 @@
-import { execSync } from "child_process";
-import { exec } from "child_process";
+import { exec, execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { promisify } from "util";
@@ -7,10 +6,350 @@ import { chromium, type Page } from "playwright-core";
 
 const execAsync = promisify(exec);
 const CDP_URL = "http://127.0.0.1:18800";
-const STATE_PATH = path.join(
-  process.env.HOME || "",
-  ".openclaw/workspace/state/twitter/last_check_heartbeat.json",
-);
+
+export const TWITTER_DEFAULT_NEW_TWEETS = 20;
+export const TWITTER_DEFAULT_MAX_SCANNED = 1000;
+export const TWITTER_STATE_SEEN_LIMIT = 5000;
+export const TWITTER_STAGNATION_PASS_LIMIT = 3;
+
+const TWITTER_STATE_SCHEMA_VERSION = 1;
+const RECOVERY_WAIT_MS = 1500;
+const TASK_DRAIN_TIMEOUT_MS = 10000;
+const SAFE_RESTART_HOUR_START = 2;
+const SAFE_RESTART_HOUR_END = 6;
+const FEED_READY_WAIT_MS = 3000;
+const FEED_SCROLL_WAIT_MS = 1500;
+
+export type TwitterFeed = "following" | "for-you";
+export type TwitterStopReason =
+  | "target_reached"
+  | "max_scanned_reached"
+  | "stagnated"
+  | "feed_not_ready"
+  | "browser_error";
+
+export interface Tweet {
+  statusId: string;
+  url: string;
+  author: string;
+  text: string;
+  feed: TwitterFeed;
+  repostedFrom: string | null;
+}
+
+interface ExtractedTweetCandidate {
+  statusId: string;
+  url?: string;
+  author: string;
+  text: string;
+  repostedFrom: string | null;
+}
+
+export interface TwitterState {
+  schemaVersion: number;
+  feed: TwitterFeed;
+  lastCheck: string | null;
+  seen: string[];
+  lastTweetCount: number;
+  lastNewTweetCount: number;
+  status: string;
+  notes: string;
+  lastStopReason: TwitterStopReason | null;
+}
+
+interface TwitterCheckCliOptions {
+  new?: number | string;
+  maxScanned?: number | string;
+  ignoreState?: boolean;
+  noWriteState?: boolean;
+  stateless?: boolean;
+  json?: boolean;
+}
+
+interface ResolvedTwitterCheckOptions {
+  requestedNewCount: number;
+  maxScanned: number;
+  ignoreState: boolean;
+  writeState: boolean;
+  json: boolean;
+}
+
+export interface TwitterCheckResult {
+  feed: TwitterFeed;
+  requestedNewCount: number;
+  maxScanned: number;
+  usedState: boolean;
+  wroteState: boolean;
+  totalScanned: number;
+  newTweetsFound: number;
+  stopReason: TwitterStopReason;
+  tweets: Tweet[];
+}
+
+export interface TwitterScrapeLoopResult {
+  tweets: Tweet[];
+  totalScanned: number;
+  stopReason: Extract<TwitterStopReason, "target_reached" | "max_scanned_reached" | "stagnated">;
+  scannedStatusIds: string[];
+}
+
+interface CollectTweetsFromPassesParams {
+  feed: TwitterFeed;
+  knownStatusIds: string[];
+  requestedNewCount: number;
+  maxScanned: number;
+  stagnationPassLimit?: number;
+  loadPass: () => Promise<ExtractedTweetCandidate[]>;
+  advance: () => Promise<void>;
+}
+
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getTwitterStateDir(): string {
+  return path.join(process.env.HOME || "", ".openclaw/workspace/state/twitter");
+}
+
+export function getTwitterStatePath(feed: TwitterFeed): string {
+  return path.join(getTwitterStateDir(), `${feed}.json`);
+}
+
+export function getLegacyTwitterLegacyStatePath(): string {
+  return path.join(getTwitterStateDir(), "last_check_heartbeat.json");
+}
+
+export function normalizeTwitterFeed(feed: string): TwitterFeed {
+  switch (feed.trim().toLowerCase()) {
+    case "following":
+      return "following";
+    case "for-you":
+    case "for_you":
+    case "foryou":
+      return "for-you";
+    default:
+      throw new Error(`Unsupported Twitter feed: ${feed}`);
+  }
+}
+
+export function createEmptyTwitterState(feed: TwitterFeed): TwitterState {
+  return {
+    schemaVersion: TWITTER_STATE_SCHEMA_VERSION,
+    feed,
+    lastCheck: null,
+    seen: [],
+    lastTweetCount: 0,
+    lastNewTweetCount: 0,
+    status: "initialized",
+    notes: "",
+    lastStopReason: null,
+  };
+}
+
+function normalizeSeenStatusIds(statusIds: readonly string[]): string[] {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const statusId of statusIds) {
+    const normalized = statusId.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped.slice(Math.max(0, deduped.length - TWITTER_STATE_SEEN_LIMIT));
+}
+
+function parseTwitterStateFromDisk(feed: TwitterFeed, raw: unknown): TwitterState {
+  const source =
+    raw && typeof raw === "object"
+      ? (raw as Record<string, unknown>)
+      : ({} as Record<string, unknown>);
+  return {
+    schemaVersion:
+      typeof source.schemaVersion === "number"
+        ? source.schemaVersion
+        : TWITTER_STATE_SCHEMA_VERSION,
+    feed,
+    lastCheck: typeof source.lastCheck === "string" ? source.lastCheck : null,
+    seen: normalizeSeenStatusIds(
+      Array.isArray(source.seen)
+        ? source.seen.filter((value): value is string => typeof value === "string")
+        : Array.isArray(source.recentBuffer)
+          ? source.recentBuffer.filter((value): value is string => typeof value === "string")
+          : [],
+    ),
+    lastTweetCount: typeof source.lastTweetCount === "number" ? source.lastTweetCount : 0,
+    lastNewTweetCount: typeof source.lastNewTweetCount === "number" ? source.lastNewTweetCount : 0,
+    status: typeof source.status === "string" ? source.status : "initialized",
+    notes: typeof source.notes === "string" ? source.notes : "",
+    lastStopReason:
+      typeof source.lastStopReason === "string"
+        ? (source.lastStopReason as TwitterStopReason)
+        : null,
+  };
+}
+
+function readStateFile(filePath: string): unknown {
+  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+}
+
+export function readTwitterState(feed: TwitterFeed): TwitterState {
+  const statePath = getTwitterStatePath(feed);
+  if (fs.existsSync(statePath)) {
+    return parseTwitterStateFromDisk(feed, readStateFile(statePath));
+  }
+
+  if (feed === "following") {
+    const legacyPath = getLegacyTwitterLegacyStatePath();
+    if (fs.existsSync(legacyPath)) {
+      const migrated = parseTwitterStateFromDisk(feed, readStateFile(legacyPath));
+      if (!migrated.notes) {
+        migrated.notes = "Loaded from legacy Twitter state";
+      }
+      return migrated;
+    }
+  }
+
+  return createEmptyTwitterState(feed);
+}
+
+export function writeTwitterState(feed: TwitterFeed, state: TwitterState): void {
+  fs.mkdirSync(path.dirname(getTwitterStatePath(feed)), { recursive: true });
+  fs.writeFileSync(
+    getTwitterStatePath(feed),
+    JSON.stringify(
+      {
+        ...state,
+        schemaVersion: TWITTER_STATE_SCHEMA_VERSION,
+        feed,
+        seen: normalizeSeenStatusIds(state.seen),
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+}
+
+function parsePositiveIntegerOption(
+  name: "--new" | "--max-scanned",
+  value: number | string | undefined,
+  fallback: number,
+): number {
+  if (value == null || value === "") {
+    return fallback;
+  }
+  const parsed = typeof value === "number" ? value : Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+export function normalizeTwitterCheckOptions(
+  opts: TwitterCheckCliOptions = {},
+): ResolvedTwitterCheckOptions {
+  const stateless = Boolean(opts.stateless);
+  return {
+    requestedNewCount: parsePositiveIntegerOption("--new", opts.new, TWITTER_DEFAULT_NEW_TWEETS),
+    maxScanned: parsePositiveIntegerOption(
+      "--max-scanned",
+      opts.maxScanned,
+      TWITTER_DEFAULT_MAX_SCANNED,
+    ),
+    ignoreState: stateless || Boolean(opts.ignoreState),
+    writeState: !(stateless || Boolean(opts.noWriteState)),
+    json: opts.json ?? true,
+  };
+}
+
+export function buildTweetUrl(author: string, statusId: string): string {
+  if (!statusId) {
+    return "";
+  }
+  if (author.startsWith("@") && author.length > 1) {
+    return `https://x.com/${author.slice(1)}/status/${statusId}`;
+  }
+  return `https://x.com/i/web/status/${statusId}`;
+}
+
+function normalizeTweetText(text: string): string {
+  return text
+    .replace(/\u00A0/g, " ")
+    .replace(/\r/g, "")
+    .trim();
+}
+
+export async function collectTweetsFromPasses(
+  params: CollectTweetsFromPassesParams,
+): Promise<TwitterScrapeLoopResult> {
+  const knownStatusIds = new Set(params.knownStatusIds);
+  const scannedStatusIds = new Set<string>();
+  const tweets: Tweet[] = [];
+  const stagnationPassLimit = params.stagnationPassLimit ?? TWITTER_STAGNATION_PASS_LIMIT;
+  let totalScanned = 0;
+  let stopReason: TwitterScrapeLoopResult["stopReason"] = "stagnated";
+
+  for (let stagnantPasses = 0; ; ) {
+    const candidates = await params.loadPass();
+    let passProgress = 0;
+
+    for (const candidate of candidates) {
+      const statusId = candidate.statusId.trim();
+      if (!statusId || scannedStatusIds.has(statusId)) {
+        continue;
+      }
+
+      scannedStatusIds.add(statusId);
+      totalScanned += 1;
+      passProgress += 1;
+
+      if (!knownStatusIds.has(statusId)) {
+        tweets.push({
+          statusId,
+          url: candidate.url?.trim() || buildTweetUrl(candidate.author, statusId),
+          author: candidate.author.trim(),
+          text: normalizeTweetText(candidate.text),
+          feed: params.feed,
+          repostedFrom: candidate.repostedFrom,
+        });
+
+        if (tweets.length >= params.requestedNewCount) {
+          stopReason = "target_reached";
+          return {
+            tweets,
+            totalScanned,
+            stopReason,
+            scannedStatusIds: [...scannedStatusIds],
+          };
+        }
+      }
+
+      if (totalScanned >= params.maxScanned) {
+        stopReason = "max_scanned_reached";
+        return {
+          tweets,
+          totalScanned,
+          stopReason,
+          scannedStatusIds: [...scannedStatusIds],
+        };
+      }
+    }
+
+    stagnantPasses = passProgress === 0 ? stagnantPasses + 1 : 0;
+    if (stagnantPasses >= stagnationPassLimit) {
+      return {
+        tweets,
+        totalScanned,
+        stopReason,
+        scannedStatusIds: [...scannedStatusIds],
+      };
+    }
+
+    await params.advance();
+  }
+}
+
 function getBrowserProfileDirs(): string[] {
   const home = process.env.HOME || "";
   const candidates = [
@@ -33,125 +372,6 @@ function getBrowserProfileDirs(): string[] {
 
   return [...new Set(candidates)];
 }
-
-// ── Konstanten ─────────────────────────────────────────────────
-
-/** Maximale Tweets, die pro Run gescannt werden */
-const MAX_TWEETS_SCANNED = 50;
-
-/** Nach diesem Limit wird abgebrochen (genug neue Tweets gefunden) */
-const NEW_TWEETS_LIMIT = 20;
-
-// ── Kategorie & TL;DR ──────────────────────────────────────────
-
-const CATEGORY_KEYWORDS: [RegExp, string][] = [
-  [
-    /ai\b|llm|gpt|claude|gemini|openai|anthropic|hugging ?face|gemma|o\d|grok|mistral|deepseek|chatbot|artificial intelligence/i,
-    "AI",
-  ],
-  [
-    /code|dev|api|sdk|npm|github|repo|library|framework|typescript|javascript|python|react\b|node\.?js|docker|k8s|kubernetes/i,
-    "Dev",
-  ],
-  [
-    /launch|release|launch|introducing|announc|new version|v\d+\.\d+|update.*mode|upgrade/i,
-    "Release",
-  ],
-  [/meme|joke|funny|hot people|slop|lmao|😂|💀|cartoon|comedy/i, "Humor"],
-  [
-    /money|funding|ipo|revenue|acquisition|valuation|stock|earnings|billion|trillion|market cap|acquired|buy/i,
-    "Business",
-  ],
-  [/research|study|paper|find|experiment|benchmark|eval|science|data set|dataset/i, "Research"],
-  [/image|photo|picture|video|generate|prompt|creative\b|art\b|design|visual/i, "Media"],
-  [/elon|tesla|spacex|starship|mars|rocket|boring|hyperloop|neuralink|x\b/i, "Elon"],
-  [/regulation|europe|eu|government|law|policy|ban|censor|free?speech/i, "Politics"],
-  [/crypto|bitcoin|eth|solana|web3|nft|defi|token|blockchain/i, "Crypto"],
-];
-
-function classifyTweet(text: string): string {
-  for (const [re, cat] of CATEGORY_KEYWORDS) {
-    if (re.test(text)) {
-      return cat;
-    }
-  }
-  if (text.length < 20) {
-    return "Short";
-  }
-  return "General";
-}
-
-function generateTldr(text: string): string {
-  if (text.length <= 100) {
-    return text.replace(/\n+/g, " · ");
-  }
-  const sentences = text.split(/(?<=[.!?:])\s+/);
-  const first = sentences[0] || text;
-  if (sentences.length > 3) {
-    return first.replace(/\n+/g, " · ") + " …";
-  }
-  return first.replace(/\n+/g, " · ");
-}
-
-// ── Typen ──────────────────────────────────────────────────────
-
-interface Tweet {
-  author: string;
-  text: string;
-  statusId: string;
-  url: string;
-  repostedFrom: string | null;
-}
-
-interface State {
-  lastCheck: string | null;
-  /** Hash-basierter Seen-Set — alle je gesehenen statusIds */
-  seen: string[];
-  lastTweetCount: number;
-  lastNewTweetCount: number;
-  status: string;
-  notes: string;
-}
-
-function formatUnknownError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-// ── State I/O ──────────────────────────────────────────────────
-
-function readState(): State {
-  if (!fs.existsSync(STATE_PATH)) {
-    return {
-      lastCheck: null,
-      seen: [],
-      lastTweetCount: 0,
-      lastNewTweetCount: 0,
-      status: "initialized",
-      notes: "",
-    };
-  }
-  const raw = JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
-  // Migration: Alte State-Dateien haben maxStatusId/recentBuffer statt seen
-  return {
-    lastCheck: raw.lastCheck ?? null,
-    seen: raw.seen ?? raw.recentBuffer ?? [],
-    lastTweetCount: raw.lastTweetCount ?? 0,
-    lastNewTweetCount: raw.lastNewTweetCount ?? 0,
-    status: raw.status ?? "initialized",
-    notes: raw.notes ?? "",
-  };
-}
-
-function writeState(state: State): void {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
-}
-
-// ── Browser Recovery ───────────────────────────────────────────
-
-const RECOVERY_WAIT_MS = 1500;
-const TASK_DRAIN_TIMEOUT_MS = 10000;
-const SAFE_RESTART_HOUR_START = 2;
-const SAFE_RESTART_HOUR_END = 6;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,8 +410,8 @@ async function removeBrowserLockFiles(): Promise<number> {
         try {
           if (fs.existsSync(lockPath)) {
             fs.unlinkSync(lockPath);
-            removed++;
-            console.log(`   Entfernt: ${lockPath}`);
+            removed += 1;
+            console.error(`Removed browser lock: ${lockPath}`);
           }
         } catch {}
       }
@@ -259,12 +479,12 @@ async function getRecentCronSessions(): Promise<string[]> {
   }
 }
 
-async function hasCronOrHeartbeatActivity(): Promise<RestartDecision | null> {
+async function hasAutomationActivity(): Promise<RestartDecision | null> {
   const recentCronLines = await getRecentCronSessions();
   if (recentCronLines.length > 0) {
     return {
       allowed: false,
-      reason: `erkennbare Cron-/Heartbeat-Session-Aktivität (${recentCronLines.length} Session-Zeile(n) in openclaw status)`,
+      reason: `recognizable cron/background session activity (${recentCronLines.length} session line(s) in openclaw status)`,
     };
   }
   return null;
@@ -274,7 +494,7 @@ async function canSafelyRestartGateway(): Promise<RestartDecision> {
   if (!isInSafeRestartWindow()) {
     return {
       allowed: false,
-      reason: `außerhalb Safe-Window ${SAFE_RESTART_HOUR_START}:00-${SAFE_RESTART_HOUR_END}:00`,
+      reason: `outside safe window ${SAFE_RESTART_HOUR_START}:00-${SAFE_RESTART_HOUR_END}:00`,
     };
   }
 
@@ -282,41 +502,41 @@ async function canSafelyRestartGateway(): Promise<RestartDecision> {
   if (runningTasks == null) {
     return {
       allowed: false,
-      reason: "running-task-Zustand konnte nicht sicher bestimmt werden",
+      reason: "could not reliably determine running task count",
     };
   }
 
   if (runningTasks > 0) {
     return {
       allowed: false,
-      reason: `${runningTasks} laufende Background-Task(s) aktiv`,
+      reason: `${runningTasks} background task(s) still running`,
     };
   }
 
-  const cronOrHeartbeatActivity = await hasCronOrHeartbeatActivity();
-  if (cronOrHeartbeatActivity) {
-    return cronOrHeartbeatActivity;
+  const automationActivity = await hasAutomationActivity();
+  if (automationActivity) {
+    return automationActivity;
   }
 
   return {
     allowed: true,
-    reason: "keine laufenden Background-Tasks und im Safe-Window",
+    reason: "no running background tasks and inside safe window",
   };
 }
 
 async function tryGatewayRestartRecovery(): Promise<boolean> {
   const decision = await canSafelyRestartGateway();
   if (!decision.allowed) {
-    console.log(`   Gateway-Restart übersprungen: ${decision.reason}`);
+    console.error(`Gateway restart skipped: ${decision.reason}`);
     return false;
   }
 
-  console.log(`   Gateway-Restart freigegeben: ${decision.reason}`);
+  console.error(`Gateway restart allowed: ${decision.reason}`);
 
   try {
     execSync("openclaw gateway restart", { stdio: "pipe", timeout: 45000 });
   } catch (err) {
-    console.error(`⚠️ Gateway-Restart fehlgeschlagen: ${formatUnknownError(err)}`);
+    console.error(`Gateway restart failed: ${formatUnknownError(err)}`);
     return false;
   }
 
@@ -324,104 +544,99 @@ async function tryGatewayRestartRecovery(): Promise<boolean> {
 
   const browserRestored = await recoverBrowser();
   if (!browserRestored) {
-    console.error("⚠️ Browser blieb auch nach Gateway-Restart nicht erreichbar.");
+    console.error("Browser remained unreachable after gateway restart.");
     return false;
   }
 
   return true;
 }
 
-/**
- * Führt Browser-CDP-Recovery durch.
- * Wichtige Einsicht: Locks liegen im Profil-Root, nicht in Default/.
- * Außerdem reicht nur Port-Kill oft nicht, weil der Browser-Control-Pfad hängen kann.
- */
 async function recoverBrowser(): Promise<boolean> {
-  console.log("🔧 Browser-Recovery wird ausgeführt...");
+  console.error("Running browser recovery...");
 
   try {
     const pidsBefore = await getCdpPidList();
     if (pidsBefore.length > 0) {
-      console.log(`   CDP PID(s) vor Recovery: ${pidsBefore.join(", ")}`);
+      console.error(`CDP PIDs before recovery: ${pidsBefore.join(", ")}`);
     }
 
-    console.log("   Schritt 1/4: openclaw browser stop");
+    console.error("Recovery step 1/4: openclaw browser stop");
     await commandSucceeds("openclaw browser stop", 10000);
     await wait(RECOVERY_WAIT_MS);
 
     const pidsAfterStop = await getCdpPidList();
     if (pidsAfterStop.length > 0) {
-      console.log(
-        `   Schritt 2/4: harte Kills für verbliebene CDP PID(s): ${pidsAfterStop.join(", ")}`,
+      console.error(
+        `Recovery step 2/4: force killing lingering CDP PIDs: ${pidsAfterStop.join(", ")}`,
       );
       for (const pid of pidsAfterStop) {
         try {
-          process.kill(parseInt(pid, 10), "SIGKILL");
+          process.kill(Number.parseInt(pid, 10), "SIGKILL");
         } catch {}
       }
       await wait(RECOVERY_WAIT_MS);
     } else {
-      console.log("   Schritt 2/4: keine verbliebenen CDP-PIDs");
+      console.error("Recovery step 2/4: no lingering CDP PIDs");
     }
 
-    console.log("   Schritt 3/4: Singleton-/Lock-Files entfernen");
+    console.error("Recovery step 3/4: removing singleton lock files");
     const removedLocks = await removeBrowserLockFiles();
     if (removedLocks === 0) {
-      console.log("   Keine Lock-Files gefunden");
+      console.error("No browser lock files found");
     }
 
-    console.log("   Schritt 4/4: Browser neu starten");
+    console.error("Recovery step 4/4: openclaw browser start");
     execSync("openclaw browser start", { stdio: "pipe", timeout: 45000 });
 
     const ready = await waitForBrowserReachable(45000);
     if (ready) {
-      console.log("✅ Browser-Recovery erfolgreich.");
+      console.error("Browser recovery succeeded.");
       return true;
     }
 
-    console.error("⚠️ Recovery hat den Browser nicht wieder erreichbar gemacht.");
+    console.error("Browser recovery did not restore CDP reachability.");
     return false;
   } catch (err) {
-    console.error(`⚠️ Recovery fehlgeschlagen: ${formatUnknownError(err)}`);
+    console.error(`Browser recovery failed: ${formatUnknownError(err)}`);
     return false;
   }
 }
 
-// ── Browser ────────────────────────────────────────────────────
-
-/** Prüft, ob der native Browser läuft. Falls nicht: starten. */
 async function ensureBrowserRunning(): Promise<boolean> {
   if (await isBrowserReachable()) {
-    console.log("✅ Browser läuft bereits.");
+    console.error("Browser is already reachable.");
     return true;
   }
 
-  console.log("🚀 Browser nicht erreichbar — Recovery-Strategie startet...");
+  console.error("Browser is not reachable. Starting recovery...");
   const recovered = await recoverBrowser();
   if (recovered) {
     return true;
   }
 
-  console.warn("⚠️ Lokale Recovery hat nicht gereicht.");
-  console.log("🛟 Prüfe Safe-Restart-Gate für Gateway-Eskalation...");
+  console.error("Local recovery was not enough. Checking gateway restart policy...");
 
   const restarted = await tryGatewayRestartRecovery();
   if (restarted) {
-    console.log("✅ Browser nach Gateway-Restart wieder erreichbar.");
+    console.error("Browser became reachable after gateway restart.");
     return true;
   }
 
-  console.error("❌ Browser konnte nicht automatisch wiederhergestellt werden.");
-  console.error(
-    "💡 Auto-Restart wurde entweder blockiert oder hat nicht gereicht. Bitte später im Leerlauf erneut versuchen oder manuell eingreifen.",
-  );
+  console.error("Browser could not be restored automatically.");
   return false;
 }
 
 async function connectBrowser() {
   const browser = await chromium.connectOverCDP(CDP_URL);
-  const ctx = browser.contexts()[0];
-  const page = ctx.pages().find((p) => p.url().includes("x.com")) ?? ctx.pages()[0];
+  const context = browser.contexts()[0];
+  if (!context) {
+    await browser.close();
+    throw new Error("No browser context available over CDP");
+  }
+  const page = context.pages().find((entry) => entry.url().includes("x.com")) ?? context.pages()[0];
+  if (!page) {
+    return { browser, page: await context.newPage() };
+  }
   return { browser, page };
 }
 
@@ -429,291 +644,282 @@ async function feedReadyCheck(page: Page): Promise<boolean> {
   return page.evaluate(() => document.querySelectorAll("article[data-testid=tweet]").length > 0);
 }
 
-// ── Hash-basierte Extraktion ───────────────────────────────────
-//
-// Prinzip: statusId ist der Hash-Key
-// 1. Erst NUR statusId lesen (minimaler DOM-Zugriff)
-// 2. Hash-Check: Ist die ID im Seen-Set?
-//    ✅ JA  → SOFORT überspringen. Kein Text, kein Parse, nichts.
-//    ❌ NEU → Erst JETZT vollen Content parsen
-// 3. Max MAX_TWEETS_SCANNED scannen, dann abbruch
-// 4. Nur NEUE Tweets werden über die Bridge zurückgegeben
+async function selectFeedTab(page: Page, feed: TwitterFeed): Promise<void> {
+  const tabName = feed === "for-you" ? "For you" : "Following";
+  const roleTab = page.getByRole("tab", { name: new RegExp(`^${tabName}$`, "i") }).first();
 
-async function extractTweetsHash(
-  page: Page,
-  knownHashes: string[],
-): Promise<{ tweets: Tweet[]; totalScanned: number; newHashes: string[]; allIds: string[] }> {
-  const result = await page.evaluate(
-    async ({
-      knownSet,
-      maxScanned,
-      newLimit,
-    }: {
-      knownSet: string[];
-      maxScanned: number;
-      newLimit: number;
-    }) => {
-      const known = new Set(knownSet);
-      const tweets: Array<{
-        author: string;
-        text: string;
-        statusId: string;
-        url: string;
-        repostedFrom: string | null;
-      }> = [];
-      const allSeenText = new Set<string>();
-      const allIds: string[] = [];
-      const newHashes: string[] = [];
-      let totalScanned = 0;
-      let newCount = 0;
-
-      const blockedWords = new Set([
-        "compose",
-        "explore",
-        "notifications",
-        "home",
-        "i",
-        "settings",
-        "profile",
-        "bookmarks",
-        "lists",
-        "communities",
-        "premium",
-        "jobs",
-        "connect_people",
-        "chat",
-        "grok",
-        "jf",
-        "creators",
-      ]);
-
-      for (let pass = 0; pass < Math.min(maxScanned, 25); pass++) {
-        window.scrollBy(0, 1000);
-        await new Promise((r) => setTimeout(r, 1500));
-
-        const articles = document.querySelectorAll("article[data-testid=tweet]");
-
-        for (const a of articles) {
-          // ── PHASE 1: NUR statusId lesen (minimaler DOM-Zugriff) ──
-          const statusLink = a.querySelector("a[href*='/status/']");
-          const href = statusLink?.getAttribute("href") || "";
-          const statusMatch = href.match(/\/status\/(\d+)/);
-          const statusId = statusMatch ? statusMatch[1] : "";
-          if (!statusId) {
-            continue;
-          }
-
-          totalScanned++;
-
-          // Duplikate auf dieser Seite ignorieren
-          if (allIds.includes(statusId)) {
-            totalScanned = Math.max(totalScanned, allIds.length);
-            continue;
-          }
-          allIds.push(statusId);
-
-          // ── PHASE 2: Hash-Check — bekannt? SOFORT überspringen! ──
-          if (known.has(statusId)) {
-            continue;
-          }
-
-          // ── PHASE 3: NEUER Tweet — JETZT erst vollen Content parsen ──
-          const tt = a.querySelector("[data-testid=tweetText]");
-          if (!tt) {
-            continue;
-          }
-          const text = tt.textContent.trim();
-
-          // Text-Duplikat-Check
-          if (allSeenText.has(text)) {
-            continue;
-          }
-          allSeenText.add(text);
-
-          // Repost erkennen
-          const hasRepost = Array.from(a.querySelectorAll("span")).some((el: Element) => {
-            const t = (el as HTMLElement).textContent || "";
-            return t.match(/reposted$/);
-          });
-
-          // Links/Handles sammeln
-          const links = a.querySelectorAll("a[role=link]");
-          const hrefs: string[] = [];
-          for (const l of links) {
-            const h = (l as HTMLAnchorElement).getAttribute("href") || "";
-            const m = h.match(/^\/([^/]{1,30})$/);
-            if (m && !blockedWords.has(m[1].toLowerCase()) && !m[1].startsWith("status")) {
-              hrefs.push("@" + m[1]);
-            }
-          }
-
-          let handle = "";
-          let repostedFrom: string | null = null;
-
-          if (hasRepost && hrefs.length >= 2) {
-            handle = hrefs[1]!;
-            repostedFrom = hrefs[0]!;
-          } else if (hrefs.length >= 1) {
-            handle = hrefs[0]!;
-          }
-
-          const urlHandle = repostedFrom || handle;
-          const url = urlHandle
-            ? `https://x.com/${urlHandle.replace("@", "")}/status/${statusId}`
-            : "";
-
-          tweets.push({
-            author: handle,
-            text: text.substring(0, 200),
-            statusId,
-            url,
-            repostedFrom,
-          });
-          newHashes.push(statusId);
-          newCount++;
-
-          // Early Exit: Genug neue Tweets gefunden
-          if (newCount >= newLimit) {
-            return { tweets, totalScanned, newHashes, allIds };
-          }
-        }
-
-        // Early Exit: Maximum gescannt
-        if (allIds.length >= maxScanned + 10) {
-          break;
-        }
-      }
-
-      return { tweets, totalScanned, newHashes, allIds };
-    },
-    { knownSet: knownHashes, maxScanned: MAX_TWEETS_SCANNED, newLimit: NEW_TWEETS_LIMIT },
-  );
-
-  return result;
-}
-
-// ── Commands ───────────────────────────────────────────────────
-
-export async function twitterCheck(opts: { coldStart?: boolean; verbose?: boolean }) {
-  console.log("🐦 Twitter Following Feed — Check (Hash-System)\n");
-
-  const state = readState();
-  const knownHashes = opts.coldStart ? [] : state.seen;
-
-  console.log(`📦 Known Hashes: ${knownHashes.length}`);
-
-  // Prüfen ob Browser läuft, sonst starten
-  const browserOk = await ensureBrowserRunning();
-  if (!browserOk) {
-    console.error("\n❌ FATAL: Browser nicht verfügbar.");
-    state.status = "browser-error";
-    state.notes = "Browser CDP connection failed after recovery";
-    state.lastCheck = new Date().toISOString();
-    writeState(state);
-    process.exit(1);
+  if ((await roleTab.count()) === 0) {
+    throw new Error(`Twitter feed tab not found: ${tabName}`);
   }
 
-  console.log("🌐 Browser verbinden...");
+  if ((await roleTab.getAttribute("aria-selected")) !== "true") {
+    await roleTab.click();
+    await page.waitForTimeout(FEED_READY_WAIT_MS);
+  }
+}
+
+async function navigateToFeed(page: Page, feed: TwitterFeed): Promise<void> {
+  if (!page.url().includes("x.com/home")) {
+    await page.goto("https://x.com/home", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(FEED_READY_WAIT_MS);
+  }
+
+  await selectFeedTab(page, feed);
+}
+
+async function extractVisibleTweetCandidates(page: Page): Promise<ExtractedTweetCandidate[]> {
+  return page.evaluate(() => {
+    const blockedWords = new Set([
+      "compose",
+      "explore",
+      "notifications",
+      "home",
+      "i",
+      "settings",
+      "profile",
+      "bookmarks",
+      "lists",
+      "communities",
+      "premium",
+      "jobs",
+      "connect_people",
+      "chat",
+      "grok",
+      "jf",
+      "creators",
+    ]);
+
+    const articles = Array.from(document.querySelectorAll("article[data-testid=tweet]"));
+
+    return articles
+      .map((article) => {
+        const statusLink = article.querySelector("a[href*='/status/']");
+        const href = statusLink?.getAttribute("href") ?? "";
+        const statusMatch = href.match(/\/([^/?#]+)\/status\/(\d+)/);
+        const statusId = statusMatch?.[2] ?? "";
+        if (!statusId) {
+          return null;
+        }
+
+        const statusAuthor = statusMatch?.[1] ? `@${statusMatch[1]}` : "";
+        const tweetText = (
+          article.querySelector("[data-testid=tweetText]")?.textContent ?? ""
+        ).trim();
+        const handles: string[] = [];
+
+        for (const link of article.querySelectorAll("a[role=link]")) {
+          const profileHref = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+          const handleMatch = profileHref.match(/^\/([^/?#]{1,30})$/);
+          if (!handleMatch) {
+            continue;
+          }
+
+          const handle = handleMatch[1].trim();
+          if (!handle || blockedWords.has(handle.toLowerCase())) {
+            continue;
+          }
+
+          const normalizedHandle = `@${handle}`;
+          if (!handles.includes(normalizedHandle)) {
+            handles.push(normalizedHandle);
+          }
+        }
+
+        const hasRepost = Array.from(article.querySelectorAll("span")).some((element) =>
+          /reposted$/i.test((element.textContent ?? "").trim()),
+        );
+
+        let author = statusAuthor || handles[0] || "";
+        let repostedFrom: string | null = null;
+
+        if (hasRepost && handles.length >= 2) {
+          author = statusAuthor || handles[1] || handles[0] || "";
+          repostedFrom = handles.find((handle) => handle !== author) ?? null;
+        }
+
+        const url = author
+          ? `https://x.com/${author.replace(/^@/, "")}/status/${statusId}`
+          : `https://x.com/i/web/status/${statusId}`;
+
+        return {
+          statusId,
+          url,
+          author,
+          text: tweetText,
+          repostedFrom,
+        };
+      })
+      .filter((candidate): candidate is ExtractedTweetCandidate => Boolean(candidate));
+  });
+}
+
+async function collectTweetsFromPage(
+  page: Page,
+  feed: TwitterFeed,
+  knownStatusIds: string[],
+  requestedNewCount: number,
+  maxScanned: number,
+): Promise<TwitterScrapeLoopResult> {
+  return collectTweetsFromPasses({
+    feed,
+    knownStatusIds,
+    requestedNewCount,
+    maxScanned,
+    loadPass: async () => extractVisibleTweetCandidates(page),
+    advance: async () => {
+      await page.evaluate(() => window.scrollBy(0, 1000));
+      await page.waitForTimeout(FEED_SCROLL_WAIT_MS);
+    },
+  });
+}
+
+function emitJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+function updateTwitterStateAfterRun(
+  state: TwitterState,
+  loopResult: Pick<
+    TwitterScrapeLoopResult,
+    "totalScanned" | "stopReason" | "scannedStatusIds" | "tweets"
+  >,
+): TwitterState {
+  return {
+    ...state,
+    lastCheck: new Date().toISOString(),
+    seen: normalizeSeenStatusIds([...state.seen, ...loopResult.scannedStatusIds]),
+    lastTweetCount: loopResult.totalScanned,
+    lastNewTweetCount: loopResult.tweets.length,
+    status: loopResult.tweets.length > 0 ? "success" : "idle",
+    notes: "",
+    lastStopReason: loopResult.stopReason,
+  };
+}
+
+function updateTwitterStateForFailure(
+  state: TwitterState,
+  status: "feed_not_ready" | "browser_error",
+  notes: string,
+): TwitterState {
+  return {
+    ...state,
+    lastCheck: new Date().toISOString(),
+    status,
+    notes,
+    lastStopReason: status,
+  };
+}
+
+export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliOptions = {}) {
+  const feed = normalizeTwitterFeed(feedInput);
+  const normalizedOptions = normalizeTwitterCheckOptions(opts);
+  const state = normalizedOptions.ignoreState
+    ? createEmptyTwitterState(feed)
+    : readTwitterState(feed);
+  const knownStatusIds = normalizedOptions.ignoreState ? [] : state.seen;
+
+  if (!(await ensureBrowserRunning())) {
+    if (normalizedOptions.writeState) {
+      writeTwitterState(
+        feed,
+        updateTwitterStateForFailure(
+          state,
+          "browser_error",
+          "Browser CDP connection failed after recovery",
+        ),
+      );
+    }
+    throw new Error("Browser not available for Twitter feed scraping");
+  }
+
   const { browser, page } = await connectBrowser();
 
   try {
-    if (!page.url().includes("x.com")) {
-      console.log("📍 Navigiere zu x.com/home...");
-      await page.goto("https://x.com/home", { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(3000);
-    }
+    await navigateToFeed(page, feed);
 
-    const ready = await feedReadyCheck(page);
-    if (!ready) {
-      console.log("⏳ Warte auf Feed...");
-      await page.waitForTimeout(3000);
-      const ready2 = await feedReadyCheck(page);
-      if (!ready2) {
-        console.error(
-          "❌ Feed nicht bereit nach 6s — Browser-Verbindung steht, aber X zeigt keinen Feed.",
-        );
-        console.error(
-          "💡 Mögliche Ursachen: X-Session abgelaufen, Login erforderlich, oder Chrome-Crash.",
-        );
-        console.error(
-          "💡 Versuche 'openclaw browser restart' oder Known-Issues: browser-cdp-failure.md",
-        );
-        state.status = "browser-error";
-        state.notes = "Feed not ready after 6s — possible session expired or Chrome crash";
-        state.lastCheck = new Date().toISOString();
-        writeState(state);
-        process.exit(1);
+    if (!(await feedReadyCheck(page))) {
+      await page.waitForTimeout(FEED_READY_WAIT_MS);
+      if (!(await feedReadyCheck(page))) {
+        if (normalizedOptions.writeState) {
+          writeTwitterState(
+            feed,
+            updateTwitterStateForFailure(
+              state,
+              "feed_not_ready",
+              `Twitter ${feed} feed did not become ready`,
+            ),
+          );
+        }
+        throw new Error(`Twitter ${feed} feed not ready`);
       }
     }
 
-    console.log("✅ Feed ready — Hash-Scan startet...\n");
+    const loopResult = await collectTweetsFromPage(
+      page,
+      feed,
+      knownStatusIds,
+      normalizedOptions.requestedNewCount,
+      normalizedOptions.maxScanned,
+    );
 
-    const { tweets, totalScanned, allIds } = await extractTweetsHash(page, knownHashes);
-
-    // Neue Hashes zum Set hinzufügen
-    const updatedSeen = [...new Set([...knownHashes, ...allIds])];
-
-    // Limitiere Seen-Set auf 5000 Einträge (älteste entfernen)
-    const trimmedSeen = updatedSeen.slice(Math.max(0, updatedSeen.length - 5000));
-
-    // State aktualisieren
-    state.lastCheck = new Date().toISOString();
-    state.seen = trimmedSeen;
-    state.lastTweetCount = totalScanned;
-    state.lastNewTweetCount = tweets.length;
-    state.status = tweets.length > 0 ? "success" : "feed-empty";
-    state.notes = opts.coldStart ? "Cold Start done" : "";
-    writeState(state);
-
-    // Ausgabe
-    console.log(`📦 Known Hashes (vorher): ${knownHashes.length}`);
-    console.log(`📊 Tweets gescannt: ${totalScanned}`);
-    console.log(`📊 Neue Tweets: ${tweets.length}`);
-    console.log(`📦 Known Hashes (nachher): ${state.seen.length}`);
-
-    if (tweets.length === 0) {
-      console.log("\n✅ Keine neuen Tweets.");
-      process.exit(0);
+    if (normalizedOptions.writeState) {
+      writeTwitterState(feed, updateTwitterStateAfterRun(state, loopResult));
     }
 
-    console.log("\n─── Neue Tweets ───\n");
-    const limit = opts.verbose ? tweets.length : Math.min(tweets.length, 10);
-    for (let i = 0; i < limit; i++) {
-      const t = tweets[i];
-      const category = classifyTweet(t.text);
-      const tldr = generateTldr(t.text);
+    const result: TwitterCheckResult = {
+      feed,
+      requestedNewCount: normalizedOptions.requestedNewCount,
+      maxScanned: normalizedOptions.maxScanned,
+      usedState: !normalizedOptions.ignoreState,
+      wroteState: normalizedOptions.writeState,
+      totalScanned: loopResult.totalScanned,
+      newTweetsFound: loopResult.tweets.length,
+      stopReason: loopResult.stopReason,
+      tweets: loopResult.tweets,
+    };
 
-      if (t.repostedFrom) {
-        console.log(`${t.author} (Repost von ${t.repostedFrom})`);
-      } else {
-        console.log(t.author);
+    emitJson(result);
+    return result;
+  } catch (error) {
+    if (normalizedOptions.writeState && error instanceof Error) {
+      const message = error.message.toLowerCase();
+      if (message.includes("browser")) {
+        writeTwitterState(
+          feed,
+          updateTwitterStateForFailure(state, "browser_error", error.message),
+        );
+      } else if (message.includes("feed")) {
+        writeTwitterState(
+          feed,
+          updateTwitterStateForFailure(state, "feed_not_ready", error.message),
+        );
       }
-      console.log(`  "${tldr}"`);
-      console.log(`  📂 ${category}  🔗 ${t.url}`);
-      console.log("");
     }
-    if (!opts.verbose && tweets.length > 10) {
-      console.log(`... und ${tweets.length - 10} weitere.`);
-    }
+    throw error;
   } finally {
     await browser.close();
   }
 }
 
-export async function twitterStatus() {
-  const state = readState();
-  console.log(JSON.stringify(state, null, 2));
+export async function twitterCheckDeprecatedAlias(
+  feed: TwitterFeed,
+  opts: TwitterCheckCliOptions = {},
+) {
+  console.error(
+    "Deprecated: `openclaw pibo twitter check` now defaults to `openclaw pibo twitter check following`.",
+  );
+  return twitterCheckFeed(feed, opts);
 }
 
-export async function twitterReset(_noConfirm: boolean) {
-  const state: State = {
-    lastCheck: null,
-    seen: [],
-    lastTweetCount: 0,
-    lastNewTweetCount: 0,
-    status: "initialized",
-    notes: "Manuell zurückgesetzt",
-  };
-  writeState(state);
-  console.log("✅ Twitter Heartbeat State zurückgesetzt.");
+export async function twitterStatus(opts: { feed?: string } = {}) {
+  const feed = normalizeTwitterFeed(opts.feed ?? "following");
+  emitJson(readTwitterState(feed));
+}
+
+export async function twitterReset(opts: { feed?: string; y?: boolean } = {}) {
+  const feed = normalizeTwitterFeed(opts.feed ?? "following");
+  const state = createEmptyTwitterState(feed);
+  state.notes = "Manually reset";
+  writeTwitterState(feed, state);
+  console.log(`Reset Twitter state for ${feed}.`);
 }

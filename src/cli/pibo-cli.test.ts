@@ -27,14 +27,47 @@ describe("pibo cli", () => {
   it("registers representative subcommands", () => {
     const program = createProgram();
     const pibo = program.commands.find((command) => command.name() === "pibo");
+    const twitter = pibo?.commands.find((command) => command.name() === "twitter");
+    const twitterCheck = twitter?.commands.find((command) => command.name() === "check");
+    const twitterState = twitter?.commands.find((command) => command.name() === "state");
     const workflows = pibo?.commands.find((command) => command.name() === "workflows");
     expect(pibo).toBeTruthy();
     expect(pibo?.commands.some((command) => command.name() === "find")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "todo")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "mcp")).toBe(true);
+    expect(pibo?.commands.some((command) => command.name() === "twitter")).toBe(true);
+    expect(twitterCheck?.commands.some((command) => command.name() === "following")).toBe(true);
+    expect(twitterCheck?.commands.some((command) => command.name() === "for-you")).toBe(true);
+    expect(twitterState?.commands.some((command) => command.name() === "status")).toBe(true);
+    expect(twitterState?.commands.some((command) => command.name() === "reset")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "workflows")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "start-async")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "wait")).toBe(true);
+  });
+
+  it("exposes feed-oriented Twitter help", () => {
+    const program = createProgram();
+    const pibo = program.commands.find((command) => command.name() === "pibo");
+    const twitter = pibo?.commands.find((command) => command.name() === "twitter");
+    const twitterCheck = twitter?.commands.find((command) => command.name() === "check");
+    const following = twitterCheck?.commands.find((command) => command.name() === "following");
+    const forYou = twitterCheck?.commands.find((command) => command.name() === "for-you");
+    const twitterState = twitter?.commands.find((command) => command.name() === "state");
+    const status = twitterState?.commands.find((command) => command.name() === "status");
+
+    const followingHelp = following?.helpInformation() ?? "";
+    const forYouHelp = forYou?.helpInformation() ?? "";
+    const statusHelp = status?.helpInformation() ?? "";
+
+    expect(followingHelp).toContain("Scrape the Following feed");
+    expect(followingHelp).toContain("--new <n>");
+    expect(followingHelp).toContain("--max-scanned <n>");
+    expect(followingHelp).toContain("--ignore-state");
+    expect(followingHelp).toContain("--no-write-state");
+    expect(followingHelp).toContain("--stateless");
+    expect(followingHelp).toContain("--json");
+    expect(forYouHelp).toContain("Scrape the For You feed");
+    expect(statusHelp).toContain("--feed <feed>");
   });
 
   it("initializes bundled find prompts into the workspace", async () => {
