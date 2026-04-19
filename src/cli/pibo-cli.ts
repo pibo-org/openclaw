@@ -132,7 +132,7 @@ export function registerPiboCli(program: Command) {
 
   const find = pibo
     .command("find [prompt]")
-    .description("OpenCode-basierte Dateisuche in Docs und Code");
+    .description("Agentischer OpenCode-Finder für Docs/Code; kann dauern, zeigt stderr-Liveness");
   find
     .option("--docs", "Nur im Dokumentenwesen suchen")
     .option("--code", "Nur im Code-Verzeichnis suchen")

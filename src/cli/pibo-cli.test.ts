@@ -70,6 +70,18 @@ describe("pibo cli", () => {
     expect(statusHelp).toContain("--feed <feed>");
   });
 
+  it("exposes agentic find help", () => {
+    const program = createProgram();
+    const pibo = program.commands.find((command) => command.name() === "pibo");
+    const find = pibo?.commands.find((command) => command.name() === "find");
+    const findHelp = find?.helpInformation() ?? "";
+
+    expect(findHelp).toContain(
+      "Agentischer OpenCode-Finder für Docs/Code; kann dauern, zeigt stderr-Liveness",
+    );
+    expect(findHelp).toContain("Usage:  pibo find [options] [prompt]");
+  });
+
   it("initializes bundled find prompts into the workspace", async () => {
     await withTempHome("openclaw-pibo-find-home-", async (home) => {
       await createProgram().parseAsync(["pibo", "find", "init"], { from: "user" });
