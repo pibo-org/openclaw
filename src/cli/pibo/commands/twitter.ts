@@ -19,6 +19,8 @@ const SAFE_RESTART_HOUR_START = 2;
 const SAFE_RESTART_HOUR_END = 6;
 const FEED_READY_WAIT_MS = 3000;
 const FEED_SCROLL_WAIT_MS = 1500;
+const STATUS_PAGE_READY_WAIT_MS = 10000;
+const FEED_TWEET_SHOW_MORE_LABEL = "show more";
 
 export type TwitterFeed = "following" | "for-you";
 export type TwitterStopReason =
@@ -43,6 +45,7 @@ interface ExtractedTweetCandidate {
   author: string;
   text: string;
   repostedFrom: string | null;
+  hasFeedShowMore?: boolean;
 }
 
 export interface TwitterState {
@@ -91,6 +94,7 @@ export interface TwitterScrapeLoopResult {
   totalScanned: number;
   stopReason: Extract<TwitterStopReason, "target_reached" | "max_scanned_reached" | "stagnated">;
   scannedStatusIds: string[];
+  statusIdsMarkedForExpansion: string[];
 }
 
 interface CollectTweetsFromPassesParams {
@@ -280,11 +284,50 @@ function normalizeTweetText(text: string): string {
     .trim();
 }
 
+export function hasFeedTweetShowMoreSignal(controlText: string): boolean {
+  return normalizeTweetText(controlText).toLowerCase() === FEED_TWEET_SHOW_MORE_LABEL;
+}
+
+export async function expandTweetsWithStatusPageText(
+  tweets: readonly Tweet[],
+  statusIdsMarkedForExpansion: readonly string[],
+  fetchStatusPageText: (tweet: Tweet) => Promise<string | null>,
+): Promise<Tweet[]> {
+  const expandedTweets: Tweet[] = [];
+  const statusIdsToExpand = new Set(
+    statusIdsMarkedForExpansion.map((statusId) => statusId.trim()).filter(Boolean),
+  );
+
+  for (const tweet of tweets) {
+    if (!statusIdsToExpand.has(tweet.statusId)) {
+      expandedTweets.push(tweet);
+      continue;
+    }
+
+    try {
+      const statusPageText = await fetchStatusPageText(tweet);
+      const normalizedStatusPageText = statusPageText ? normalizeTweetText(statusPageText) : "";
+      if (normalizedStatusPageText && normalizedStatusPageText !== normalizeTweetText(tweet.text)) {
+        expandedTweets.push({
+          ...tweet,
+          text: normalizedStatusPageText,
+        });
+        continue;
+      }
+    } catch {}
+
+    expandedTweets.push(tweet);
+  }
+
+  return expandedTweets;
+}
+
 export async function collectTweetsFromPasses(
   params: CollectTweetsFromPassesParams,
 ): Promise<TwitterScrapeLoopResult> {
   const knownStatusIds = new Set(params.knownStatusIds);
   const scannedStatusIds = new Set<string>();
+  const statusIdsMarkedForExpansion = new Set<string>();
   const tweets: Tweet[] = [];
   const stagnationPassLimit = params.stagnationPassLimit ?? TWITTER_STAGNATION_PASS_LIMIT;
   let totalScanned = 0;
@@ -305,6 +348,10 @@ export async function collectTweetsFromPasses(
       passProgress += 1;
 
       if (!knownStatusIds.has(statusId)) {
+        if (candidate.hasFeedShowMore) {
+          statusIdsMarkedForExpansion.add(statusId);
+        }
+
         tweets.push({
           statusId,
           url: candidate.url?.trim() || buildTweetUrl(candidate.author, statusId),
@@ -321,6 +368,7 @@ export async function collectTweetsFromPasses(
             totalScanned,
             stopReason,
             scannedStatusIds: [...scannedStatusIds],
+            statusIdsMarkedForExpansion: [...statusIdsMarkedForExpansion],
           };
         }
       }
@@ -332,6 +380,7 @@ export async function collectTweetsFromPasses(
           totalScanned,
           stopReason,
           scannedStatusIds: [...scannedStatusIds],
+          statusIdsMarkedForExpansion: [...statusIdsMarkedForExpansion],
         };
       }
     }
@@ -343,6 +392,7 @@ export async function collectTweetsFromPasses(
         totalScanned,
         stopReason,
         scannedStatusIds: [...scannedStatusIds],
+        statusIdsMarkedForExpansion: [...statusIdsMarkedForExpansion],
       };
     }
 
@@ -668,7 +718,7 @@ async function navigateToFeed(page: Page, feed: TwitterFeed): Promise<void> {
 }
 
 async function extractVisibleTweetCandidates(page: Page): Promise<ExtractedTweetCandidate[]> {
-  return page.evaluate(() => {
+  return page.evaluate((showMoreLabel) => {
     const blockedWords = new Set([
       "compose",
       "explore",
@@ -705,6 +755,14 @@ async function extractVisibleTweetCandidates(page: Page): Promise<ExtractedTweet
         const tweetText = (
           article.querySelector("[data-testid=tweetText]")?.textContent ?? ""
         ).trim();
+        const hasFeedShowMore = Array.from(article.querySelectorAll("button, [role=button]")).some(
+          (element) =>
+            (element.textContent ?? "")
+              .replace(/\u00A0/g, " ")
+              .replace(/\r/g, "")
+              .trim()
+              .toLowerCase() === showMoreLabel,
+        );
         const handles: string[] = [];
 
         for (const link of article.querySelectorAll("a[role=link]")) {
@@ -747,10 +805,11 @@ async function extractVisibleTweetCandidates(page: Page): Promise<ExtractedTweet
           author,
           text: tweetText,
           repostedFrom,
+          hasFeedShowMore,
         };
       })
       .filter((candidate): candidate is ExtractedTweetCandidate => Boolean(candidate));
-  });
+  }, FEED_TWEET_SHOW_MORE_LABEL);
 }
 
 async function collectTweetsFromPage(
@@ -771,6 +830,91 @@ async function collectTweetsFromPage(
       await page.waitForTimeout(FEED_SCROLL_WAIT_MS);
     },
   });
+}
+
+async function extractTweetTextFromStatusPage(
+  page: Page,
+  tweet: Pick<Tweet, "statusId" | "url">,
+): Promise<string | null> {
+  if (!tweet.statusId || !tweet.url) {
+    return null;
+  }
+
+  const readStatusPageText = async () =>
+    page.evaluate((expectedStatusId) => {
+      const statusMarker = `/status/${expectedStatusId}`;
+      const articles = Array.from(document.querySelectorAll("article[data-testid=tweet]"));
+
+      for (const article of articles) {
+        const matchesStatusId = Array.from(article.querySelectorAll("a[href*='/status/']")).some(
+          (link) => ((link as HTMLAnchorElement).getAttribute("href") ?? "").includes(statusMarker),
+        );
+        if (!matchesStatusId) {
+          continue;
+        }
+
+        const text = (article.querySelector("[data-testid=tweetText]")?.textContent ?? "").trim();
+        if (text) {
+          return text;
+        }
+      }
+
+      const fallbackText = (
+        document.querySelector("article[data-testid=tweet] [data-testid=tweetText]")?.textContent ??
+        ""
+      ).trim();
+      return fallbackText || null;
+    }, tweet.statusId);
+
+  await page.goto(tweet.url, {
+    waitUntil: "domcontentloaded",
+    timeout: STATUS_PAGE_READY_WAIT_MS,
+  });
+
+  try {
+    await page.waitForFunction(
+      (expectedStatusId) => {
+        const statusMarker = `/status/${expectedStatusId}`;
+        const articles = Array.from(document.querySelectorAll("article[data-testid=tweet]"));
+        return articles.some((article) => {
+          const matchesStatusId = Array.from(article.querySelectorAll("a[href*='/status/']")).some(
+            (link) =>
+              ((link as HTMLAnchorElement).getAttribute("href") ?? "").includes(statusMarker),
+          );
+          if (!matchesStatusId) {
+            return false;
+          }
+          const text = (article.querySelector("[data-testid=tweetText]")?.textContent ?? "").trim();
+          return Boolean(text);
+        });
+      },
+      tweet.statusId,
+      { timeout: STATUS_PAGE_READY_WAIT_MS },
+    );
+  } catch {}
+
+  return readStatusPageText();
+}
+
+async function expandTweetsFromStatusPages(
+  page: Page,
+  tweets: readonly Tweet[],
+  statusIdsMarkedForExpansion: readonly string[],
+): Promise<Tweet[]> {
+  if (tweets.length === 0 || statusIdsMarkedForExpansion.length === 0) {
+    return [...tweets];
+  }
+
+  const statusPage = await page.context().newPage();
+  try {
+    return await expandTweetsWithStatusPageText(
+      tweets,
+      statusIdsMarkedForExpansion,
+      async (tweet) => extractTweetTextFromStatusPage(statusPage, tweet),
+    );
+  } finally {
+    await statusPage.close();
+  }
 }
 
 function emitJson(value: unknown): void {
@@ -861,9 +1005,18 @@ export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliO
       normalizedOptions.requestedNewCount,
       normalizedOptions.maxScanned,
     );
+    const expandedTweets = await expandTweetsFromStatusPages(
+      page,
+      loopResult.tweets,
+      loopResult.statusIdsMarkedForExpansion,
+    );
+    const finalLoopResult = {
+      ...loopResult,
+      tweets: expandedTweets,
+    };
 
     if (normalizedOptions.writeState) {
-      writeTwitterState(feed, updateTwitterStateAfterRun(state, loopResult));
+      writeTwitterState(feed, updateTwitterStateAfterRun(state, finalLoopResult));
     }
 
     const result: TwitterCheckResult = {
@@ -872,10 +1025,10 @@ export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliO
       maxScanned: normalizedOptions.maxScanned,
       usedState: !normalizedOptions.ignoreState,
       wroteState: normalizedOptions.writeState,
-      totalScanned: loopResult.totalScanned,
-      newTweetsFound: loopResult.tweets.length,
-      stopReason: loopResult.stopReason,
-      tweets: loopResult.tweets,
+      totalScanned: finalLoopResult.totalScanned,
+      newTweetsFound: finalLoopResult.tweets.length,
+      stopReason: finalLoopResult.stopReason,
+      tweets: finalLoopResult.tweets,
     };
 
     emitJson(result);

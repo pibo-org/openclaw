@@ -1,12 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withTempHome } from "../../../config/home-env.test-harness.js";
 import {
   TWITTER_STATE_SEEN_LIMIT,
   buildTweetUrl,
   collectTweetsFromPasses,
   createEmptyTwitterState,
+  expandTweetsWithStatusPageText,
+  hasFeedTweetShowMoreSignal,
   getLegacyTwitterLegacyStatePath,
   getTwitterStatePath,
   normalizeTwitterCheckOptions,
@@ -126,6 +128,7 @@ describe("pibo twitter command", () => {
           author: "@carol",
           text: "second new tweet",
           repostedFrom: "@dave",
+          hasFeedShowMore: true,
         },
       ],
     ];
@@ -149,6 +152,7 @@ describe("pibo twitter command", () => {
       feed: "following",
       repostedFrom: "@dave",
     });
+    expect(result.statusIdsMarkedForExpansion).toEqual(["new-2"]);
   });
 
   it("stops when the hard max scanned cap is reached", async () => {
@@ -208,5 +212,70 @@ describe("pibo twitter command", () => {
     });
     expect(result.tweets[0]).not.toHaveProperty("tldr");
     expect(result.tweets[0]).not.toHaveProperty("category");
+  });
+
+  it("detects the feed article show more control with an exact label match", () => {
+    expect(hasFeedTweetShowMoreSignal("Show more")).toBe(true);
+    expect(hasFeedTweetShowMoreSignal("  Show more  ")).toBe(true);
+    expect(hasFeedTweetShowMoreSignal("Show more replies")).toBe(false);
+    expect(hasFeedTweetShowMoreSignal("Reply")).toBe(false);
+  });
+
+  it("expands only tweets marked by feed show more detection", async () => {
+    const tweets = [
+      {
+        statusId: "1",
+        url: "https://x.com/alice/status/1",
+        author: "@alice",
+        text: "Preview only",
+        feed: "following" as const,
+        repostedFrom: null,
+      },
+      {
+        statusId: "2",
+        url: "https://x.com/bob/status/2",
+        author: "@bob",
+        text: "Already complete",
+        feed: "following" as const,
+        repostedFrom: null,
+      },
+      {
+        statusId: "3",
+        url: "https://x.com/carol/status/3",
+        author: "@carol",
+        text: "Keep on fetch failure",
+        feed: "following" as const,
+        repostedFrom: null,
+      },
+    ];
+
+    const fetchStatusPageText = vi.fn(async (tweet: (typeof tweets)[number]) => {
+      switch (tweet.statusId) {
+        case "1":
+          return "Preview only with the full public status-page text attached";
+        case "3":
+          throw new Error("status page unavailable");
+        default:
+          throw new Error(`unexpected fetch for ${tweet.statusId}`);
+      }
+    });
+
+    const expanded = await expandTweetsWithStatusPageText(
+      tweets,
+      ["1", "3"],
+      fetchStatusPageText,
+    );
+
+    expect(expanded).toEqual([
+      {
+        ...tweets[0],
+        text: "Preview only with the full public status-page text attached",
+      },
+      tweets[1],
+      tweets[2],
+    ]);
+    expect(fetchStatusPageText).toHaveBeenCalledTimes(2);
+    expect(fetchStatusPageText).toHaveBeenNthCalledWith(1, tweets[0]);
+    expect(fetchStatusPageText).toHaveBeenNthCalledWith(2, tweets[2]);
   });
 });

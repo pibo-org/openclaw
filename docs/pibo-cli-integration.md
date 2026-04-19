@@ -54,3 +54,4 @@ The native Twitter/X CLI is now a general feed scraper instead of a specialized 
 - `openclaw pibo twitter state reset --feed for-you`
 
 The scrape commands return structured raw tweet data with feed-specific dedupe state keyed by `statusId`.
+When a feed tweet article exposes an in-article `Show more` control, the checker follows the public status URL in the same browser session and replaces the preview text with the fuller status-page `tweetText`.
