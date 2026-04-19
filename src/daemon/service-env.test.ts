@@ -12,11 +12,14 @@ import {
   resolveLinuxSystemCaBundle,
 } from "./service-env.js";
 
+const allowAllPaths = () => true;
+
 describe("getMinimalServicePathParts - Linux user directories", () => {
   it("includes user bin directories when HOME is set on Linux", () => {
     const result = getMinimalServicePathParts({
       platform: "linux",
       home: "/home/testuser",
+      pathExists: allowAllPaths,
     });
 
     // Should include all common user bin directories
@@ -88,6 +91,7 @@ describe("getMinimalServicePathParts - Linux user directories", () => {
         NVM_DIR: "/opt/nvm",
         FNM_DIR: "/opt/fnm",
       },
+      pathExists: allowAllPaths,
     });
 
     expect(result).toContain("/opt/pnpm");
@@ -170,6 +174,33 @@ describe("getMinimalServicePathParts - Linux user directories", () => {
     // Windows returns empty array (uses existing PATH)
     expect(result).toEqual([]);
   });
+
+  it("includes active nvm bins from the invoking PATH when they match the known layout", () => {
+    const result = getMinimalServicePathPartsFromEnv({
+      platform: "linux",
+      env: {
+        HOME: "/home/testuser",
+        PATH: "/home/testuser/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin",
+      },
+      pathExists: allowAllPaths,
+    });
+
+    expect(result).toContain("/home/testuser/.nvm/versions/node/v24.14.1/bin");
+  });
+
+  it("ignores unrelated invoking PATH entries on Linux", () => {
+    const result = getMinimalServicePathPartsFromEnv({
+      platform: "linux",
+      env: {
+        HOME: "/home/testuser",
+        PATH: "/tmp/custom/bin:/home/testuser/project/node_modules/.bin:/usr/bin:/bin",
+      },
+      pathExists: allowAllPaths,
+    });
+
+    expect(result).not.toContain("/tmp/custom/bin");
+    expect(result).not.toContain("/home/testuser/project/node_modules/.bin");
+  });
 });
 
 describe("buildMinimalServicePath", () => {
@@ -199,6 +230,7 @@ describe("buildMinimalServicePath", () => {
     const result = buildMinimalServicePath({
       platform: "linux",
       env: { HOME: "/home/alice" },
+      pathExists: allowAllPaths,
     });
     const parts = splitPath(result, "linux");
 
@@ -265,11 +297,27 @@ describe("buildMinimalServicePath", () => {
       platform: "linux",
       extraDirs: ["/home/alice/.nvm/versions/node/v22.22.0/bin"],
       env: { HOME: "/home/alice" },
+      pathExists: allowAllPaths,
     });
     const parts = splitPath(result, "linux");
 
     expect(parts[0]).toBe("/home/alice/.nvm/versions/node/v22.22.0/bin");
     expect(parts).toContain("/home/alice/.nvm/current/bin");
+  });
+
+  it("does not assume ~/.nvm/current/bin exists on Linux", () => {
+    const result = buildMinimalServicePath({
+      platform: "linux",
+      env: {
+        HOME: "/home/alice",
+        PATH: "/home/alice/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin",
+      },
+      pathExists: (dir) => dir === "/home/alice/.nvm/versions/node/v24.14.1/bin",
+    });
+    const parts = splitPath(result, "linux");
+
+    expect(parts).toContain("/home/alice/.nvm/versions/node/v24.14.1/bin");
+    expect(parts).not.toContain("/home/alice/.nvm/current/bin");
   });
 });
 

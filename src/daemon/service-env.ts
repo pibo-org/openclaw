@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -28,6 +29,7 @@ export type MinimalServicePathOptions = {
   extraDirs?: string[];
   home?: string;
   env?: Record<string, string | undefined>;
+  pathExists?: (dir: string) => boolean;
 };
 
 type BuildServicePathOptions = MinimalServicePathOptions & {
@@ -79,11 +81,103 @@ function addNonEmptyDir(dirs: string[], dir: string | undefined): void {
   }
 }
 
+function addExistingDir(
+  dirs: string[],
+  dir: string | undefined,
+  pathExists: (dir: string) => boolean,
+): void {
+  if (dir && pathExists(dir)) {
+    dirs.push(dir);
+  }
+}
+
 function appendSubdir(base: string | undefined, subdir: string): string | undefined {
   if (!base) {
     return undefined;
   }
   return base.endsWith(`/${subdir}`) ? base : path.posix.join(base, subdir);
+}
+
+function normalizePosixPath(dir: string): string {
+  const normalized = path.posix.normalize(dir);
+  return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+}
+
+function splitPathEntries(rawPath: string | undefined, platform: NodeJS.Platform): string[] {
+  const delimiter = platform === "win32" ? path.win32.delimiter : path.posix.delimiter;
+  return (
+    rawPath
+      ?.split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
+function resolveManagerRoots(configuredRoot: string | undefined, defaultRoot: string): string[] {
+  const roots = [configuredRoot, defaultRoot]
+    .map((root) => root?.trim())
+    .filter((root): root is string => Boolean(root));
+  return [...new Set(roots.map((root) => normalizePosixPath(root)))];
+}
+
+function matchesLinuxVersionManagerBinDir(
+  entry: string,
+  env: Record<string, string | undefined>,
+  home: string,
+): boolean {
+  const normalizedEntry = normalizePosixPath(entry);
+  if (!path.posix.isAbsolute(normalizedEntry)) {
+    return false;
+  }
+
+  const nvmRoots = resolveManagerRoots(env.NVM_DIR, `${home}/.nvm`);
+  for (const root of nvmRoots) {
+    if (
+      normalizedEntry.startsWith(`${root}/versions/`) &&
+      /^\/versions\/(?:node|io\.js)\/[^/]+\/bin$/.test(normalizedEntry.slice(root.length))
+    ) {
+      return true;
+    }
+  }
+
+  const fnmRoots = resolveManagerRoots(env.FNM_DIR, `${home}/.fnm`);
+  for (const root of fnmRoots) {
+    if (
+      normalizedEntry.startsWith(`${root}/node-versions/`) &&
+      /^\/node-versions\/[^/]+\/installation\/bin$/.test(normalizedEntry.slice(root.length))
+    ) {
+      return true;
+    }
+    if (
+      normalizedEntry.startsWith(`${root}/aliases/`) &&
+      /^\/aliases\/[^/]+\/bin$/.test(normalizedEntry.slice(root.length))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function collectSafeActiveLinuxPathDirs(
+  home: string,
+  env: Record<string, string | undefined> | undefined,
+  pathExists: (dir: string) => boolean,
+): string[] {
+  if (!env) {
+    return [];
+  }
+  const dirs: string[] = [];
+  for (const entry of splitPathEntries(env.PATH, "linux")) {
+    const normalizedEntry = normalizePosixPath(entry);
+    if (!pathExists(normalizedEntry)) {
+      continue;
+    }
+    if (matchesLinuxVersionManagerBinDir(normalizedEntry, env, home)) {
+      dirs.push(normalizedEntry);
+    }
+  }
+  return dirs;
 }
 
 function addCommonUserBinDirs(dirs: string[], home: string): void {
@@ -167,6 +261,7 @@ export function resolveDarwinUserBinDirs(
 export function resolveLinuxUserBinDirs(
   home: string | undefined,
   env?: Record<string, string | undefined>,
+  pathExists: (dir: string) => boolean = fs.existsSync,
 ): string[] {
   if (!home) {
     return [];
@@ -176,15 +271,16 @@ export function resolveLinuxUserBinDirs(
 
   // Env-configured bin roots (override defaults when present).
   addCommonEnvConfiguredBinDirs(dirs, env);
-  addNonEmptyDir(dirs, appendSubdir(env?.NVM_DIR, "current/bin"));
-  addNonEmptyDir(dirs, appendSubdir(env?.FNM_DIR, "current/bin"));
+  dirs.push(...collectSafeActiveLinuxPathDirs(home, env, pathExists));
+  addExistingDir(dirs, appendSubdir(env?.NVM_DIR, "current/bin"), pathExists);
+  addExistingDir(dirs, appendSubdir(env?.FNM_DIR, "current/bin"), pathExists);
 
   // Common user bin directories
   addCommonUserBinDirs(dirs, home);
 
   // Node version managers
-  dirs.push(`${home}/.nvm/current/bin`); // nvm with current symlink
-  dirs.push(`${home}/.fnm/current/bin`); // fnm
+  addExistingDir(dirs, `${home}/.nvm/current/bin`, pathExists); // nvm with current symlink
+  addExistingDir(dirs, `${home}/.fnm/current/bin`, pathExists); // fnm
   dirs.push(`${home}/.local/share/pnpm`); // pnpm global bin
 
   return dirs;
@@ -203,7 +299,7 @@ export function getMinimalServicePathParts(options: MinimalServicePathOptions = 
   // Add user bin directories for version managers (npm global, nvm, fnm, volta, etc.)
   const userDirs =
     platform === "linux"
-      ? resolveLinuxUserBinDirs(options.home, options.env)
+      ? resolveLinuxUserBinDirs(options.home, options.env, options.pathExists)
       : platform === "darwin"
         ? resolveDarwinUserBinDirs(options.home, options.env)
         : [];

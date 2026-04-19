@@ -2752,6 +2752,23 @@ Related: [/concepts/oauth](/concepts/oauth) (OAuth flows, token storage, multi-a
 
   </Accordion>
 
+  <Accordion title="Why does a CLI work in my shell but fail inside the gateway?">
+    Your interactive shell `PATH` is not the same as the gateway/service `PATH`.
+
+    On Linux, OpenClaw installs a minimal explicit service PATH instead of copying your full shell PATH. Version managers such as `nvm` and `fnm` can make a CLI visible in the shell from paths like `~/.nvm/versions/node/<version>/bin`, while the installed service still points at an older alias such as `~/.nvm/current/bin` or simply never captured that bin.
+
+    Fix one of these:
+
+    ```bash
+    openclaw gateway install --force
+    ```
+
+    Run that from the environment where the CLI is already visible, or install service-critical CLIs into stable service-visible bin paths such as `~/.local/bin` or `/usr/local/bin`.
+
+    `openclaw gateway status --deep` and `openclaw doctor` will warn when the installed service PATH contains stale version-manager entries.
+
+  </Accordion>
+
   <Accordion title='What does "another gateway instance is already listening" mean?'>
     OpenClaw enforces a runtime lock by binding the WebSocket listener immediately on startup (default `ws://127.0.0.1:18789`). If the bind fails with `EADDRINUSE`, it throws `GatewayLockError` indicating another instance is already listening.
 

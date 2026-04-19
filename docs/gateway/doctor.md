@@ -479,6 +479,7 @@ Notes:
 - If token auth requires a token and the configured token SecretRef is unresolved, doctor blocks the install/repair path with actionable guidance.
 - If both `gateway.auth.token` and `gateway.auth.password` are configured and `gateway.auth.mode` is unset, doctor blocks install/repair until mode is set explicitly.
 - For Linux user-systemd units, doctor token drift checks now include both `Environment=` and `EnvironmentFile=` sources when comparing service auth metadata.
+- For Linux user-systemd units, doctor/status also warn when the installed service PATH contains stale version-manager aliases such as `~/.nvm/current/bin` that no longer exist. That usually means a CLI is visible in your interactive shell but not to the gateway runtime; rerun `openclaw gateway install --force` from the intended environment or move service-critical CLIs into stable service-visible bin paths.
 - You can always force a full rewrite via `openclaw gateway install --force`.
 
 ### 16) Gateway runtime + port diagnostics

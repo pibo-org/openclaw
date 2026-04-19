@@ -53,6 +53,15 @@ command path:
 
 That’s it. No keys, no extra auth config needed beyond the CLI itself.
 
+When the gateway runs under `launchd` or `systemd`, remember that the service
+PATH is explicit and not the same as your interactive shell PATH. On Linux,
+OpenClaw keeps a minimal service PATH and only carries forward a narrow set of
+known user-local/version-manager bins from the environment used during
+`openclaw gateway install`. If a backend CLI works in your shell because `nvm`
+or `fnm` added it, prefer a stable service-visible path for service-critical
+CLIs, or rerun `openclaw gateway install --force` from that environment after
+installing the CLI.
+
 If you use a bundled CLI backend as the **primary message provider** on a
 gateway host, OpenClaw now auto-loads the owning bundled plugin when your config
 explicitly references that backend in a model ref or under

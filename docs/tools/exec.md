@@ -90,8 +90,9 @@ Example:
 
 - `host=gateway`: merges your login-shell `PATH` into the exec environment. `env.PATH` overrides are
   rejected for host execution. The daemon itself still runs with a minimal `PATH`:
-  - macOS: `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`
-  - Linux: `/usr/local/bin`, `/usr/bin`, `/bin`
+  - macOS: explicit system dirs plus common user-local bins (`~/.local/bin`, `~/bin`, `~/.volta/bin`, `~/.asdf/shims`, supported `fnm`/`pnpm` defaults, etc.)
+  - Linux: explicit system dirs plus common user-local bins (`~/.local/bin`, `~/bin`, `~/.volta/bin`, `~/.asdf/shims`, `~/.local/share/pnpm`, etc.) and supported active `nvm`/`fnm` bins captured from the install environment
+    Interactive shell PATH is not the same as the gateway service PATH. If a CLI works in your shell but a gateway-managed tool cannot spawn it, prefer a stable service-visible bin path or rerun `openclaw gateway install --force` from the environment where that CLI is visible.
 - `host=sandbox`: runs `sh -lc` (login shell) inside the container, so `/etc/profile` may reset `PATH`.
   OpenClaw prepends `env.PATH` after profile sourcing via an internal env var (no shell interpolation);
   `tools.exec.pathPrepend` applies here too.

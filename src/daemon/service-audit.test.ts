@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   auditGatewayServiceConfig,
@@ -110,6 +113,56 @@ describe("auditGatewayServiceConfig", () => {
     expect(
       audit.issues.some((issue) => issue.code === SERVICE_AUDIT_CODES.gatewayPathMissingDirs),
     ).toBe(false);
+  });
+
+  it("accepts an active linux nvm bin captured from the invoking PATH", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-service-audit-"));
+    const activeNvmBin = path.join(home, ".nvm", "versions", "node", "v24.14.1", "bin");
+    await fs.mkdir(activeNvmBin, { recursive: true });
+
+    const env = {
+      HOME: home,
+      PATH: `${activeNvmBin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+    };
+    const minimalPath = buildMinimalServicePath({ platform: "linux", env });
+    const audit = await auditGatewayServiceConfig({
+      env,
+      platform: "linux",
+      command: {
+        programArguments: ["/usr/bin/node", "gateway"],
+        environment: { PATH: minimalPath },
+      },
+    });
+
+    expect(
+      audit.issues.some((issue) => issue.code === SERVICE_AUDIT_CODES.gatewayPathNonMinimal),
+    ).toBe(false);
+    expect(
+      audit.issues.some((issue) => issue.code === SERVICE_AUDIT_CODES.gatewayPathMissingDirs),
+    ).toBe(false);
+  });
+
+  it("flags stale version-manager aliases in the service PATH", async () => {
+    const audit = await auditGatewayServiceConfig({
+      env: { HOME: "/home/testuser" },
+      platform: "linux",
+      command: {
+        programArguments: ["/usr/bin/node", "gateway"],
+        environment: {
+          PATH: "/home/testuser/.nvm/current/bin:/usr/local/bin:/usr/bin:/bin",
+        },
+      },
+    });
+
+    const issue = audit.issues.find(
+      (entry) => entry.code === SERVICE_AUDIT_CODES.gatewayPathStaleVersionManagerDirs,
+    );
+    expect(issue).toBeDefined();
+    expect(issue?.detail).toContain("/home/testuser/.nvm/current/bin");
+    expect(issue?.detail).toContain(
+      "Interactive shells can still resolve tools from a different PATH",
+    );
+    expect(issue?.detail).toContain("openclaw gateway install --force");
   });
 
   it("flags gateway token mismatch when service token is stale", async () => {

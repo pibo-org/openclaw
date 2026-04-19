@@ -40,6 +40,7 @@ export const SERVICE_AUDIT_CODES = {
   gatewayPathMissing: "gateway-path-missing",
   gatewayPathMissingDirs: "gateway-path-missing-dirs",
   gatewayPathNonMinimal: "gateway-path-nonminimal",
+  gatewayPathStaleVersionManagerDirs: "gateway-path-stale-version-manager-dirs",
   gatewayTokenEmbedded: "gateway-token-embedded",
   gatewayTokenMismatch: "gateway-token-mismatch",
   gatewayRuntimeBun: "gateway-runtime-bun",
@@ -260,12 +261,29 @@ function normalizePathEntry(entry: string, platform: NodeJS.Platform): string {
   return normalized;
 }
 
-function auditGatewayServicePath(
+function isFragileVersionManagerAliasDir(entry: string, platform: NodeJS.Platform): boolean {
+  const normalized = normalizePathEntry(entry, platform);
+  return /(?:^|\/)(?:\.?nvm|\.?fnm)\/current\/bin$/.test(normalized);
+}
+
+async function collectMissingServicePathDirs(entries: string[]): Promise<string[]> {
+  const missing: string[] = [];
+  for (const entry of entries) {
+    try {
+      await fs.access(entry);
+    } catch {
+      missing.push(entry);
+    }
+  }
+  return missing;
+}
+
+async function auditGatewayServicePath(
   command: GatewayServiceCommand,
   issues: ServiceConfigIssue[],
   env: Record<string, string | undefined>,
   platform: NodeJS.Platform,
-) {
+): Promise<void> {
   if (platform === "win32") {
     return;
   }
@@ -284,6 +302,18 @@ function auditGatewayServicePath(
     .split(getPathModule(platform).delimiter)
     .map((entry) => entry.trim())
     .filter(Boolean);
+  const staleVersionManagerDirs = await collectMissingServicePathDirs(
+    parts.filter((entry) => isFragileVersionManagerAliasDir(entry, platform)),
+  );
+  if (staleVersionManagerDirs.length > 0) {
+    issues.push({
+      code: SERVICE_AUDIT_CODES.gatewayPathStaleVersionManagerDirs,
+      message:
+        "Gateway service PATH contains version-manager dirs that do not exist in the current runtime.",
+      detail: `${staleVersionManagerDirs.join(", ")}. Interactive shells can still resolve tools from a different PATH; move service-critical CLIs into stable service-visible bins or rerun \`openclaw gateway install --force\` from the intended environment.`,
+      level: "recommended",
+    });
+  }
   const normalizedParts = new Set(parts.map((entry) => normalizePathEntry(entry, platform)));
   const normalizedExpected = new Set(expected.map((entry) => normalizePathEntry(entry, platform)));
   const missing = expected.filter((entry) => {
@@ -414,7 +444,7 @@ export async function auditGatewayServiceConfig(params: {
 
   auditGatewayCommand(params.command?.programArguments, issues);
   auditGatewayToken(params.command, issues, params.expectedGatewayToken);
-  auditGatewayServicePath(params.command, issues, params.env, platform);
+  await auditGatewayServicePath(params.command, issues, params.env, platform);
   await auditGatewayRuntime(params.env, params.command, issues, platform);
 
   if (platform === "linux") {
