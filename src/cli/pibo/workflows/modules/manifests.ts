@@ -80,9 +80,9 @@ export const selfRalphWorkflowModuleManifest = {
   moduleId: "self_ralph",
   displayName: "Self Ralph",
   description:
-    "Runs a native ideation-first self-Ralph workflow with critique-gated planning artifacts and a fresh-worker story execution loop.",
+    "Runs a native ideation-first self-Ralph workflow, then hands approved specs into the shared Ralph planning/execution core.",
   kind: "agent_workflow",
-  version: "0.4.0",
+  version: "0.5.0",
   requiredAgents: ["codex", "codex-controller"],
   terminalStates: ["done", "planning_done", "blocked", "aborted", "max_rounds_reached", "failed"],
   supportsAbort: true,
@@ -108,11 +108,45 @@ export const selfRalphWorkflowModuleManifest = {
   ],
 } satisfies WorkflowModuleManifest;
 
+export const ralphFromSpecsWorkflowModuleManifest = {
+  moduleId: "ralph_from_specs",
+  displayName: "Ralph From Specs",
+  description:
+    "Starts from trusted approved specs, then runs the shared Ralph PRD/backlog/execution core without a specs review gate.",
+  kind: "agent_workflow",
+  version: "0.1.0",
+  requiredAgents: ["codex", "codex-controller"],
+  terminalStates: ["done", "planning_done", "blocked", "aborted", "max_rounds_reached", "failed"],
+  supportsAbort: true,
+  inputSchemaSummary: [
+    "specs (string, required): trusted approved specs passed directly into the shared core.",
+    "workingDirectory (string, required): existing writable workspace root for planning artifacts and optional later project bootstrap.",
+    "direction|selectedConcept (string, optional): operator-facing context carried into PRD/backlog/execution summaries and prompts.",
+    'executionMode ("plan_only"|"existing_repo"|"bootstrap_project", optional): defaults to bootstrap_project.',
+    "repoRoot (string, optional): required only for executionMode=existing_repo.",
+    "projectSlug|bootstrapTemplate (string, optional): bootstrap hints for executionMode=bootstrap_project.",
+    "successCriteria (string[], optional): workflow-level acceptance criteria carried through PRD, backlog, and execution.",
+    "constraints (string[], optional): global constraints for planning and execution.",
+    "maxPRDRounds (number, optional): critique/revision budget for PRD generation; defaults to 2.",
+    "maxExecutionRounds|maxRounds (number, optional): Ralph execution budget; defaults to 6.",
+    "maxStories (number, optional): backlog planner cap independent from the execution round budget.",
+    "plannerAgentId|reviewerAgentId|workerAgentId (string, optional): defaults to codex-controller, codex-controller, codex.",
+    "plannerModel|reviewerModel|workerModel (string, optional): model overrides per role.",
+  ],
+  artifactContract: [
+    "specs-final.md is persisted immediately from trusted input, then prd phase prompt/draft/review artifacts are written under the workflow artifact store.",
+    "specs-final.md, prd-final.md, story-backlog.json, execution-state.json, and run-summary.txt mirrored into <workingDirectory>/ralph-from-specs/.",
+    "executionMode=bootstrap_project additionally writes project-bootstrap.json into workflow artifacts and <workingDirectory>/ralph-from-specs/.",
+    "execution round worker/review prompts and outputs stay in workflow artifacts; execution-round-<n>-evidence.json is additionally mirrored into <workingDirectory>/ralph-from-specs/.",
+  ],
+} satisfies WorkflowModuleManifest;
+
 const workflowModuleManifestMap = new Map(
   [
     noopWorkflowModuleManifest,
     langgraphWorkerCriticModuleManifest,
     codexControllerWorkflowModuleManifest,
+    ralphFromSpecsWorkflowModuleManifest,
     selfRalphWorkflowModuleManifest,
   ].map((manifest) => [manifest.moduleId, manifest] as const),
 );

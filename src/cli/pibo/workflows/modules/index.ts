@@ -2,12 +2,14 @@ import type { WorkflowModule } from "../types.js";
 import { codexControllerWorkflowModule } from "./codex-controller.js";
 import { langgraphWorkerCriticModule } from "./langgraph-worker-critic.js";
 import { noopWorkflowModule } from "./noop.js";
+import { ralphFromSpecsWorkflowModule } from "./ralph-from-specs.js";
 import { selfRalphWorkflowModule } from "./self-ralph.js";
 
 const modules = [
   noopWorkflowModule,
   langgraphWorkerCriticModule,
   codexControllerWorkflowModule,
+  ralphFromSpecsWorkflowModule,
   selfRalphWorkflowModule,
 ] as const;
 

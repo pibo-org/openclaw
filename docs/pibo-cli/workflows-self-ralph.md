@@ -3,22 +3,27 @@
 Stand: 2026-04-18  
 Module ID: `self_ralph`
 
-`self_ralph` is a native PIBO/OpenClaw workflow module for an ideation-first product workflow:
+`self_ralph` is a native PIBO/OpenClaw workflow module for an ideation-first product workflow.
+It now owns only the direction-first front half and then hands approved specs into the shared Ralph core:
 
 1. direction intake
 2. brainstorming with real concept generation and reviewer selection
 3. specs
-4. PRD
-5. story backlog
-6. optional Ralph-style story execution with a fresh worker per iteration
+4. shared core
+5. PRD
+6. story backlog
+7. optional Ralph-style story execution with a fresh worker per iteration
 
 The design remains AI-gated:
 
 - planning phases are controlled by explicit review verdicts
 - brainstorming is expected to widen first, then narrow to one selected concept
+- approved specs become the handoff boundary into the shared core
 - specs and PRD become explicit artifacts on disk
 - execution still proceeds one concrete story at a time
 - the reviewer decides `DONE | CONTINUE | BLOCKED` per execution round
+
+`ralph_from_specs` is the sibling specs-first entrypoint for the same shared core. It skips direction, brainstorming, and specs review because passed specs are already trusted approved input.
 
 ## Module contract
 
@@ -138,15 +143,26 @@ The planner is expected to produce 3 to 5 serious product concepts before select
 
 The planner turns the selected concept into a concrete product spec with scope, key flows, key objects, UX assumptions, non-goals, and MVP boundaries.
 
-### 4. PRD
+### 4. Shared Core Handoff
+
+Once specs are approved, `self_ralph` enters the same internal core that is also used by `ralph_from_specs`.
+
+The shared core owns:
+
+- PRD generation plus PRD review
+- story backlog generation
+- execution readiness
+- Ralph execution
+
+### 5. PRD
 
 The planner turns brainstorming plus specs into a PRD with features, acceptance criteria, boundaries, MVP scope, and technical guardrails where needed.
 
-### 5. Story backlog
+### 6. Story backlog
 
 After PRD approval, the planner derives a machine-readable backlog in `story-backlog.json`.
 
-### 6. Execution readiness gate
+### 7. Execution readiness gate
 
 Only after planning completes does the module resolve execution readiness:
 
@@ -154,7 +170,7 @@ Only after planning completes does the module resolve execution readiness:
 - `existing_repo` validates `repoRoot` as a git repo/worktree context
 - `bootstrap_project` creates and initializes a target repo under `workingDirectory`
 
-### 7. Ralph execution loop
+### 8. Ralph execution loop
 
 Once execution starts, the later loop stays materially the same:
 
@@ -181,6 +197,8 @@ The mirrored workspace artifact set is the operator-facing planning and executio
 - `execution-round-<n>-evidence.json`
 - `project-bootstrap.json` when applicable
 - `run-summary.txt`
+
+For the specs-first sibling module, see [workflows-ralph-from-specs.md](./workflows-ralph-from-specs.md).
 
 ## Terminal semantics
 

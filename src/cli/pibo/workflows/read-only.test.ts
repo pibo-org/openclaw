@@ -22,7 +22,8 @@ describe("pibo workflows read-only", () => {
       "- codex_controller: Runs a persistent Codex SDK worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
       "- langgraph_worker_critic: Führt einen expliziten Worker/Critic-Loop mit `langgraph` als Worker und `critic` als Review-Agent aus.",
       "- noop: Minimal referenzierbares Workflow-Modul zum Testen von start/status/describe/runs.",
-      "- self_ralph: Runs a native ideation-first self-Ralph workflow with critique-gated planning artifacts and a fresh-worker story execution loop.",
+      "- ralph_from_specs: Starts from trusted approved specs, then runs the shared Ralph PRD/backlog/execution core without a specs review gate.",
+      "- self_ralph: Runs a native ideation-first self-Ralph workflow, then hands approved specs into the shared Ralph planning/execution core.",
     ]);
   });
 

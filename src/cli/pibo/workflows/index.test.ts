@@ -41,7 +41,13 @@ describe("pibo workflows runtime", () => {
 
   it("lists the native workflow modules", () => {
     const moduleIds = listWorkflowModuleManifests().map((entry) => entry.moduleId);
-    expect(moduleIds).toEqual(["codex_controller", "langgraph_worker_critic", "noop"]);
+    expect(moduleIds).toEqual([
+      "codex_controller",
+      "langgraph_worker_critic",
+      "noop",
+      "ralph_from_specs",
+      "self_ralph",
+    ]);
   });
 
   it("starts, persists, and reloads the noop workflow natively", async () => {
