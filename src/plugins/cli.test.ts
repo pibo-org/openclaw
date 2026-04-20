@@ -407,6 +407,43 @@ describe("registerPluginCliCommands", () => {
     expect(mocks.memoryListAction).toHaveBeenCalledTimes(1);
   });
 
+  it("uses CLI metadata first for a lazy primary when metadata covers the command", async () => {
+    const program = createProgram();
+    program.exitOverride();
+
+    await registerPluginCliCommands(program, {} as OpenClawConfig, undefined, undefined, {
+      mode: "lazy",
+      primary: "memory",
+    });
+
+    expect(mocks.loadOpenClawPluginCliRegistry).toHaveBeenCalledTimes(1);
+    expect(mocks.loadOpenClawPlugins).not.toHaveBeenCalled();
+
+    await program.parseAsync(["memory", "list"], { from: "user" });
+
+    expect(mocks.memoryRegister).toHaveBeenCalledTimes(1);
+    expect(mocks.memoryListAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the runtime registry when lazy primary metadata is missing", async () => {
+    mocks.loadOpenClawPluginCliRegistry.mockResolvedValueOnce(createEmptyCliRegistry());
+    const program = createProgram();
+    program.exitOverride();
+
+    await registerPluginCliCommands(program, {} as OpenClawConfig, undefined, undefined, {
+      mode: "lazy",
+      primary: "memory",
+    });
+
+    expect(mocks.loadOpenClawPluginCliRegistry).toHaveBeenCalledTimes(1);
+    expect(mocks.loadOpenClawPlugins).toHaveBeenCalledTimes(1);
+
+    await program.parseAsync(["memory", "list"], { from: "user" });
+
+    expect(mocks.memoryRegister).toHaveBeenCalledTimes(1);
+    expect(mocks.memoryListAction).toHaveBeenCalledTimes(1);
+  });
+
   it("returns null for validated plugin CLI config when the snapshot is invalid", async () => {
     mocks.readConfigFileSnapshot.mockResolvedValueOnce({
       valid: false,

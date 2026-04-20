@@ -222,3 +222,24 @@ export async function loadPluginCliRegistrationEntriesWithDefaults(
     },
   });
 }
+
+export async function loadPluginCliMetadataRegistrationEntriesWithDefaults(
+  params: PluginCliPublicLoadParams,
+): Promise<PluginCliCommandGroupEntry[]> {
+  const logger = resolvePluginCliLogger(params.logger);
+  const context = resolvePluginCliLoadContext({
+    cfg: params.cfg,
+    env: params.env,
+    logger,
+  });
+  const { config, workspaceDir, registry } = await loadPluginCliMetadataRegistryWithContext(
+    context,
+    params.loaderOptions,
+  );
+  return buildPluginCliCommandGroupEntries({
+    registry,
+    config,
+    workspaceDir,
+    logger,
+  });
+}
