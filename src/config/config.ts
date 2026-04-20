@@ -11,6 +11,7 @@ export {
   loadConfig,
   readBestEffortConfig,
   parseConfigJson5,
+  primeRuntimeConfigLoadFromSnapshot,
   readConfigFileSnapshot,
   readConfigFileSnapshotForWrite,
   readSourceConfigSnapshot,

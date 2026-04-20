@@ -91,10 +91,8 @@ import {
 import { shouldWarnOnTouchedVersion } from "./version.js";
 
 export {
-  clearRuntimeConfigSnapshotState as clearRuntimeConfigSnapshot,
   getRuntimeConfigSnapshotState as getRuntimeConfigSnapshot,
   getRuntimeConfigSourceSnapshotState as getRuntimeConfigSourceSnapshot,
-  resetConfigRuntimeStateState as resetConfigRuntimeState,
   setRuntimeConfigSnapshotState as setRuntimeConfigSnapshot,
   setRuntimeConfigSnapshotRefreshHandlerState as setRuntimeConfigSnapshotRefreshHandler,
 };
@@ -106,6 +104,7 @@ export { resolveShellEnvExpectedKeys } from "./shell-env-expected-keys.js";
 
 const CONFIG_HEALTH_STATE_FILENAME = "config-health.json";
 const loggedInvalidConfigs = new Set<string>();
+let primedRuntimeConfigLoad: PrimedRuntimeConfigLoad | null = null;
 
 type ConfigHealthFingerprint = {
   hash: string;
@@ -157,6 +156,11 @@ export type ReadConfigFileSnapshotForWriteResult = {
 };
 
 export type ConfigWriteNotification = RuntimeConfigWriteNotification;
+
+type PrimedRuntimeConfigLoad = {
+  configPath: string;
+  snapshot: ConfigFileSnapshot;
+};
 
 export class ConfigRuntimeRefreshError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -1030,6 +1034,68 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
     return snapshot;
   }
 
+  function materializeLoadedConfigFromSnapshot(snapshot: ConfigFileSnapshot): OpenClawConfig {
+    if (!snapshot.valid || !snapshot.exists || snapshot.path !== configPath) {
+      return loadConfig();
+    }
+
+    warnOnConfigMiskeys(snapshot.sourceConfig, deps.logger);
+
+    if (snapshot.warnings.length > 0) {
+      const details = snapshot.warnings
+        .map(
+          (warning) =>
+            `- ${sanitizeTerminalText(warning.path || "<root>")}: ${sanitizeTerminalText(warning.message)}`,
+        )
+        .join("\n");
+      deps.logger.warn(`Config warnings:\\n${details}`);
+    }
+
+    const cfg = materializeRuntimeConfig(snapshot.runtimeConfig, "load");
+    warnIfConfigFromFuture(cfg, deps.logger);
+
+    const duplicates = findDuplicateAgentDirs(cfg, {
+      env: deps.env,
+      homedir: deps.homedir,
+    });
+    if (duplicates.length > 0) {
+      throw new DuplicateAgentDirError(duplicates);
+    }
+
+    applyConfigEnvVars(cfg, deps.env);
+
+    const enabled = shouldEnableShellEnvFallback(deps.env) || cfg.env?.shellEnv?.enabled === true;
+    if (enabled && !shouldDeferShellEnvFallback(deps.env)) {
+      loadShellEnvFallback({
+        enabled: true,
+        env: deps.env,
+        expectedKeys: resolveShellEnvExpectedKeys(deps.env),
+        logger: deps.logger,
+        timeoutMs: cfg.env?.shellEnv?.timeoutMs ?? resolveShellEnvFallbackTimeoutMs(deps.env),
+      });
+    }
+
+    const pendingSecret = AUTO_OWNER_DISPLAY_SECRET_BY_PATH.get(configPath);
+    const ownerDisplaySecretResolution = ensureOwnerDisplaySecret(
+      cfg,
+      () => pendingSecret ?? crypto.randomBytes(32).toString("hex"),
+    );
+    const cfgWithOwnerDisplaySecret = persistGeneratedOwnerDisplaySecret({
+      config: ownerDisplaySecretResolution.config,
+      configPath,
+      generatedSecret: ownerDisplaySecretResolution.generatedSecret,
+      logger: deps.logger,
+      state: {
+        pendingByPath: AUTO_OWNER_DISPLAY_SECRET_BY_PATH,
+        persistInFlight: AUTO_OWNER_DISPLAY_SECRET_PERSIST_IN_FLIGHT,
+        persistWarned: AUTO_OWNER_DISPLAY_SECRET_PERSIST_WARNED,
+      },
+      persistConfig: (nextConfig, options) => writeConfigFile(nextConfig, options),
+    });
+
+    return applyConfigOverrides(cfgWithOwnerDisplaySecret);
+  }
+
   function loadConfig(): OpenClawConfig {
     try {
       maybeLoadDotEnvForConfig(deps.env);
@@ -1649,6 +1715,7 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
   return {
     configPath,
     loadConfig,
+    materializeLoadedConfigFromSnapshot,
     readConfigFileSnapshot,
     readConfigFileSnapshotForWrite,
     writeConfigFile,
@@ -1661,8 +1728,38 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
 const AUTO_OWNER_DISPLAY_SECRET_BY_PATH = new Map<string, string>();
 const AUTO_OWNER_DISPLAY_SECRET_PERSIST_IN_FLIGHT = new Set<string>();
 const AUTO_OWNER_DISPLAY_SECRET_PERSIST_WARNED = new Set<string>();
+export function resetConfigRuntimeState(): void {
+  primedRuntimeConfigLoad = null;
+  resetConfigRuntimeStateState();
+}
+
+export function clearRuntimeConfigSnapshot(): void {
+  primedRuntimeConfigLoad = null;
+  clearRuntimeConfigSnapshotState();
+}
+
 export function clearConfigCache(): void {
-  // Compat shim: runtime snapshot is the only in-process cache now.
+  primedRuntimeConfigLoad = null;
+}
+
+export function primeRuntimeConfigLoadFromSnapshot(snapshot: ConfigFileSnapshot): void {
+  if (!snapshot.valid || !snapshot.exists) {
+    primedRuntimeConfigLoad = null;
+    return;
+  }
+  primedRuntimeConfigLoad = {
+    configPath: snapshot.path,
+    snapshot,
+  };
+}
+
+function takePrimedRuntimeConfigLoad(configPath: string): PrimedRuntimeConfigLoad | null {
+  if (!primedRuntimeConfigLoad || primedRuntimeConfigLoad.configPath !== configPath) {
+    return null;
+  }
+  const primed = primedRuntimeConfigLoad;
+  primedRuntimeConfigLoad = null;
+  return primed;
 }
 
 export function registerConfigWriteListener(
@@ -1732,7 +1829,14 @@ export function loadConfig(): OpenClawConfig {
   // First successful load becomes the process snapshot. Long-lived runtimes
   // should swap this snapshot via explicit reload/watcher paths instead of
   // reparsing openclaw.json on hot code paths.
-  return loadPinnedRuntimeConfig(() => createConfigIO().loadConfig());
+  return loadPinnedRuntimeConfig(() => {
+    const io = createConfigIO();
+    const primed = takePrimedRuntimeConfigLoad(io.configPath);
+    if (primed) {
+      return io.materializeLoadedConfigFromSnapshot(primed.snapshot);
+    }
+    return io.loadConfig();
+  });
 }
 
 export function getRuntimeConfig(): OpenClawConfig {

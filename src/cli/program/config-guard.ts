@@ -1,4 +1,4 @@
-import { readConfigFileSnapshot } from "../../config/config.js";
+import { primeRuntimeConfigLoadFromSnapshot, readConfigFileSnapshot } from "../../config/config.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { shouldMigrateStateFromPath } from "../argv.js";
 
@@ -90,6 +90,7 @@ export async function ensureConfigReady(params: {
 
   const invalid = snapshot.exists && !snapshot.valid;
   if (!invalid) {
+    primeRuntimeConfigLoadFromSnapshot(snapshot);
     return;
   }
 

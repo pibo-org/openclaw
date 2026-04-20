@@ -3,12 +3,14 @@ import { ensureConfigReady, __test__ } from "./config-guard.js";
 
 const loadAndMaybeMigrateDoctorConfigMock = vi.hoisted(() => vi.fn());
 const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
+const primeRuntimeConfigLoadFromSnapshotMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../commands/doctor-config-preflight.js", () => ({
   runDoctorConfigPreflight: loadAndMaybeMigrateDoctorConfigMock,
 }));
 
 vi.mock("../../config/config.js", () => ({
+  primeRuntimeConfigLoadFromSnapshot: primeRuntimeConfigLoadFromSnapshotMock,
   readConfigFileSnapshot: readConfigFileSnapshotMock,
 }));
 
@@ -174,5 +176,19 @@ describe("ensureConfigReady", () => {
       await runEnsureConfigReady(["message"], false);
     });
     expect(output).toContain("Doctor warnings");
+  });
+
+  it("primes a valid snapshot for a later runtime config load", async () => {
+    const snapshot = {
+      ...makeSnapshot(),
+      exists: true,
+      config: { gateway: { mode: "local" } },
+      sourceConfig: { gateway: { mode: "local" } },
+    };
+    readConfigFileSnapshotMock.mockResolvedValue(snapshot);
+
+    await runEnsureConfigReady(["status"], true);
+
+    expect(primeRuntimeConfigLoadFromSnapshotMock).toHaveBeenCalledWith(snapshot);
   });
 });
