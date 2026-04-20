@@ -63,8 +63,36 @@ openclaw pibo mcp register chrome-devtools '{
     "--no-usage-statistics"
   ]
 }'
-openclaw pibo mcp enable chrome-devtools
 openclaw pibo mcp doctor chrome-devtools
+openclaw browser status
+openclaw pibo mcp call chrome-devtools list_pages --json '{}'
+```
+
+`openclaw pibo mcp doctor|tools|inspect|call|refresh` now use the PIBo registry
+definition from `~/.config/pibo/mcp-servers.json` directly. They do not fall back
+to the active OpenClaw MCP layer.
+
+Only activate a server in OpenClaw when you want it exposed to the model/runtime
+tool layer as `mcp.servers`:
+
+```bash
+openclaw pibo mcp activate-openclaw chrome-devtools
+```
+
+Operational note after the 2026-04-20 MCP fixes:
+
+- real `openclaw pibo mcp call ...` runs now finalize cleanly instead of hanging after output
+- this applies both to successful tool calls and to the common Chrome-not-reachable error path
+- `openclaw pibo mcp doctor chrome-devtools` proves the MCP server runtime and discovery path, not that Chrome itself is reachable
+- `openclaw pibo mcp activate-openclaw ...` is the explicit opt-in step for making a PIBo-registered server visible to OpenClaw model/runtime tools
+- actual browser-backed tool calls still require the OpenClaw browser to be running on `18800`
+- after a gateway restart, check `openclaw browser status`; if it shows `running: false`, start the browser before blaming the MCP layer
+
+Typical recovery if the server is healthy but Chrome is down:
+
+```bash
+openclaw browser status
+openclaw browser start
 openclaw pibo mcp call chrome-devtools list_pages --json '{}'
 ```
 

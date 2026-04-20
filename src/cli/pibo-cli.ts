@@ -197,7 +197,7 @@ export function registerPiboCli(program: Command) {
 
   const mcp = pibo
     .command("mcp")
-    .description("MCP-Server registrieren, aktivieren und deaktivieren");
+    .description("PIBo-MCP-Registry verwalten und Server optional explizit in OpenClaw aktivieren");
   mcp
     .command("register <name> <json>")
     .description("MCP-Server persistent in PIBo-Registry speichern")
@@ -207,28 +207,42 @@ export function registerPiboCli(program: Command) {
     });
   mcp
     .command("list")
-    .description("Registrierte und aktive MCP-Server anzeigen")
+    .description("PIBo-Registry und aktive OpenClaw-MCP-Server getrennt anzeigen")
     .action(async () => {
       const { mcpList } = await loadMcpModule();
       mcpList();
     });
   mcp
     .command("show <name>")
-    .description("Definition eines MCP-Servers anzeigen")
+    .description("PIBo-Registry- und OpenClaw-Layer eines MCP-Servers anzeigen")
     .action(async (name: string) => {
       const { mcpShow } = await loadMcpModule();
       mcpShow(name);
     });
   mcp
+    .command("activate-openclaw <name>")
+    .description("Registrierten PIBo-MCP-Server explizit in OpenClaw aktivieren")
+    .action(async (name: string) => {
+      const { mcpActivateOpenClaw } = await loadMcpModule();
+      mcpActivateOpenClaw(name);
+    });
+  mcp
+    .command("deactivate-openclaw <name>")
+    .description("MCP-Server aus OpenClaw entfernen, aber in der PIBo-Registry lassen")
+    .action(async (name: string) => {
+      const { mcpDeactivateOpenClaw } = await loadMcpModule();
+      mcpDeactivateOpenClaw(name);
+    });
+  mcp
     .command("enable <name>")
-    .description("Registrierten MCP-Server in OpenClaw aktivieren")
+    .description("Veraltet: Alias für activate-openclaw")
     .action(async (name: string) => {
       const { mcpEnable } = await loadMcpModule();
       mcpEnable(name);
     });
   mcp
     .command("disable <name>")
-    .description("MCP-Server aus OpenClaw entfernen, aber registriert lassen")
+    .description("Veraltet: Alias für deactivate-openclaw")
     .action(async (name: string) => {
       const { mcpDisable } = await loadMcpModule();
       mcpDisable(name);
@@ -243,14 +257,14 @@ export function registerPiboCli(program: Command) {
     });
   mcp
     .command("refresh <name>")
-    .description("Tool-Discovery für einen MCP-Server erneuern")
+    .description("Tool-Discovery aus der PIBo-Registry-Definition eines MCP-Servers erneuern")
     .action(async (name: string) => {
       const { mcpRefresh } = await loadMcpModule();
       await mcpRefresh(name);
     });
   mcp
     .command("doctor <name>")
-    .description("Registry, Cache und Runtime eines MCP-Servers prüfen")
+    .description("PIBo-Registry, Cache, Runtime und OpenClaw-Aktivierung getrennt prüfen")
     .option("--refresh", "Am Ende Discovery-Cache aktiv erneuern")
     .action(async (name: string, opts: { refresh?: boolean }) => {
       const { mcpDoctor } = await loadMcpModule();
@@ -258,7 +272,7 @@ export function registerPiboCli(program: Command) {
     });
   mcp
     .command("tools <name>")
-    .description("Toolnamen eines MCP-Servers anzeigen")
+    .description("Toolnamen eines registrierten PIBo-MCP-Servers anzeigen")
     .option("--refresh", "Discovery nicht aus Cache lesen")
     .action(async (name: string, opts: { refresh?: boolean }) => {
       const { mcpTools } = await loadMcpModule();
@@ -266,7 +280,7 @@ export function registerPiboCli(program: Command) {
     });
   mcp
     .command("inspect <name> [tool]")
-    .description("Discovery-Daten oder ein einzelnes Tool inspizieren")
+    .description("Discovery-Daten aus der PIBo-Registry oder ein einzelnes Tool inspizieren")
     .option("--refresh", "Discovery nicht aus Cache lesen")
     .action(async (name: string, tool: string | undefined, opts: { refresh?: boolean }) => {
       const { mcpInspect } = await loadMcpModule();
@@ -274,7 +288,7 @@ export function registerPiboCli(program: Command) {
     });
   mcp
     .command("call [server] [tool]")
-    .description("Generischer MCP JSON-Invoker mit Discovery-Help")
+    .description("Generischer PIBo-MCP-JSON-Invoker mit Discovery-Help")
     .option("--json <json>", "JSON-Payload inline oder als @datei.json")
     .option("--stdin", "JSON-Payload von stdin lesen")
     .option("--refresh", "Discovery nicht aus Cache lesen")

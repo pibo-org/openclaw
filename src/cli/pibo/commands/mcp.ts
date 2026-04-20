@@ -119,7 +119,8 @@ function resolveOpenClawCliInvocation(): { command: string; args: string[] } {
 
 function execOpenClawCliSync(args: string[], options?: Parameters<typeof execFileSync>[2]): string {
   const invocation = resolveOpenClawCliInvocation();
-  return execFileSync(invocation.command, [...invocation.args, ...args], options);
+  const result = execFileSync(invocation.command, [...invocation.args, ...args], options);
+  return typeof result === "string" ? result : result.toString("utf8");
 }
 
 function readActiveServers(): Record<string, McpServer> {
@@ -250,13 +251,34 @@ function getServerTransportLabel(server: McpServer): string {
   return server.transport ?? "unknown";
 }
 
-function getRegisteredServer(name: string): McpServer {
+function describeServer(server: McpServer): string {
+  const mode = server.url ? `url=${server.url}` : `command=${server.command ?? "?"}`;
+  return `${server.transport} — ${mode}`;
+}
+
+function formatLayerStatus(
+  raw: McpServer | undefined,
+  presentText: string,
+  missingText: string,
+): string {
+  if (!raw) {
+    return missingText;
+  }
+  return `${presentText} — ${describeServer(validateServerShape(raw))}`;
+}
+
+function getRegistryServer(name: string): McpServer {
   const registry = readRegistry();
-  const active = readActiveServers();
-  const server = active[name] ?? registry.servers[name];
+  const server = registry.servers[name];
 
   if (!server) {
-    throw new Error(`MCP-Server nicht gefunden: ${name}`);
+    const active = readActiveServers();
+    if (active[name]) {
+      throw new Error(
+        `MCP-Server ist nur in OpenClaw aktiv: ${name}. Für PIBo-CLI-Aufrufe zuerst in der PIBo-Registry registrieren.`,
+      );
+    }
+    throw new Error(`MCP-Server ist nicht in der PIBo-Registry registriert: ${name}`);
   }
 
   return validateServerShape(server);
@@ -422,7 +444,7 @@ async function discoverTools(
   name: string,
   opts?: { refresh?: boolean },
 ): Promise<DiscoveryCacheEntry> {
-  const server = getRegisteredServer(name);
+  const server = getRegistryServer(name);
   const cache = readCache(name);
 
   if (!opts?.refresh && isCacheFresh(server, cache)) {
@@ -704,22 +726,21 @@ export function mcpList() {
   }
 
   for (const name of names) {
-    const stored = registry.servers[name];
-    const isActive = !!active[name];
-    const source = validateServerShape(active[name] ?? stored);
-    const mode = source.url ? `url=${source.url}` : `command=${source.command ?? "?"}`;
+    console.log(name);
     console.log(
-      `${isActive ? "🟢" : "⚪"} ${name} — ${isActive ? "aktiv" : "inaktiv"} — ${source.transport} — ${mode}`,
+      `  PIBo-Registry: ${formatLayerStatus(registry.servers[name], "registriert", "nicht registriert")}`,
     );
+    console.log(`  OpenClaw: ${formatLayerStatus(active[name], "aktiv", "nicht aktiv")}`);
   }
 }
 
 export function mcpShow(name: string) {
   const registry = readRegistry();
   const active = readActiveServers();
-  const server = active[name] ?? registry.servers[name];
+  const registryServer = registry.servers[name];
+  const activeServer = active[name];
 
-  if (!server) {
+  if (!registryServer && !activeServer) {
     throw new Error(`MCP-Server nicht gefunden: ${name}`);
   }
 
@@ -727,9 +748,15 @@ export function mcpShow(name: string) {
     JSON.stringify(
       {
         name,
-        active: !!active[name],
-        registered: !!registry.servers[name],
-        server: validateServerShape(server),
+        cliExecutionSource: registryServer ? "pibo-registry" : "unavailable",
+        piboRegistry: {
+          registered: !!registryServer,
+          server: registryServer ? validateServerShape(registryServer) : null,
+        },
+        openclaw: {
+          active: !!activeServer,
+          server: activeServer ? validateServerShape(activeServer) : null,
+        },
       },
       null,
       2,
@@ -737,7 +764,7 @@ export function mcpShow(name: string) {
   );
 }
 
-export function mcpEnable(name: string) {
+export function mcpActivateOpenClaw(name: string) {
   const registry = readRegistry();
   const server = registry.servers[name];
   if (!server) {
@@ -745,18 +772,32 @@ export function mcpEnable(name: string) {
   }
 
   execOpenClawCliSync(["mcp", "set", name, JSON.stringify(server)], { stdio: "inherit" });
-  console.log(`✅ MCP-Server aktiviert: ${name}`);
+  console.log(`✅ MCP-Server in OpenClaw aktiviert: ${name}`);
 }
 
-export function mcpDisable(name: string) {
+export function mcpEnable(name: string) {
+  console.warn(
+    "⚠️ 'pibo mcp enable' ist veraltet. Verwende stattdessen 'pibo mcp activate-openclaw'.",
+  );
+  mcpActivateOpenClaw(name);
+}
+
+export function mcpDeactivateOpenClaw(name: string) {
   const active = readActiveServers();
   if (!active[name]) {
-    console.log(`ℹ MCP-Server war nicht aktiv: ${name}`);
+    console.log(`ℹ MCP-Server war in OpenClaw nicht aktiv: ${name}`);
     return;
   }
 
   execOpenClawCliSync(["mcp", "unset", name], { stdio: "inherit" });
-  console.log(`✅ MCP-Server deaktiviert: ${name}`);
+  console.log(`✅ MCP-Server in OpenClaw deaktiviert: ${name}`);
+}
+
+export function mcpDisable(name: string) {
+  console.warn(
+    "⚠️ 'pibo mcp disable' ist veraltet. Verwende stattdessen 'pibo mcp deactivate-openclaw'.",
+  );
+  mcpDeactivateOpenClaw(name);
 }
 
 export function mcpUnregister(name: string, force = false) {
@@ -822,7 +863,7 @@ export async function mcpCall(
   opts: { json?: string; stdin?: boolean },
 ) {
   const payload = readPayloadSource(opts);
-  const server = getRegisteredServer(name);
+  const server = getRegistryServer(name);
   const { client, close } = await connectToServer(server);
   try {
     const result = await client.callTool({
@@ -840,12 +881,11 @@ export async function mcpDoctor(name: string, opts?: { refresh?: boolean }) {
   const active = readActiveServers();
   const registeredRaw = registry.servers[name];
   const activeRaw = active[name];
-  const effectiveRaw = activeRaw ?? registeredRaw;
 
   console.log(`MCP Doctor: ${name}`);
   console.log("");
 
-  if (!effectiveRaw) {
+  if (!registeredRaw && !activeRaw) {
     renderDoctorLine(
       "registry",
       "fail",
@@ -854,37 +894,66 @@ export async function mcpDoctor(name: string, opts?: { refresh?: boolean }) {
     return;
   }
 
-  let server: McpServer;
-  try {
-    server = validateServerShape(effectiveRaw);
-    renderDoctorLine("definition", "ok", `${server.transport} configuration looks valid`);
-  } catch (error) {
-    renderDoctorLine("definition", "fail", error instanceof Error ? error.message : String(error));
-    return;
+  let registryServer: McpServer | undefined;
+  if (registeredRaw) {
+    try {
+      registryServer = validateServerShape(registeredRaw);
+      renderDoctorLine(
+        "definition",
+        "ok",
+        `PIBo registry definition looks valid (${registryServer.transport})`,
+      );
+    } catch (error) {
+      renderDoctorLine(
+        "definition",
+        "fail",
+        `invalid PIBo registry definition: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+  } else {
+    renderDoctorLine(
+      "definition",
+      "warn",
+      "no PIBo registry definition; CLI discovery/call/refresh stay unavailable",
+    );
   }
 
   renderDoctorLine(
     "registry",
-    registeredRaw ? "ok" : "warn",
+    registeredRaw ? "ok" : "fail",
     registeredRaw ? "registered in PIBo config" : "not registered in PIBo config",
   );
   renderDoctorLine(
-    "active",
+    "openclaw",
     activeRaw ? "ok" : "warn",
     activeRaw ? "active in OpenClaw" : "not active in OpenClaw",
   );
 
-  if (server.transport === "stdio") {
-    renderDoctorLine("transport", "ok", `stdio via command=${server.command ?? "?"}`);
+  if (!registryServer) {
+    renderDoctorLine(
+      "runtime",
+      "fail",
+      "PIBo CLI commands do not fall back to the active OpenClaw MCP layer; register the server in PIBo first",
+    );
+    return;
+  }
+
+  if (registryServer.transport === "stdio") {
+    renderDoctorLine("transport", "ok", `stdio via command=${registryServer.command ?? "?"}`);
   } else {
-    renderDoctorLine("transport", "ok", `${server.transport} via url=${server.url ?? "?"}`);
+    renderDoctorLine(
+      "transport",
+      "ok",
+      `${registryServer.transport} via url=${registryServer.url ?? "?"}`,
+    );
   }
 
   const cache = readCache(name);
   if (!cache) {
     renderDoctorLine("cache", "warn", "no discovery cache present yet");
   } else {
-    const fresh = isCacheFresh(server, cache);
+    const fresh = isCacheFresh(registryServer, cache);
     renderDoctorLine(
       "cache",
       fresh ? "ok" : "warn",
@@ -892,7 +961,7 @@ export async function mcpDoctor(name: string, opts?: { refresh?: boolean }) {
     );
   }
 
-  const probe = await runDiscoveryProbe(server);
+  const probe = await runDiscoveryProbe(registryServer);
   if (!probe.ok) {
     renderDoctorLine("runtime", "fail", probe.error ?? "discovery probe failed");
     return;

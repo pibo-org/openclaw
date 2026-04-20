@@ -121,8 +121,74 @@ describe("pibo mcp command", () => {
         const elapsedMs = Date.now() - startedAt;
 
         expect(elapsedMs).toBeLessThan(1500);
+        expect(execFileSyncMock).not.toHaveBeenCalled();
         expect(await fs.readFile(exitMarkerPath, "utf8")).toBe("exited");
         expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain("HELLO");
+      } finally {
+        consoleLogSpy.mockRestore();
+      }
+    });
+  });
+
+  it("does not fall back to active OpenClaw MCP servers for PIBo CLI discovery", async () => {
+    await withTempHome("openclaw-pibo-mcp-home-", async (home) => {
+      const wrappedServerPath = path.join(home, "active-only-child.mjs");
+      const wrapperServerPath = path.join(home, "active-only-wrapper.mjs");
+      const exitMarkerPath = path.join(home, "active-only.exit");
+      await writeLingeringProbeServer(wrappedServerPath, exitMarkerPath);
+      await writeProbeWrapperServer(wrapperServerPath, wrappedServerPath);
+
+      execFileSyncMock.mockReturnValue(
+        JSON.stringify({
+          activeOnly: {
+            command: "node",
+            args: [wrapperServerPath],
+          },
+        }),
+      );
+
+      vi.resetModules();
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const { mcpTools } = await import("./mcp.js");
+        await expect(mcpTools("activeOnly")).rejects.toThrow(
+          "MCP-Server ist nur in OpenClaw aktiv: activeOnly",
+        );
+        expect(consoleLogSpy).not.toHaveBeenCalled();
+      } finally {
+        consoleLogSpy.mockRestore();
+      }
+    });
+  });
+
+  it("runs doctor successfully from the PIBo registry even when the server is absent from OpenClaw", async () => {
+    await withTempHome("openclaw-pibo-mcp-home-", async (home) => {
+      const wrappedServerPath = path.join(home, "doctor-probe-child.mjs");
+      const wrapperServerPath = path.join(home, "doctor-probe-wrapper.mjs");
+      const exitMarkerPath = path.join(home, "doctor-probe.exit");
+      await writeLingeringProbeServer(wrappedServerPath, exitMarkerPath);
+      await writeProbeWrapperServer(wrapperServerPath, wrappedServerPath);
+
+      vi.resetModules();
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const { mcpDoctor, mcpRegister } = await import("./mcp.js");
+        mcpRegister(
+          "probe",
+          JSON.stringify({
+            command: "node",
+            args: [wrapperServerPath],
+            env: { BUNDLE_PROBE_TEXT: "DOCTOR" },
+          }),
+        );
+
+        await mcpDoctor("probe");
+
+        const output = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(output).toContain("registered in PIBo config");
+        expect(output).toContain("not active in OpenClaw");
+        expect(output).toContain("connected successfully, 1 tools visible");
+        expect(await fs.readFile(exitMarkerPath, "utf8")).toBe("exited");
       } finally {
         consoleLogSpy.mockRestore();
       }

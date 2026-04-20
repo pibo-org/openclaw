@@ -30,6 +30,7 @@ describe("pibo cli", () => {
     const twitter = pibo?.commands.find((command) => command.name() === "twitter");
     const twitterCheck = twitter?.commands.find((command) => command.name() === "check");
     const twitterState = twitter?.commands.find((command) => command.name() === "state");
+    const mcp = pibo?.commands.find((command) => command.name() === "mcp");
     const workflows = pibo?.commands.find((command) => command.name() === "workflows");
     expect(pibo).toBeTruthy();
     expect(pibo?.commands.some((command) => command.name() === "find")).toBe(true);
@@ -41,9 +42,32 @@ describe("pibo cli", () => {
     expect(twitterCheck?.commands.some((command) => command.name() === "for-you")).toBe(true);
     expect(twitterState?.commands.some((command) => command.name() === "status")).toBe(true);
     expect(twitterState?.commands.some((command) => command.name() === "reset")).toBe(true);
+    expect(mcp?.commands.some((command) => command.name() === "activate-openclaw")).toBe(true);
+    expect(mcp?.commands.some((command) => command.name() === "deactivate-openclaw")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "workflows")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "start-async")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "wait")).toBe(true);
+  });
+
+  it("exposes MCP help with separated registry and OpenClaw activation semantics", () => {
+    const program = createProgram();
+    const pibo = program.commands.find((command) => command.name() === "pibo");
+    const mcp = pibo?.commands.find((command) => command.name() === "mcp");
+    const activate = mcp?.commands.find((command) => command.name() === "activate-openclaw");
+    const deactivate = mcp?.commands.find((command) => command.name() === "deactivate-openclaw");
+    const tools = mcp?.commands.find((command) => command.name() === "tools");
+
+    const mcpHelp = mcp?.helpInformation() ?? "";
+    const activateHelp = activate?.helpInformation() ?? "";
+    const deactivateHelp = deactivate?.helpInformation() ?? "";
+    const toolsHelp = tools?.helpInformation() ?? "";
+
+    expect(mcpHelp).toContain("PIBo-MCP-Registry verwalten");
+    expect(mcpHelp).toContain("activate-openclaw");
+    expect(mcpHelp).toContain("deactivate-openclaw");
+    expect(activateHelp).toContain("explizit in OpenClaw aktivieren");
+    expect(deactivateHelp).toContain("in der PIBo-Registry lassen");
+    expect(toolsHelp).toContain("registrierten PIBo-MCP-Servers");
   });
 
   it("exposes feed-oriented Twitter help", () => {
