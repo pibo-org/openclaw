@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginCommandContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
@@ -21,6 +23,20 @@ import {
   createPiboWorkflowTraceSummaryTool,
   createPiboWorkflowWaitTool,
 } from "./src/workflow-tools.js";
+
+const PIBO_GLOBAL_SYSTEM_PROMPT_PATH = fileURLToPath(
+  new URL("./pibo-global-system-prompt.md", import.meta.url),
+);
+
+function readPiboGlobalSystemPrompt(): string {
+  const prompt = fs.readFileSync(PIBO_GLOBAL_SYSTEM_PROMPT_PATH, "utf8").trim();
+  if (!prompt) {
+    throw new Error(`pibo: global system prompt file is empty: ${PIBO_GLOBAL_SYSTEM_PROMPT_PATH}`);
+  }
+  return prompt;
+}
+
+const PIBO_GLOBAL_SYSTEM_PROMPT = readPiboGlobalSystemPrompt();
 
 export default definePluginEntry({
   id: "pibo",
@@ -81,6 +97,9 @@ export default definePluginEntry({
     });
 
     registerDynamicPromptCommands(api);
+    api.on("before_prompt_build", () => ({
+      prependSystemContext: PIBO_GLOBAL_SYSTEM_PROMPT,
+    }));
     api.on("before_tool_call", (event, ctx) => handlePiboRawSessionToolGuard(event, ctx));
 
     api.logger.info?.("pibo: bundled extension registered");

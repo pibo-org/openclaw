@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../src/config/config.js";
 import { buildPluginApi } from "../../src/plugins/api-builder.js";
@@ -18,9 +19,14 @@ type RegisteredTool = {
 
 type RegisteredHook = {
   hookName: string;
+  handler?: unknown;
 };
 
 const originalHome = process.env.HOME;
+const PIBO_GLOBAL_SYSTEM_PROMPT_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "pibo-global-system-prompt.md",
+);
 
 function withTempHome(): string {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-pibo-plugin-"));
@@ -86,8 +92,8 @@ describe("bundled pibo extension", () => {
             typeof tool === "function" ? tool({ config: {}, sessionKey: "test" } as never) : tool;
           tools.push({ name: (resolved as { name?: string }).name });
         },
-        on(hookName) {
-          hooks.push({ hookName });
+        on(hookName, handler) {
+          hooks.push({ hookName, handler });
         },
       },
     });
@@ -115,6 +121,20 @@ describe("bundled pibo extension", () => {
         "pibo_workflow_artifact",
       ]),
     );
-    expect(hooks).toEqual(expect.arrayContaining([{ hookName: "before_tool_call" }]));
+    expect(hooks).toEqual(
+      expect.arrayContaining([
+        { hookName: "before_prompt_build", handler: expect.any(Function) },
+        { hookName: "before_tool_call", handler: expect.any(Function) },
+      ]),
+    );
+
+    const beforePromptBuild = hooks.find((hook) => hook.hookName === "before_prompt_build");
+    expect(beforePromptBuild?.handler).toBeTypeOf("function");
+    const beforePromptBuildHandler = beforePromptBuild?.handler as
+      | ((event: { prompt: string; messages: unknown[] }, ctx: unknown) => unknown | Promise<unknown>)
+      | undefined;
+    expect(await beforePromptBuildHandler?.({ prompt: "test", messages: [] }, {})).toEqual({
+      prependSystemContext: fs.readFileSync(PIBO_GLOBAL_SYSTEM_PROMPT_PATH, "utf8").trim(),
+    });
   });
 });

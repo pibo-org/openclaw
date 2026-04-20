@@ -31,6 +31,12 @@ export const STATIC_EXTENSION_ASSETS = [
     src: "extensions/diffs/assets/viewer-runtime.js",
     dest: "dist/extensions/diffs/assets/viewer-runtime.js",
   },
+  // pibo global system prompt — co-deployed beside the built plugin entry so
+  // the bundled plugin can load its canonical editable prompt source from dist.
+  {
+    src: "extensions/pibo/pibo-global-system-prompt.md",
+    dest: "dist/extensions/pibo/pibo-global-system-prompt.md",
+  },
 ];
 
 export function listStaticExtensionAssetOutputs(params = {}) {

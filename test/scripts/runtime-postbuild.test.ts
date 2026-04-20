@@ -15,6 +15,9 @@ describe("runtime postbuild static assets", () => {
     expect(listStaticExtensionAssetOutputs()).toContain(
       "dist/extensions/diffs/assets/viewer-runtime.js",
     );
+    expect(listStaticExtensionAssetOutputs()).toContain(
+      "dist/extensions/pibo/pibo-global-system-prompt.md",
+    );
   });
 
   it("copies declared static assets into dist", async () => {
