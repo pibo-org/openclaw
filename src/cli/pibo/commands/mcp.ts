@@ -1,10 +1,12 @@
-import { execFileSync, spawnSync } from "child_process";
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import type { Readable } from "stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { resolveOpenClawPackageRootSync } from "../../../infra/openclaw-root.js";
+import { killProcessTree } from "../../../process/kill-tree.js";
 
 const PIBO_CONFIG_DIR = path.join(process.env.HOME || "", ".config", "pibo");
 const REGISTRY_PATH = path.join(PIBO_CONFIG_DIR, "mcp-servers.json");
@@ -94,8 +96,34 @@ function writeRegistry(registry: Registry) {
   writeJsonFile(REGISTRY_PATH, registry);
 }
 
+function resolveOpenClawCliInvocation(): { command: string; args: string[] } {
+  const packageRoot = resolveOpenClawPackageRootSync({
+    argv1: process.argv[1],
+    cwd: process.cwd(),
+    moduleUrl: import.meta.url,
+  });
+  if (packageRoot) {
+    const entrypoint = path.join(packageRoot, "openclaw.mjs");
+    if (fs.existsSync(entrypoint)) {
+      return { command: process.execPath, args: [entrypoint] };
+    }
+  }
+
+  const argv1 = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
+  if (argv1 && fs.existsSync(argv1)) {
+    return { command: process.execPath, args: [path.resolve(argv1)] };
+  }
+
+  return { command: "openclaw", args: [] };
+}
+
+function execOpenClawCliSync(args: string[], options?: Parameters<typeof execFileSync>[2]): string {
+  const invocation = resolveOpenClawCliInvocation();
+  return execFileSync(invocation.command, [...invocation.args, ...args], options);
+}
+
 function readActiveServers(): Record<string, McpServer> {
-  const raw = execFileSync("openclaw", ["mcp", "show", "--json"], { encoding: "utf-8" });
+  const raw = execOpenClawCliSync(["mcp", "show", "--json"], { encoding: "utf-8" });
   const parsed = JSON.parse(raw);
   return parsed ?? {};
 }
@@ -312,74 +340,28 @@ function attachFilteredStderr(stream: Readable | null): () => void {
   };
 }
 
-function listDescendantPids(rootPid: number): number[] {
+function wrapStdioCommandForOwnProcessGroup(
+  server: McpServer,
+): Pick<McpServer, "command" | "args"> {
+  const args = server.args ?? [];
   if (process.platform === "win32") {
-    return [];
+    return {
+      command: server.command!,
+      args,
+    };
   }
 
-  const result = spawnSync("ps", ["-Ao", "pid=,ppid="], {
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (result.status !== 0) {
-    return [];
+  if (path.basename(server.command!) === "setsid") {
+    return {
+      command: server.command!,
+      args,
+    };
   }
 
-  const childrenByParent = new Map<number, number[]>();
-  for (const line of result.stdout.split(/\r?\n/)) {
-    const [pidRaw, ppidRaw] = line
-      .trim()
-      .split(/\s+/)
-      .map((value) => Number.parseInt(value, 10));
-    if (!Number.isInteger(pidRaw) || !Number.isInteger(ppidRaw)) {
-      continue;
-    }
-    const children = childrenByParent.get(ppidRaw) ?? [];
-    children.push(pidRaw);
-    childrenByParent.set(ppidRaw, children);
-  }
-
-  const descendants: number[] = [];
-  const stack = [...(childrenByParent.get(rootPid) ?? [])];
-  while (stack.length > 0) {
-    const pid = stack.pop();
-    if (!pid || descendants.includes(pid)) {
-      continue;
-    }
-    descendants.push(pid);
-    stack.push(...(childrenByParent.get(pid) ?? []));
-  }
-  return descendants;
-}
-
-function collectOwnedStdioTransportPids(transport: StdioClientTransport): number[] {
-  const pid = transport.pid;
-  if (pid === null) {
-    return [];
-  }
-  return [...listDescendantPids(pid), pid];
-}
-
-function isProcessStillAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function signalOwnedPids(pids: number[], signal: NodeJS.Signals) {
-  for (const pid of pids) {
-    if (!isProcessStillAlive(pid)) {
-      continue;
-    }
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // ignore
-    }
-  }
+  return {
+    command: "setsid",
+    args: [server.command!, ...args],
+  };
 }
 
 async function connectToServer(
@@ -388,21 +370,22 @@ async function connectToServer(
   const client = new Client({ name: "pibo-cli", version: "0.1.0" });
 
   if (server.transport === "stdio") {
+    const stdioServer = wrapStdioCommandForOwnProcessGroup(server);
     const transport = new StdioClientTransport({
-      command: server.command!,
-      args: server.args,
+      command: stdioServer.command!,
+      args: stdioServer.args,
       env: server.env,
       cwd: server.cwd,
       stderr: "pipe",
     });
     const detachFilteredStderr = attachFilteredStderr(transport.stderr as Readable | null);
     const close = async () => {
-      const ownedPids = collectOwnedStdioTransportPids(transport);
+      const transportPid = transport.pid;
       detachFilteredStderr();
-      signalOwnedPids(ownedPids, "SIGTERM");
-      await client.close().catch(() => {});
+      if (transportPid !== null) {
+        killProcessTree(transportPid, { graceMs: 250 });
+      }
       await transport.close().catch(() => {});
-      signalOwnedPids(ownedPids, "SIGKILL");
     };
     try {
       await client.connect(transport);
@@ -761,7 +744,7 @@ export function mcpEnable(name: string) {
     throw new Error(`MCP-Server ist nicht registriert: ${name}`);
   }
 
-  execFileSync("openclaw", ["mcp", "set", name, JSON.stringify(server)], { stdio: "inherit" });
+  execOpenClawCliSync(["mcp", "set", name, JSON.stringify(server)], { stdio: "inherit" });
   console.log(`✅ MCP-Server aktiviert: ${name}`);
 }
 
@@ -772,7 +755,7 @@ export function mcpDisable(name: string) {
     return;
   }
 
-  execFileSync("openclaw", ["mcp", "unset", name], { stdio: "inherit" });
+  execOpenClawCliSync(["mcp", "unset", name], { stdio: "inherit" });
   console.log(`✅ MCP-Server deaktiviert: ${name}`);
 }
 
@@ -783,7 +766,7 @@ export function mcpUnregister(name: string, force = false) {
   }
 
   if (active[name] && force) {
-    execFileSync("openclaw", ["mcp", "unset", name], { stdio: "inherit" });
+    execOpenClawCliSync(["mcp", "unset", name], { stdio: "inherit" });
   }
 
   const registry = readRegistry();

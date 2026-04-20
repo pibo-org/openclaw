@@ -78,6 +78,23 @@ describe("pibo mcp command", () => {
     execFileSyncMock.mockReturnValue("{}");
   });
 
+  it("reads active MCP servers through the current OpenClaw checkout", async () => {
+    vi.resetModules();
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const { mcpList } = await import("./mcp.js");
+      mcpList();
+
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        process.execPath,
+        [path.join(process.cwd(), "openclaw.mjs"), "mcp", "show", "--json"],
+        { encoding: "utf-8" },
+      );
+    } finally {
+      consoleLogSpy.mockRestore();
+    }
+  });
+
   it("terminates owned stdio servers promptly after a successful tool call", async () => {
     await withTempHome("openclaw-pibo-mcp-home-", async (home) => {
       const wrappedServerPath = path.join(home, "linger-probe-child.mjs");
