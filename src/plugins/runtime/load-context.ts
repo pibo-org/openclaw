@@ -29,6 +29,7 @@ export type PluginRuntimeLoadContextOptions = {
   env?: NodeJS.ProcessEnv;
   workspaceDir?: string;
   logger?: PluginLogger;
+  includePersistedAuthState?: boolean;
 };
 
 export function createPluginRuntimeLoaderLogger(): PluginLogger {
@@ -45,7 +46,11 @@ export function resolvePluginRuntimeLoadContext(
 ): PluginRuntimeLoadContext {
   const env = options?.env ?? process.env;
   const rawConfig = options?.config ?? loadConfig();
-  const autoEnabled = applyPluginAutoEnable({ config: rawConfig, env });
+  const autoEnabled = applyPluginAutoEnable({
+    config: rawConfig,
+    env,
+    includePersistedAuthState: options?.includePersistedAuthState,
+  });
   const config = autoEnabled.config;
   const workspaceDir =
     options?.workspaceDir ?? resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));

@@ -15,7 +15,10 @@ import type {
   PluginLogger,
 } from "./types.js";
 
-export type PluginCliLoaderOptions = Pick<PluginLoadOptions, "pluginSdkResolution">;
+export type PluginCliLoaderOptions = Pick<
+  PluginLoadOptions,
+  "pluginSdkResolution" | "onlyPluginIds"
+>;
 
 export type PluginCliPublicLoadParams = {
   cfg?: OpenClawConfig;
@@ -83,6 +86,7 @@ export function resolvePluginCliLoadContext(params: {
     config: params.cfg,
     env: params.env,
     logger: params.logger,
+    includePersistedAuthState: false,
   });
 }
 
@@ -210,6 +214,30 @@ export async function loadPluginCliRegistrationEntries(params: {
   });
 }
 
+export async function loadPluginCliMetadataRegistrationEntries(params: {
+  cfg?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  loaderOptions?: PluginCliLoaderOptions;
+  logger?: PluginLogger;
+}): Promise<PluginCliCommandGroupEntry[]> {
+  const resolvedLogger = resolvePluginCliLogger(params.logger);
+  const context = resolvePluginCliLoadContext({
+    cfg: params.cfg,
+    env: params.env,
+    logger: resolvedLogger,
+  });
+  const { config, workspaceDir, logger, registry } = await loadPluginCliMetadataRegistryWithContext(
+    context,
+    params.loaderOptions,
+  );
+  return buildPluginCliCommandGroupEntries({
+    registry,
+    config,
+    workspaceDir,
+    logger,
+  });
+}
+
 export async function loadPluginCliRegistrationEntriesWithDefaults(
   params: PluginCliPublicLoadParams,
 ): Promise<PluginCliCommandGroupEntry[]> {
@@ -227,19 +255,8 @@ export async function loadPluginCliMetadataRegistrationEntriesWithDefaults(
   params: PluginCliPublicLoadParams,
 ): Promise<PluginCliCommandGroupEntry[]> {
   const logger = resolvePluginCliLogger(params.logger);
-  const context = resolvePluginCliLoadContext({
-    cfg: params.cfg,
-    env: params.env,
-    logger,
-  });
-  const { config, workspaceDir, registry } = await loadPluginCliMetadataRegistryWithContext(
-    context,
-    params.loaderOptions,
-  );
-  return buildPluginCliCommandGroupEntries({
-    registry,
-    config,
-    workspaceDir,
+  return loadPluginCliMetadataRegistrationEntries({
+    ...params,
     logger,
   });
 }

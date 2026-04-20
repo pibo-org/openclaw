@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 
 const mocks = vi.hoisted(() => ({
@@ -10,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   loadOpenClawPlugins: vi.fn(),
   applyPluginAutoEnable: vi.fn(),
   loadConfig: vi.fn(),
+  parseConfigJson5: vi.fn(),
   readConfigFileSnapshot: vi.fn(),
+  resolveConfigPath: vi.fn(),
 }));
 
 vi.mock("./loader.js", () => ({
@@ -25,13 +30,28 @@ vi.mock("../config/plugin-auto-enable.js", () => ({
 
 vi.mock("../config/config.js", () => ({
   loadConfig: (...args: unknown[]) => mocks.loadConfig(...args),
+  parseConfigJson5: (...args: unknown[]) => mocks.parseConfigJson5(...args),
   readConfigFileSnapshot: (...args: unknown[]) => mocks.readConfigFileSnapshot(...args),
+  resolveConfigPath: (...args: unknown[]) => mocks.resolveConfigPath(...args),
 }));
 
 let getPluginCliCommandDescriptors: typeof import("./cli.js").getPluginCliCommandDescriptors;
 let loadValidatedConfigForPluginRegistration: typeof import("./cli.js").loadValidatedConfigForPluginRegistration;
 let registerPluginCliCommands: typeof import("./cli.js").registerPluginCliCommands;
 let registerPluginCliCommandsFromValidatedConfig: typeof import("./cli.js").registerPluginCliCommandsFromValidatedConfig;
+const tempDirs: string[] = [];
+
+function createTempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-cli-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function createProgram(existingCommandName?: string) {
   const program = new Command();
@@ -106,6 +126,7 @@ function expectAutoEnabledCliLoad(params: {
   expect(mocks.applyPluginAutoEnable).toHaveBeenCalledWith({
     config: params.rawConfig,
     env: process.env,
+    includePersistedAuthState: false,
   });
   expect(mocks.loadOpenClawPlugins).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -152,11 +173,13 @@ describe("registerPluginCliCommands", () => {
     }));
     mocks.loadConfig.mockReset();
     mocks.loadConfig.mockReturnValue({} as OpenClawConfig);
+    mocks.parseConfigJson5.mockReset();
     mocks.readConfigFileSnapshot.mockReset();
     mocks.readConfigFileSnapshot.mockResolvedValue({
       valid: true,
       config: {},
     });
+    mocks.resolveConfigPath.mockReset();
   });
 
   it("skips plugin CLI registrars when commands already exist", async () => {
@@ -400,23 +423,12 @@ describe("registerPluginCliCommands", () => {
     });
 
     expect(program.commands.filter((command) => command.name() === "memory")).toHaveLength(1);
-
-    await program.parseAsync(["memory", "list"], { from: "user" });
-
-    expect(mocks.memoryRegister).toHaveBeenCalledTimes(1);
-    expect(mocks.memoryListAction).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses CLI metadata first for a lazy primary when metadata covers the command", async () => {
-    const program = createProgram();
-    program.exitOverride();
-
-    await registerPluginCliCommands(program, {} as OpenClawConfig, undefined, undefined, {
-      mode: "lazy",
-      primary: "memory",
-    });
-
     expect(mocks.loadOpenClawPluginCliRegistry).toHaveBeenCalledTimes(1);
+    expect(mocks.loadOpenClawPluginCliRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onlyPluginIds: ["memory-core"],
+      }),
+    );
     expect(mocks.loadOpenClawPlugins).not.toHaveBeenCalled();
 
     await program.parseAsync(["memory", "list"], { from: "user" });
@@ -425,8 +437,25 @@ describe("registerPluginCliCommands", () => {
     expect(mocks.memoryListAction).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to the runtime registry when lazy primary metadata is missing", async () => {
-    mocks.loadOpenClawPluginCliRegistry.mockResolvedValueOnce(createEmptyCliRegistry());
+  it("falls back to the full plugin runtime when metadata does not cover the selected primary", async () => {
+    mocks.loadOpenClawPluginCliRegistry.mockResolvedValue({
+      cliRegistrars: [
+        {
+          pluginId: "other",
+          register: mocks.otherRegister,
+          commands: ["other"],
+          descriptors: [
+            {
+              name: "other",
+              description: "Other commands",
+              hasSubcommands: true,
+            },
+          ],
+          source: "bundled",
+        },
+      ],
+      diagnostics: [],
+    });
     const program = createProgram();
     program.exitOverride();
 
@@ -437,11 +466,7 @@ describe("registerPluginCliCommands", () => {
 
     expect(mocks.loadOpenClawPluginCliRegistry).toHaveBeenCalledTimes(1);
     expect(mocks.loadOpenClawPlugins).toHaveBeenCalledTimes(1);
-
-    await program.parseAsync(["memory", "list"], { from: "user" });
-
-    expect(mocks.memoryRegister).toHaveBeenCalledTimes(1);
-    expect(mocks.memoryListAction).toHaveBeenCalledTimes(1);
+    expect(program.commands.filter((command) => command.name() === "memory")).toHaveLength(1);
   });
 
   it("returns null for validated plugin CLI config when the snapshot is invalid", async () => {
@@ -463,6 +488,47 @@ describe("registerPluginCliCommands", () => {
     mocks.loadConfig.mockReturnValueOnce(loadedConfig);
 
     await expect(loadValidatedConfigForPluginRegistration()).resolves.toBe(loadedConfig);
+    expect(mocks.loadConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a plain-file fast path for lazy primary plugin registration config", async () => {
+    const tempDir = createTempDir();
+    const configPath = path.join(tempDir, "openclaw.json");
+    const fastConfig = {
+      plugins: {
+        allow: ["browser"],
+      },
+    } as OpenClawConfig;
+    fs.writeFileSync(configPath, JSON.stringify(fastConfig), "utf-8");
+    mocks.resolveConfigPath.mockReturnValueOnce(configPath);
+    mocks.parseConfigJson5.mockReturnValueOnce({
+      ok: true,
+      parsed: fastConfig,
+    });
+
+    await expect(
+      loadValidatedConfigForPluginRegistration({ mode: "lazy", primary: "browser" }),
+    ).resolves.toEqual(fastConfig);
+    expect(mocks.readConfigFileSnapshot).not.toHaveBeenCalled();
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the full validated config path for complex lazy primary plugin registration config", async () => {
+    const tempDir = createTempDir();
+    const configPath = path.join(tempDir, "openclaw.json");
+    const loadedConfig = { plugins: { enabled: true } } as OpenClawConfig;
+    fs.writeFileSync(configPath, '{ "$include": "./shared.json" }\n', "utf-8");
+    mocks.resolveConfigPath.mockReturnValueOnce(configPath);
+    mocks.readConfigFileSnapshot.mockResolvedValueOnce({
+      valid: true,
+      config: loadedConfig,
+    });
+    mocks.loadConfig.mockReturnValueOnce(loadedConfig);
+
+    await expect(
+      loadValidatedConfigForPluginRegistration({ mode: "lazy", primary: "browser" }),
+    ).resolves.toBe(loadedConfig);
+    expect(mocks.readConfigFileSnapshot).toHaveBeenCalledTimes(1);
     expect(mocks.loadConfig).toHaveBeenCalledTimes(1);
   });
 

@@ -33,6 +33,7 @@ export function applyPluginAutoEnable(params: {
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   manifestRegistry?: PluginManifestRegistry;
+  includePersistedAuthState?: boolean;
 }): PluginAutoEnableResult {
   const candidates = detectPluginAutoEnableCandidates(params);
   return materializePluginAutoEnableCandidates({

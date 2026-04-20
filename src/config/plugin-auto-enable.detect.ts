@@ -11,10 +11,15 @@ export function detectPluginAutoEnableCandidates(params: {
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   manifestRegistry?: PluginManifestRegistry;
+  includePersistedAuthState?: boolean;
 }): PluginAutoEnableCandidate[] {
   const env = params.env ?? process.env;
   const config = params.config ?? ({} as OpenClawConfig);
-  if (!configMayNeedPluginAutoEnable(config, env)) {
+  if (
+    !configMayNeedPluginAutoEnable(config, env, {
+      includePersistedAuthState: params.includePersistedAuthState,
+    })
+  ) {
     return [];
   }
   const registry = resolvePluginAutoEnableManifestRegistry({
@@ -26,5 +31,6 @@ export function detectPluginAutoEnableCandidates(params: {
     config,
     env,
     registry,
+    includePersistedAuthState: params.includePersistedAuthState,
   });
 }

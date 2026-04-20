@@ -5,6 +5,7 @@ import {
   detectPluginAutoEnableCandidates,
   resolvePluginAutoEnableCandidateReason,
 } from "./plugin-auto-enable.js";
+import { configMayNeedPluginAutoEnable } from "./plugin-auto-enable.shared.js";
 import {
   makeIsolatedEnv,
   makeRegistry,
@@ -147,6 +148,36 @@ describe("applyPluginAutoEnable core", () => {
     expect(result.config.plugins?.allow).toEqual(["telegram"]);
     expect(result.config.plugins?.entries?.browser).toBeUndefined();
     expect(result.changes).toEqual([]);
+  });
+
+  it("does not treat plain enabled plugin toggles as auto-enable probe signals", () => {
+    expect(
+      configMayNeedPluginAutoEnable(
+        {
+          plugins: {
+            allow: ["telegram", "browser", "pibo"],
+            entries: {
+              browser: { enabled: true },
+              pibo: { enabled: true },
+            },
+          },
+        },
+        makeIsolatedEnv(),
+      ),
+    ).toBe(false);
+  });
+
+  it("still treats browser tool references as potential auto-enable signals", () => {
+    expect(
+      configMayNeedPluginAutoEnable(
+        {
+          tools: {
+            alsoAllow: ["browser"],
+          },
+        },
+        makeIsolatedEnv(),
+      ),
+    ).toBe(true);
   });
 
   it("does not auto-enable or allowlist non-bundled web fetch providers from config", () => {

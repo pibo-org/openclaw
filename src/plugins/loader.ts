@@ -2006,7 +2006,12 @@ export async function loadOpenClawPluginCliRegistry(
 
     let mod: OpenClawPluginModule | null = null;
     try {
-      mod = getJiti(safeSource)(safeImportSource) as OpenClawPluginModule;
+      mod = shouldUseNativeCliMetadataImport({
+        source: safeSource,
+        candidateOrigin: candidate.origin,
+      })
+        ? ((await import(safeImportSource)) as OpenClawPluginModule)
+        : (getJiti(safeSource)(safeImportSource) as OpenClawPluginModule);
     } catch (err) {
       recordPluginError({
         logger,
@@ -2121,6 +2126,23 @@ function safeRealpathOrResolve(value: string): string {
     return fs.realpathSync(value);
   } catch {
     return path.resolve(value);
+  }
+}
+
+function shouldUseNativeCliMetadataImport(params: {
+  source: string;
+  candidateOrigin: PluginRecord["origin"];
+}): boolean {
+  if (params.candidateOrigin !== "bundled") {
+    return false;
+  }
+  switch (path.extname(params.source).toLowerCase()) {
+    case ".js":
+    case ".mjs":
+    case ".cjs":
+      return true;
+    default:
+      return false;
   }
 }
 

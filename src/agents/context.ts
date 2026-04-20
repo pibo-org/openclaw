@@ -126,24 +126,7 @@ function getCommandPathFromArgv(argv: string[]): string[] {
   return tokens;
 }
 
-const SKIP_EAGER_WARMUP_PRIMARY_COMMANDS = new Set([
-  "agent",
-  "backup",
-  "completion",
-  "config",
-  "directory",
-  "doctor",
-  "gateway",
-  "health",
-  "hooks",
-  "logs",
-  "models",
-  "plugins",
-  "secrets",
-  "status",
-  "update",
-  "webhooks",
-]);
+const EAGER_WARMUP_PRIMARY_COMMANDS = new Set<string>();
 
 function shouldEagerWarmContextWindowCache(argv: string[] = process.argv): boolean {
   // Keep this gate tied to the real OpenClaw CLI entrypoints.
@@ -157,7 +140,10 @@ function shouldEagerWarmContextWindowCache(argv: string[] = process.argv): boole
     return false;
   }
   const [primary] = getCommandPathFromArgv(argv);
-  return Boolean(primary) && !SKIP_EAGER_WARMUP_PRIMARY_COMMANDS.has(primary);
+  // Short-lived CLI commands must not keep the process alive with background
+  // models.json writes or provider discovery. Commands that truly benefit from
+  // eager warming can be added back explicitly.
+  return Boolean(primary) && EAGER_WARMUP_PRIMARY_COMMANDS.has(primary);
 }
 
 function primeConfiguredContextWindows(): OpenClawConfig | undefined {

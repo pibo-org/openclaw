@@ -195,13 +195,13 @@ describe("lookupContextTokens", () => {
     expect(secondLoadConfigMock).not.toHaveBeenCalled();
   });
 
-  it("only warms eagerly for real openclaw startup commands that need model metadata", async () => {
+  it("does not eager-warm context metadata on import for short-lived cli processes", async () => {
     const argvSnapshot = process.argv;
     try {
       for (const scenario of [
         {
           argv: ["node", "openclaw", "chat"],
-          expectedCalls: 1,
+          expectedCalls: 0,
         },
         {
           argv: ["node", "openclaw", "--profile", "--", "config", "validate"],
