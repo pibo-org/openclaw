@@ -33,6 +33,7 @@ import {
 } from "./chrome.executables.js";
 import {
   decorateOpenClawProfile,
+  healOpenClawProfileLaunchPrefs,
   ensureProfileCleanExit,
   isProfileDecorated,
 } from "./chrome.profile-decoration.js";
@@ -53,6 +54,7 @@ export {
 } from "./chrome.executables.js";
 export {
   decorateOpenClawProfile,
+  healOpenClawProfileLaunchPrefs,
   ensureProfileCleanExit,
   isProfileDecorated,
 } from "./chrome.profile-decoration.js";
@@ -86,6 +88,18 @@ function cdpUrlForPort(cdpPort: number) {
   return `http://127.0.0.1:${cdpPort}`;
 }
 
+const DEFAULT_VISIBLE_WINDOW_SIZE = "--window-size=1440,900";
+
+function hasExplicitWindowLaunchArg(extraArgs: readonly string[]): boolean {
+  return extraArgs.some(
+    (arg) =>
+      arg.startsWith("--window-size=") ||
+      arg === "--start-maximized" ||
+      arg === "--start-fullscreen" ||
+      arg === "--kiosk",
+  );
+}
+
 export function buildOpenClawChromeLaunchArgs(params: {
   resolved: ResolvedBrowserConfig;
   profile: ResolvedBrowserProfile;
@@ -116,6 +130,9 @@ export function buildOpenClawChromeLaunchArgs(params: {
   }
   if (process.platform === "linux") {
     args.push("--disable-dev-shm-usage");
+  }
+  if (!resolved.headless && !hasExplicitWindowLaunchArg(resolved.extraArgs)) {
+    args.push(DEFAULT_VISIBLE_WINDOW_SIZE);
   }
   if (resolved.extraArgs.length > 0) {
     args.push(...resolved.extraArgs);
@@ -369,6 +386,19 @@ export async function launchOpenClawChrome(
       }
       await new Promise((r) => setTimeout(r, 50));
     }
+  }
+
+  try {
+    const healed = healOpenClawProfileLaunchPrefs(userDataDir);
+    if (healed.removedBrowserKeys.length > 0) {
+      log.warn(
+        healed.removedBrowserBlock
+          ? `openclaw browser profile healed by clearing Default/Preferences browser block after detecting keys: ${healed.removedBrowserKeys.join(", ")}`
+          : `openclaw browser profile healed by clearing Default/Preferences browser keys: ${healed.removedBrowserKeys.join(", ")}`,
+      );
+    }
+  } catch (err) {
+    log.warn(`openclaw browser launch prefs heal failed: ${String(err)}`);
   }
 
   if (needsDecorate) {
