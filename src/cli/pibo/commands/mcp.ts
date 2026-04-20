@@ -1,4 +1,4 @@
-import { execFileSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import type { Readable } from "stream";
@@ -279,13 +279,13 @@ function isIgnorableMcpStderrLine(line: string): boolean {
   return prefixes.some((prefix) => normalized.startsWith(prefix));
 }
 
-function attachFilteredStderr(stream: Readable | null) {
+function attachFilteredStderr(stream: Readable | null): () => void {
   if (!stream) {
-    return;
+    return () => {};
   }
 
   let buffer = "";
-  stream.on("data", (chunk) => {
+  const handleData = (chunk: Buffer | string) => {
     buffer += chunk.toString();
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() ?? "";
@@ -295,14 +295,91 @@ function attachFilteredStderr(stream: Readable | null) {
         process.stderr.write(line + "\n");
       }
     }
-  });
+  };
 
-  stream.on("end", () => {
+  const handleEnd = () => {
     const tail = buffer.trim();
     if (tail && !isIgnorableMcpStderrLine(tail)) {
       process.stderr.write(tail + "\n");
     }
+  };
+
+  stream.on("data", handleData);
+  stream.on("end", handleEnd);
+  return () => {
+    stream.off("data", handleData);
+    stream.off("end", handleEnd);
+  };
+}
+
+function listDescendantPids(rootPid: number): number[] {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  const result = spawnSync("ps", ["-Ao", "pid=,ppid="], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "ignore"],
   });
+  if (result.status !== 0) {
+    return [];
+  }
+
+  const childrenByParent = new Map<number, number[]>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const [pidRaw, ppidRaw] = line
+      .trim()
+      .split(/\s+/)
+      .map((value) => Number.parseInt(value, 10));
+    if (!Number.isInteger(pidRaw) || !Number.isInteger(ppidRaw)) {
+      continue;
+    }
+    const children = childrenByParent.get(ppidRaw) ?? [];
+    children.push(pidRaw);
+    childrenByParent.set(ppidRaw, children);
+  }
+
+  const descendants: number[] = [];
+  const stack = [...(childrenByParent.get(rootPid) ?? [])];
+  while (stack.length > 0) {
+    const pid = stack.pop();
+    if (!pid || descendants.includes(pid)) {
+      continue;
+    }
+    descendants.push(pid);
+    stack.push(...(childrenByParent.get(pid) ?? []));
+  }
+  return descendants;
+}
+
+function collectOwnedStdioTransportPids(transport: StdioClientTransport): number[] {
+  const pid = transport.pid;
+  if (pid === null) {
+    return [];
+  }
+  return [...listDescendantPids(pid), pid];
+}
+
+function isProcessStillAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function signalOwnedPids(pids: number[], signal: NodeJS.Signals) {
+  for (const pid of pids) {
+    if (!isProcessStillAlive(pid)) {
+      continue;
+    }
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function connectToServer(
@@ -318,13 +395,24 @@ async function connectToServer(
       cwd: server.cwd,
       stderr: "pipe",
     });
-    attachFilteredStderr(transport.stderr as Readable | null);
-    await client.connect(transport);
+    const detachFilteredStderr = attachFilteredStderr(transport.stderr as Readable | null);
+    const close = async () => {
+      const ownedPids = collectOwnedStdioTransportPids(transport);
+      detachFilteredStderr();
+      signalOwnedPids(ownedPids, "SIGTERM");
+      await client.close().catch(() => {});
+      await transport.close().catch(() => {});
+      signalOwnedPids(ownedPids, "SIGKILL");
+    };
+    try {
+      await client.connect(transport);
+    } catch (error) {
+      await close();
+      throw error;
+    }
     return {
       client,
-      close: async () => {
-        await transport.close();
-      },
+      close,
     };
   }
 
@@ -341,7 +429,8 @@ async function connectToServer(
       } catch {
         // ignore
       }
-      await transport.close();
+      await client.close().catch(() => {});
+      await transport.close().catch(() => {});
     },
   };
 }

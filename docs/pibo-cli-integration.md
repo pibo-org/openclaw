@@ -44,6 +44,52 @@ For local development from the repo checkout, the intended entrypoint is:
 
 - `pnpm openclaw -- pibo ...`
 
+## Browser DevTools MCP
+
+For PIBo's built-in `chrome-devtools` MCP registration, the canonical local
+OpenClaw browser endpoint is the managed `openclaw` browser profile on
+`http://127.0.0.1:18800`.
+
+Example local registration for the built-in OpenClaw browser:
+
+```bash
+openclaw pibo mcp register chrome-devtools '{
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "chrome-devtools-mcp@latest",
+    "--browser-url=http://127.0.0.1:18800",
+    "--no-usage-statistics"
+  ]
+}'
+openclaw pibo mcp enable chrome-devtools
+openclaw pibo mcp doctor chrome-devtools
+openclaw pibo mcp call chrome-devtools list_pages --json '{}'
+```
+
+Use `9222` only for explicit external or remote Chrome CDP endpoints, for
+example a separately managed Chrome instance on another host:
+
+```bash
+openclaw pibo mcp register chrome-devtools-remote '{
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "chrome-devtools-mcp@latest",
+    "--browser-url=http://REMOTE_HOST:9222",
+    "--no-usage-statistics"
+  ]
+}'
+```
+
+Keep the distinction explicit:
+
+- built-in OpenClaw browser / local `openclaw` profile: `18800`
+- separate external or remote Chrome CDP endpoint: whatever that browser serves,
+  often `9222`
+
 ## Twitter feed surface
 
 The native Twitter/X CLI is now a general feed scraper instead of a specialized checker.
