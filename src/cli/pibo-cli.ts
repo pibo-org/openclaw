@@ -8,6 +8,10 @@ async function loadAgentsModule() {
   return import("./pibo/commands/agents.js");
 }
 
+async function loadBrowserPoolModule() {
+  return import("./pibo/commands/browser-pool.js");
+}
+
 async function loadCommandRegistryModule() {
   return import("./pibo/commands/commands/index.js");
 }
@@ -296,6 +300,64 @@ export function registerPiboCli(program: Command) {
         await mcpCall(server, tool, { json: opts.json, stdin: opts.stdin });
       },
     );
+
+  const browserPool = pibo.command("browser-pool").description("Dev browser profile router");
+  browserPool
+    .command("status")
+    .description("Show the state of the fixed dev browser profile pool")
+    .option("--json", "Emit structured JSON output")
+    .action(async (opts: { json?: boolean }) => {
+      const { browserPoolStatus } = await loadBrowserPoolModule();
+      await browserPoolStatus(opts);
+    });
+  browserPool
+    .command("acquire")
+    .description("Acquire the first free dev browser profile lease")
+    .requiredOption("--agent-id <id>", "Agent id")
+    .option("--workflow-run-id <id>", "Workflow run id")
+    .option("--session-key <key>", "Session key")
+    .option("--session-id <id>", "Session id")
+    .option("--task <text>", "Optional task label")
+    .option("--ttl-seconds <n>", `Lease TTL in seconds (default: 3600)`)
+    .action(
+      async (opts: {
+        agentId?: string;
+        workflowRunId?: string;
+        sessionKey?: string;
+        sessionId?: string;
+        task?: string;
+        ttlSeconds?: string;
+      }) => {
+        const { browserPoolAcquire } = await loadBrowserPoolModule();
+        await browserPoolAcquire(opts);
+      },
+    );
+  browserPool
+    .command("heartbeat")
+    .description("Extend a dev browser profile lease")
+    .requiredOption("--profile <name>", "Profile name")
+    .requiredOption("--lease-id <id>", "Lease id")
+    .option("--ttl-seconds <n>", `Lease TTL in seconds (default: 3600)`)
+    .action(async (opts: { profile?: string; leaseId?: string; ttlSeconds?: string }) => {
+      const { browserPoolHeartbeat } = await loadBrowserPoolModule();
+      await browserPoolHeartbeat(opts);
+    });
+  browserPool
+    .command("release")
+    .description("Stop the browser and release the lease for a dev profile")
+    .requiredOption("--profile <name>", "Profile name")
+    .requiredOption("--lease-id <id>", "Lease id")
+    .action(async (opts: { profile?: string; leaseId?: string }) => {
+      const { browserPoolRelease } = await loadBrowserPoolModule();
+      await browserPoolRelease(opts);
+    });
+  browserPool
+    .command("sweep-stale")
+    .description("Stop browsers for stale leases and release those profiles")
+    .action(async () => {
+      const { browserPoolSweepStale } = await loadBrowserPoolModule();
+      await browserPoolSweepStale();
+    });
 
   const todo = pibo.command("todo").description("Todo.md Verwaltung");
   todo

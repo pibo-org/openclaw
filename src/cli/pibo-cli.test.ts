@@ -35,6 +35,7 @@ describe("pibo cli", () => {
     expect(pibo?.commands.some((command) => command.name() === "find")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "todo")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "mcp")).toBe(true);
+    expect(pibo?.commands.some((command) => command.name() === "browser-pool")).toBe(true);
     expect(pibo?.commands.some((command) => command.name() === "twitter")).toBe(true);
     expect(twitterCheck?.commands.some((command) => command.name() === "following")).toBe(true);
     expect(twitterCheck?.commands.some((command) => command.name() === "for-you")).toBe(true);
@@ -68,6 +69,24 @@ describe("pibo cli", () => {
     expect(followingHelp).toContain("--json");
     expect(forYouHelp).toContain("Scrape the For You feed");
     expect(statusHelp).toContain("--feed <feed>");
+  });
+
+  it("exposes browser-pool help", () => {
+    const program = createProgram();
+    const pibo = program.commands.find((command) => command.name() === "pibo");
+    const browserPool = pibo?.commands.find((command) => command.name() === "browser-pool");
+    const acquire = browserPool?.commands.find((command) => command.name() === "acquire");
+    const release = browserPool?.commands.find((command) => command.name() === "release");
+
+    const browserPoolHelp = browserPool?.helpInformation() ?? "";
+    const acquireHelp = acquire?.helpInformation() ?? "";
+    const releaseHelp = release?.helpInformation() ?? "";
+
+    expect(browserPoolHelp).toContain("Dev browser profile router");
+    expect(acquireHelp).toContain("--agent-id <id>");
+    expect(acquireHelp).toContain("--session-key <key>");
+    expect(acquireHelp).toContain("--workflow-run-id <id>");
+    expect(releaseHelp).toContain("--lease-id <id>");
   });
 
   it("exposes agentic find help", () => {
