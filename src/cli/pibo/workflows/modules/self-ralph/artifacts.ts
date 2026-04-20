@@ -6,6 +6,7 @@ import type {
   WorkflowRunRecord,
   WorkflowStartRequest,
 } from "../../types.js";
+import type { WorkflowReportEvent } from "../../workflow-reporting.js";
 import { emitTracedWorkflowReportEvent } from "../../workflow-reporting.js";
 import { workspaceArtifactDirectoryName } from "./common.js";
 import type {
@@ -193,10 +194,7 @@ export type RalphRuntimeHarness = {
     stepId: string,
     role: string,
   ): string;
-  emitTerminalReport(
-    finalStatus: WorkflowRunRecord["status"],
-    messageText: string,
-  ): Promise<void>;
+  emitTerminalReport(finalStatus: WorkflowRunRecord["status"], messageText: string): Promise<void>;
   writeExecutionStateArtifact(params: {
     stepId: string;
     activeStoryId: string | null;
@@ -225,6 +223,25 @@ export function createRalphRuntimeHarness(params: {
   state: RalphWorkflowState;
   maxRounds: number;
 }): RalphRuntimeHarness {
+  type RalphTerminalReportStatus = Exclude<WorkflowReportEvent["status"], "running" | undefined>;
+
+  const toTerminalReportStatus = (
+    status: WorkflowRunRecord["status"],
+  ): RalphTerminalReportStatus => {
+    switch (status) {
+      case "done":
+      case "planning_done":
+      case "blocked":
+      case "failed":
+      case "max_rounds_reached":
+        return status;
+      default:
+        throw new Error(
+          `self_ralph cannot emit terminal report for non-terminal status ${status}.`,
+        );
+    }
+  };
+
   const persist = () => {
     const record = buildRecord({
       moduleId: params.moduleId,
@@ -275,6 +292,7 @@ export function createRalphRuntimeHarness(params: {
     messageText,
   ) => {
     const isCompleted = finalStatus === "done" || finalStatus === "planning_done";
+    const reportStatus = toTerminalReportStatus(finalStatus);
     await emitTracedWorkflowReportEvent({
       trace: params.ctx.trace,
       stepId: "run",
@@ -290,7 +308,7 @@ export function createRalphRuntimeHarness(params: {
       emittingAgentId: params.input.reviewerAgentId,
       origin: params.request.origin,
       reporting: params.request.reporting,
-      status: finalStatus,
+      status: reportStatus,
       role: "orchestrator",
       targetSessionKey: params.sessions.orchestrator,
       traceSummary: isCompleted ? "workflow completed" : "workflow terminal blocked-style report",

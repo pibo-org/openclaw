@@ -470,6 +470,13 @@ describe("self_ralph module", () => {
       executionMode: "plan_only",
       activeStoryId: "story-1",
     });
+    expect(emitTracedWorkflowReportEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "workflow_planning_done",
+        eventType: "completed",
+        status: "planning_done",
+      }),
+    );
   });
 
   it("defers existing_repo validation until after planning and then fails cleanly without repoRoot", async () => {
@@ -935,6 +942,13 @@ describe("self_ralph module", () => {
       expect.objectContaining({ id: "story-1", status: "done" }),
       expect.objectContaining({ id: "story-2", status: "open" }),
     ]);
+    expect(emitTracedWorkflowReportEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "workflow_blocked",
+        eventType: "blocked",
+        status: "max_rounds_reached",
+      }),
+    );
   });
 
   it("fails fast on malformed execution reviewer output", async () => {

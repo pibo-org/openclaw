@@ -2,7 +2,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runWorkflowAgentOnSession } from "../../agent-runtime.js";
-import type { WorkflowModuleContext, WorkflowStartRequest } from "../../types.js";
+import type {
+  WorkflowModuleContext,
+  WorkflowRunSessions,
+  WorkflowStartRequest,
+} from "../../types.js";
 import { emitTracedWorkflowReportEvent } from "../../workflow-reporting.js";
 import { ensureWorkflowSessions } from "../../workflow-session-helper.js";
 import { stepIdForExecution } from "./artifacts.js";
@@ -556,7 +560,7 @@ export async function runRalphExecutionLoop(params: {
   ctx: WorkflowModuleContext;
   input: RalphWorkflowInput;
   state: RalphWorkflowState;
-  sessions: Record<string, string | undefined>;
+  sessions: WorkflowRunSessions;
   harness: RalphRuntimeHarness;
   stories: StoryState[];
   approvedBrainstorming?: string;
