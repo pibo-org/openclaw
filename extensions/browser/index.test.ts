@@ -1,3 +1,4 @@
+import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { createTestPluginApi } from "../../test/helpers/plugins/plugin-api.js";
 import {
@@ -17,6 +18,9 @@ const runtimeApiMocks = vi.hoisted(() => ({
     execute: vi.fn(),
   })),
   handleBrowserGatewayRequest: vi.fn(),
+}));
+
+const cliRuntimeMocks = vi.hoisted(() => ({
   registerBrowserCli: vi.fn(),
 }));
 
@@ -28,9 +32,12 @@ vi.mock("./register.runtime.js", async () => {
     createBrowserPluginService: runtimeApiMocks.createBrowserPluginService,
     createBrowserTool: runtimeApiMocks.createBrowserTool,
     handleBrowserGatewayRequest: runtimeApiMocks.handleBrowserGatewayRequest,
-    registerBrowserCli: runtimeApiMocks.registerBrowserCli,
   };
 });
+
+vi.mock("./cli-runtime.js", () => ({
+  registerBrowserCli: cliRuntimeMocks.registerBrowserCli,
+}));
 
 function createApi() {
   const registerCli = vi.fn();
@@ -85,5 +92,21 @@ describe("browser plugin", () => {
       allowHostControl: true,
       agentSessionKey: "agent:main:webchat:direct:123",
     });
+  });
+
+  it("loads browser CLI commands from the CLI-only runtime entry on demand", async () => {
+    const { api, registerCli } = createApi();
+    await registerBrowserPlugin(api);
+
+    expect(cliRuntimeMocks.registerBrowserCli).not.toHaveBeenCalled();
+
+    const registerCliCallback = registerCli.mock.calls[0]?.[0];
+    if (typeof registerCliCallback !== "function") {
+      throw new Error("expected browser plugin to register a CLI callback");
+    }
+
+    await registerCliCallback({ program: new Command() });
+
+    expect(cliRuntimeMocks.registerBrowserCli).toHaveBeenCalledTimes(1);
   });
 });

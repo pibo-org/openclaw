@@ -61,7 +61,9 @@ export async function registerPluginCliCommands(
       ? await loadPluginCliMetadataRegistrationEntriesWithDefaults({ cfg, env, loaderOptions })
       : null;
   const entries =
-    metadataEntries && metadataEntries.some((entry) => entryHasCommandName(entry, metadataPrimary))
+    metadataPrimary &&
+    metadataEntries &&
+    metadataEntries.some((entry) => entryHasCommandName(entry, metadataPrimary))
       ? metadataEntries
       : await loadPluginCliRegistrationEntriesWithDefaults({ cfg, env, loaderOptions });
 

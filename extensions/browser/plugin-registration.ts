@@ -9,7 +9,6 @@ import {
   createBrowserPluginService,
   createBrowserTool,
   handleBrowserGatewayRequest,
-  registerBrowserCli,
   runBrowserProxyCommand,
 } from "./register.runtime.js";
 
@@ -32,7 +31,13 @@ export function registerBrowserPlugin(api: OpenClawPluginApi) {
       allowHostControl: ctx.browser?.allowHostControl,
       agentSessionKey: ctx.sessionKey,
     })) as OpenClawPluginToolFactory);
-  api.registerCli(({ program }) => registerBrowserCli(program), { commands: ["browser"] });
+  api.registerCli(
+    async ({ program }) => {
+      const { registerBrowserCli } = await import("./cli-runtime.js");
+      registerBrowserCli(program);
+    },
+    { commands: ["browser"] },
+  );
   api.registerGatewayMethod("browser.request", handleBrowserGatewayRequest, {
     scope: "operator.write",
   });
