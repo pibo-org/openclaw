@@ -3,18 +3,11 @@ import { writeConfigFile } from "../config/config.js";
 import { withTempHome } from "../config/home-env.test-harness.js";
 
 const browserPoolCommandMocks = vi.hoisted(() => ({
-  startBrowserControlServiceFromConfig: vi.fn(async () => ({ profiles: new Map() })),
-  createBrowserControlContext: vi.fn(() => ({
-    forProfile: () => ({
-      stopRunningBrowser: vi.fn(async () => ({ stopped: true })),
-    }),
-  })),
+  callBrowserRequest: vi.fn(async () => ({ ok: true, stopped: true })),
 }));
 
-vi.mock("../../extensions/browser/src/control-service.js", () => ({
-  startBrowserControlServiceFromConfig:
-    browserPoolCommandMocks.startBrowserControlServiceFromConfig,
-  createBrowserControlContext: browserPoolCommandMocks.createBrowserControlContext,
+vi.mock("../../extensions/browser/src/cli/browser-cli-shared.js", () => ({
+  callBrowserRequest: browserPoolCommandMocks.callBrowserRequest,
 }));
 
 vi.mock("./route.js", () => ({
@@ -156,7 +149,17 @@ describe("runCli pibo browser-pool", () => {
         profile: "dev-01",
         released: true,
       });
-      expect(browserPoolCommandMocks.startBrowserControlServiceFromConfig).toHaveBeenCalled();
+      expect(browserPoolCommandMocks.callBrowserRequest).toHaveBeenCalledWith(
+        {
+          browserProfile: "dev-01",
+          json: true,
+          timeout: "30000",
+        },
+        {
+          method: "POST",
+          path: "/stop",
+        },
+      );
     });
   });
 });

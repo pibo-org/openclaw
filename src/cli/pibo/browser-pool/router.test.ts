@@ -163,7 +163,7 @@ describe("browser pool router", () => {
     expect(resolveHolderKey({ agentId: "agent", sessionId: "sid-1" })).toBe("sid:sid-1");
   });
 
-  it("calls stop on release and sweep-stale", async () => {
+  it("stops the browser before releasing active and stale leases", async () => {
     const stoppedProfiles: string[] = [];
     const { statePath, router } = await createHarness({
       stopImpl: async (profile) => {
@@ -175,7 +175,13 @@ describe("browser pool router", () => {
     const acquired = await router.acquire({
       holder: { agentId: "agent-1", sessionKey: "session-1" },
     });
-    await router.release({ profile: acquired.profile, leaseId: acquired.leaseId });
+    await expect(
+      router.release({ profile: acquired.profile, leaseId: acquired.leaseId }),
+    ).resolves.toMatchObject({
+      profile: "dev-01",
+      released: true,
+      stoppedBrowser: true,
+    });
 
     const state = createEmptyBrowserPoolState();
     state.profiles["dev-02"].lease = {
@@ -192,7 +198,16 @@ describe("browser pool router", () => {
     };
     await fs.writeFile(statePath, JSON.stringify(state, null, 2) + "\n", "utf8");
 
-    await router.sweepStale();
+    await expect(router.sweepStale()).resolves.toMatchObject({
+      count: 1,
+      reclaimed: [
+        {
+          profile: "dev-02",
+          released: true,
+          stoppedBrowser: true,
+        },
+      ],
+    });
 
     expect(stoppedProfiles).toEqual(["dev-01", "dev-02"]);
   });

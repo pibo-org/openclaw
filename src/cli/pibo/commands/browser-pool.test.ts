@@ -7,18 +7,11 @@ import { withTempHome } from "../../../config/home-env.test-harness.js";
 import { registerPiboCli } from "../../pibo-cli.js";
 
 const browserPoolCommandMocks = vi.hoisted(() => ({
-  startBrowserControlServiceFromConfig: vi.fn(async () => ({ profiles: new Map() })),
-  createBrowserControlContext: vi.fn(() => ({
-    forProfile: () => ({
-      stopRunningBrowser: vi.fn(async () => ({ stopped: true })),
-    }),
-  })),
+  callBrowserRequest: vi.fn(async () => ({ ok: true, stopped: true })),
 }));
 
-vi.mock("../../../../extensions/browser/src/control-service.js", () => ({
-  startBrowserControlServiceFromConfig:
-    browserPoolCommandMocks.startBrowserControlServiceFromConfig,
-  createBrowserControlContext: browserPoolCommandMocks.createBrowserControlContext,
+vi.mock("../../../../extensions/browser/src/cli/browser-cli-shared.js", () => ({
+  callBrowserRequest: browserPoolCommandMocks.callBrowserRequest,
 }));
 
 function createProgram() {
@@ -49,8 +42,7 @@ describe("browser pool command", () => {
 
   afterEach(() => {
     logSpy.mockRestore();
-    browserPoolCommandMocks.startBrowserControlServiceFromConfig.mockClear();
-    browserPoolCommandMocks.createBrowserControlContext.mockClear();
+    browserPoolCommandMocks.callBrowserRequest.mockClear();
   });
 
   it("validates acquire arguments", async () => {
@@ -223,7 +215,17 @@ describe("browser pool command", () => {
         profile: "dev-01",
         released: true,
       });
-      expect(browserPoolCommandMocks.startBrowserControlServiceFromConfig).toHaveBeenCalled();
+      expect(browserPoolCommandMocks.callBrowserRequest).toHaveBeenCalledWith(
+        {
+          browserProfile: "dev-01",
+          json: true,
+          timeout: "30000",
+        },
+        {
+          method: "POST",
+          path: "/stop",
+        },
+      );
     });
   });
 });

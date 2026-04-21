@@ -1,48 +1,38 @@
-import {
-  createBrowserControlContext,
-  startBrowserControlServiceFromConfig,
-} from "../../../../extensions/browser/src/control-service.js";
+import { callBrowserRequest } from "../../../../extensions/browser/src/cli/browser-cli-shared.js";
 import { BrowserPoolError, type DevBrowserProfileName } from "./types.js";
+
+const BROWSER_POOL_STOP_TIMEOUT_MS = "30000";
 
 export async function stopBrowserPoolProfile(
   profile: DevBrowserProfileName,
   deps?: {
-    startBrowserControlServiceFromConfigImpl?: typeof startBrowserControlServiceFromConfig;
-    createBrowserControlContextImpl?: typeof createBrowserControlContext;
+    callBrowserRequestImpl?: typeof callBrowserRequest;
   },
 ): Promise<{ stopped: boolean }> {
-  const startBrowserControlServiceFromConfigImpl =
-    deps?.startBrowserControlServiceFromConfigImpl ?? startBrowserControlServiceFromConfig;
-  const createBrowserControlContextImpl =
-    deps?.createBrowserControlContextImpl ?? createBrowserControlContext;
-
-  let state;
-  try {
-    state = await startBrowserControlServiceFromConfigImpl();
-  } catch (err) {
-    throw new BrowserPoolError(
-      "PROFILE_NOT_READY",
-      `Failed to start the browser control service for profile ${profile}.`,
-      { cause: err },
-    );
-  }
-
-  if (!state) {
-    throw new BrowserPoolError(
-      "PROFILE_NOT_READY",
-      `Browser control service is unavailable for profile ${profile}.`,
-    );
-  }
+  const callBrowserRequestImpl = deps?.callBrowserRequestImpl ?? callBrowserRequest;
 
   try {
-    const result = await createBrowserControlContextImpl().forProfile(profile).stopRunningBrowser();
+    const result = await callBrowserRequestImpl<{ ok: true; stopped: boolean }>(
+      {
+        browserProfile: profile,
+        json: true,
+        timeout: BROWSER_POOL_STOP_TIMEOUT_MS,
+      },
+      {
+        method: "POST",
+        path: "/stop",
+      },
+    );
     return { stopped: result.stopped };
   } catch (err) {
     if (err instanceof BrowserPoolError) {
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("Profile") && message.includes("not found")) {
+    if (
+      (message.includes("Profile") && message.includes("not found")) ||
+      (message.includes("browser.request") && message.includes("not available"))
+    ) {
       throw new BrowserPoolError(
         "PROFILE_NOT_READY",
         `Browser profile ${profile} is not configured or not available.`,
