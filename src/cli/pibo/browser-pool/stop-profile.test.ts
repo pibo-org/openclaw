@@ -39,13 +39,13 @@ describe("stopBrowserPoolProfile", () => {
 
     expect(spy).toHaveBeenCalledWith(
       {
-        browserProfile: "dev-01",
         json: true,
         timeout: "30000",
       },
       {
         method: "POST",
         path: "/stop",
+        query: { profile: "dev-01" },
       },
     );
   });

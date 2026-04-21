@@ -14,13 +14,13 @@ export async function stopBrowserPoolProfile(
   try {
     const result = await callBrowserRequestImpl<{ ok: true; stopped: boolean }>(
       {
-        browserProfile: profile,
         json: true,
         timeout: BROWSER_POOL_STOP_TIMEOUT_MS,
       },
       {
         method: "POST",
         path: "/stop",
+        query: { profile },
       },
     );
     return { stopped: result.stopped };

@@ -217,13 +217,13 @@ describe("browser pool command", () => {
       });
       expect(browserPoolCommandMocks.callBrowserRequest).toHaveBeenCalledWith(
         {
-          browserProfile: "dev-01",
           json: true,
           timeout: "30000",
         },
         {
           method: "POST",
           path: "/stop",
+          query: { profile: "dev-01" },
         },
       );
     });
