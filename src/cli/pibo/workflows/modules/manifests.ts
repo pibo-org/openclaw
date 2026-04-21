@@ -69,6 +69,7 @@ export const codexControllerWorkflowModuleManifest = {
     `workerCompactionAfterRound (number, optional): first round that may trigger manual Codex thread compaction when workerCompactionMode is enabled; defaults to ${DEFAULT_WORKER_COMPACTION_AFTER_ROUND}.`,
   ],
   artifactContract: [
+    "codex-controller-run-contract.json: persisted run-scoped controller/worker contract snapshot used as stable source of truth for long runs, retries, and re-entry under the same run id.",
     "round-<n>-codex.txt: raw Codex worker output per round.",
     "round-<n>-controller.txt: raw controller output per round, including normalized decision block.",
     "closeout-assessment.json: machine-readable read-only closeout assessment written on the DONE path.",

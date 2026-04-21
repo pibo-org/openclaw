@@ -9,6 +9,7 @@ const execFileSync = vi.fn();
 const ensureWorkflowSessions = vi.fn();
 const runWorkflowAgentOnSession = vi.fn();
 const writeWorkflowArtifact = vi.fn();
+const workflowArtifactPath = vi.fn((runId: string, name: string) => `${runId}/${name}`);
 const existsSync = vi.fn();
 const readFileSync = vi.fn();
 const loadConfig = vi.fn<() => OpenClawConfig>(() => ({}));
@@ -26,6 +27,7 @@ const emitTracedWorkflowReportEvent = vi.fn(async () => ({
   delivered: true,
 }));
 const traceEmit = vi.fn();
+const artifactContents = new Map<string, string>();
 
 function controllerRun(text: string, runId = "controller-run") {
   return {
@@ -190,6 +192,7 @@ vi.mock("../agent-runtime.js", () => ({
 
 vi.mock("../store.js", () => ({
   writeWorkflowArtifact,
+  workflowArtifactPath,
 }));
 
 vi.mock("../../../../config/config.js", () => ({
@@ -209,8 +212,16 @@ describe("codex_controller module", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    existsSync.mockReturnValue(true);
-    readFileSync.mockReturnValue("controller prompt template");
+    artifactContents.clear();
+    existsSync.mockImplementation((filePath: string) => {
+      const normalizedPath = String(filePath);
+      return artifactContents.has(normalizedPath) || !normalizedPath.endsWith(".json");
+    });
+    readFileSync.mockImplementation((filePath: string) => {
+      const normalizedPath = String(filePath);
+      return artifactContents.get(normalizedPath) ?? "controller prompt template";
+    });
+    loadConfig.mockReturnValue({});
     resolveCodexWorkerDefaultOptions.mockImplementation(
       (params?: { model?: string; reasoningEffort?: string }) => ({
         ...(params?.model ? { model: params.model } : {}),
@@ -221,7 +232,12 @@ describe("codex_controller module", () => {
     ensureWorkflowSessions.mockResolvedValue({
       orchestrator: "agent:langgraph:workflow:run-1:orchestrator:main",
     });
-    writeWorkflowArtifact.mockImplementation((runId: string, name: string) => `${runId}/${name}`);
+    workflowArtifactPath.mockImplementation((runId: string, name: string) => `${runId}/${name}`);
+    writeWorkflowArtifact.mockImplementation((runId: string, name: string, content: string) => {
+      const artifactPath = `${runId}/${name}`;
+      artifactContents.set(artifactPath, content);
+      return artifactPath;
+    });
     workerRunTurn.mockResolvedValue({
       text: "codex worker result",
       threadId: "thread-1",
@@ -501,6 +517,178 @@ describe("codex_controller module", () => {
     );
   });
 
+  it("persists a run-local contract artifact and injects worker developer instructions from it", async () => {
+    loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          workspace: "/workspace/default",
+        },
+        list: [{ id: "writer", workspace: "/workspace/writer" }],
+      },
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          agentId: "writer",
+          successCriteria: ["Tests pass"],
+          constraints: ["Do not touch unrelated files"],
+        },
+      },
+      createModuleContext("run-1"),
+    );
+
+    const runContractPath = "run-1/codex-controller-run-contract.json";
+    expect(record.artifacts).toContain(runContractPath);
+    expect(record.sessions.extras?.runContractArtifact).toBe(runContractPath);
+    expect(record.sessions.extras?.runContractVersion).toBe("1");
+    expect(record.sessions.extras?.workerInstructionMode).toBe("developer_instructions");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "codex-controller-run-contract.json",
+      expect.stringContaining('"runId": "run-1"'),
+    );
+    expect(artifactContents.get(runContractPath)).toContain(
+      '"controllerPrompt": "controller prompt template"',
+    );
+    expect(artifactContents.get(runContractPath)).toContain(
+      '"contextWorkspaceDir": "/workspace/writer"',
+    );
+    expect(artifactContents.get(runContractPath)).toContain(
+      "Treat this persisted run contract as the stable source of truth",
+    );
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/repo",
+        contextWorkspaceDir: "/workspace/writer",
+        developerInstructions: expect.stringContaining("ORIGINAL_TASK:\nShip the fix"),
+      }),
+    );
+  });
+
+  it("rehydrates an existing run contract instead of reloading prompt/config state for the same run", async () => {
+    artifactContents.set(
+      "run-1/codex-controller-run-contract.json",
+      JSON.stringify(
+        {
+          version: 1,
+          moduleId: "codex_controller",
+          runId: "run-1",
+          createdAt: "2026-04-10T00:00:00.000Z",
+          input: {
+            task: "Persisted task",
+            workingDirectory: "/repo-persisted",
+            repoRoot: "/repo-persisted",
+            agentId: "writer",
+            maxRetries: 1,
+            successCriteria: ["Persisted criterion"],
+            constraints: ["Persisted constraint"],
+            codexAgentId: "codex",
+            controllerAgentId: "codex-controller",
+            controllerPromptPath: "/persisted/prompt.md",
+            workerCompactionMode: "off",
+            workerCompactionAfterRound: 3,
+            closeoutContextSource: "workingDirectory",
+          },
+          controllerPrompt: "persisted controller prompt",
+          workerDeveloperInstructions:
+            "Persisted worker developer instructions\n\nORIGINAL_TASK:\nPersisted task",
+          contextWorkspaceDir: "/workspace/original",
+        },
+        null,
+        2,
+      ),
+    );
+    existsSync.mockImplementation((filePath: string) => artifactContents.has(String(filePath)));
+    loadConfig.mockImplementation(() => {
+      throw new Error("loadConfig should not be called when a persisted run contract exists.");
+    });
+    mockSingleRoundDoneLoop("Persisted run contract completed.");
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "New task that should be ignored",
+          workingDirectory: "/repo-new",
+          agentId: "other",
+          controllerPromptPath: "/new/prompt.md",
+        },
+      },
+      createModuleContext("run-1"),
+    );
+
+    expect(record.originalTask).toBe("Persisted task");
+    expect(recordInput(record).agentId).toBe("writer");
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/repo-persisted",
+        contextWorkspaceDir: "/workspace/original",
+        developerInstructions:
+          "Persisted worker developer instructions\n\nORIGINAL_TASK:\nPersisted task",
+      }),
+    );
+    expect(runWorkflowAgentOnSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        workspaceDir: "/workspace/original",
+        message: expect.stringContaining("persisted controller prompt"),
+      }),
+    );
+    const runContractWrites = writeWorkflowArtifact.mock.calls.filter(
+      ([, name]) => name === "codex-controller-run-contract.json",
+    );
+    expect(runContractWrites).toHaveLength(0);
+  });
+
+  it("keeps run contracts isolated across separate run ids", async () => {
+    mockSingleRoundDoneLoop("First isolated run complete.");
+    mockSingleRoundDoneLoop("Second isolated run complete.");
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Task for run one",
+          workingDirectory: "/repo-one",
+        },
+      },
+      createModuleContext("run-1"),
+    );
+    await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Task for run two",
+          workingDirectory: "/repo-two",
+        },
+      },
+      createModuleContext("run-2"),
+    );
+
+    expect(artifactContents.get("run-1/codex-controller-run-contract.json")).toContain(
+      '"task": "Task for run one"',
+    );
+    expect(artifactContents.get("run-2/codex-controller-run-contract.json")).toContain(
+      '"task": "Task for run two"',
+    );
+    expect(createCodexSdkWorkerRuntime).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        developerInstructions: expect.stringContaining("Task for run one"),
+      }),
+    );
+    expect(createCodexSdkWorkerRuntime).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        developerInstructions: expect.stringContaining("Task for run two"),
+      }),
+    );
+  });
+
   it("maps normalized controller DONE output to done only after clean closeout success", async () => {
     runWorkflowAgentOnSession
       .mockResolvedValueOnce(controllerInitReady())
@@ -545,6 +733,14 @@ describe("codex_controller module", () => {
     expect(record.sessions.extras?.codexTracePath).toBe(
       "/home/pibo/.codex/sessions/2026/04/17/thread-1.jsonl",
     );
+    expect(record.sessions.extras?.runContractArtifact).toBe(
+      "run-1/codex-controller-run-contract.json",
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "codex-controller-run-contract.json",
+      expect.any(String),
+    );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-1",
       "closeout-assessment.json",
@@ -564,11 +760,13 @@ describe("codex_controller module", () => {
     );
     expect(workerRunTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("FINISH_QUALITY:"),
         hardTimeoutSeconds: 7_200,
         idleTimeoutSeconds: 480,
       }),
     );
+    const workerPrompt = workerRunTurn.mock.calls[0]?.[0]?.text as string;
+    expect(workerPrompt).toContain("SUCCESS_CRITERIA:");
+    expect(workerPrompt).toContain("FINISH_QUALITY:");
     expect(emitTracedWorkflowReportEvent).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -1270,7 +1468,11 @@ describe("codex_controller module", () => {
     expect(initPrompt).toContain(
       "This controller session is persistent for the whole workflow run.",
     );
+    expect(initPrompt).toContain(
+      "Treat the persisted run contract in this message as the stable source of truth for this run.",
+    );
     expect(initPrompt).toContain("NORMALIZED WORKFLOW CONTRACT:");
+    expect(initPrompt).toContain("RUN_CONTRACT:");
     expect(initPrompt).toContain("ORIGINAL_TASK:");
     expect(initPrompt).toContain("SUCCESS_CRITERIA:");
     expect(initPrompt).toContain("CONSTRAINTS:");
@@ -1290,6 +1492,11 @@ describe("codex_controller module", () => {
     );
     const roundOneDelta = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
     expect(roundOneDelta).toContain("ROUND_CONTEXT: 1/2");
+    expect(roundOneDelta).toContain("RUN_CONTRACT:");
+    expect(roundOneDelta).toContain(
+      "normalized_decision_block=MODULE_DECISION|MODULE_REASON|NEXT_INSTRUCTION|BLOCKER",
+    );
+    expect(roundOneDelta).toContain("original_task=Ship the fix");
     expect(roundOneDelta).toContain("RECENT_VISIBLE_WORKER_HISTORY:");
     expect(roundOneDelta).toContain("CURRENT_WORKER_STATUS_HINTS:");
     expect(roundOneDelta).toContain("CLOSEOUT_PREFLIGHT:");
@@ -1303,11 +1510,13 @@ describe("codex_controller module", () => {
     expect(roundOneDelta).not.toContain("controller prompt template");
     expect(roundOneDelta).not.toContain("NORMALIZED WORKFLOW CONTRACT:");
     expect(roundOneDelta).not.toContain("ORIGINAL_TASK:");
-    expect(roundOneDelta).not.toContain("SUCCESS_CRITERIA:");
-    expect(roundOneDelta).not.toContain("CONSTRAINTS:");
+    expect(roundOneDelta).not.toContain("SUCCESS_CRITERIA:\n- none");
+    expect(roundOneDelta).not.toContain("CONSTRAINTS:\n- none");
 
     const secondPrompt = runWorkflowAgentOnSession.mock.calls[2][0].message as string;
     expect(secondPrompt).toContain("ROUND_CONTEXT: 2/2");
+    expect(secondPrompt).toContain("RUN_CONTRACT:");
+    expect(secondPrompt).toContain("original_task=Ship the fix");
     expect(secondPrompt).toContain("round 1: status=working_with_evidence");
     expect(secondPrompt).toContain("round 2: status=claims_done");
     expect(secondPrompt).toContain("CONTROLLER_HISTORY:");

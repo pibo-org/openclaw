@@ -36,6 +36,7 @@ export type CodexWorkerRuntimeOptions = {
   contextWorkspaceDir?: string;
   model?: string;
   reasoningEffort?: CodexWorkerReasoningEffort;
+  developerInstructions?: string;
 };
 
 export type CodexWorkerTurnResult = {
@@ -137,6 +138,7 @@ function getStringArrayField(record: UnknownRecord | null, key: string): string[
 
 class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
   private readonly codex: Codex;
+  private readonly developerInstructions?: string;
   private readonly threadOptions: {
     workingDirectory: string;
     skipGitRepoCheck: boolean;
@@ -156,7 +158,16 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
       contextWorkspaceDir && contextWorkspaceDir !== workingDirectory
         ? [contextWorkspaceDir]
         : undefined;
-    this.codex = new Codex();
+    this.developerInstructions = options.developerInstructions?.trim() || undefined;
+    this.codex = new Codex(
+      this.developerInstructions
+        ? {
+            config: {
+              developer_instructions: this.developerInstructions,
+            },
+          }
+        : undefined,
+    );
     this.threadOptions = {
       workingDirectory,
       skipGitRepoCheck: true,
@@ -300,6 +311,7 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
 
     const client = new CodexAppServerClient({
       cwd: this.threadOptions.workingDirectory,
+      developerInstructions: this.developerInstructions,
     });
     try {
       await client.start();
@@ -354,24 +366,29 @@ class CodexAppServerClient {
   private pendingNotifications: AppServerNotification[] = [];
   private stderrLines: string[] = [];
   private readonly cwd: string;
+  private readonly developerInstructions?: string;
 
-  constructor(options: { cwd: string }) {
+  constructor(options: { cwd: string; developerInstructions?: string }) {
     this.cwd = options.cwd;
+    this.developerInstructions = options.developerInstructions?.trim() || undefined;
   }
 
   async start(): Promise<void> {
     if (this.child) {
       return;
     }
-    const child = spawn(
-      process.execPath,
-      [resolveCodexCliScript(), "app-server", "--listen", "stdio://"],
-      {
-        cwd: this.cwd,
-        env: { ...process.env },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const args = [resolveCodexCliScript(), "app-server", "--listen", "stdio://"];
+    if (this.developerInstructions) {
+      args.push(
+        "--config",
+        `developer_instructions=${serializeTomlString(this.developerInstructions)}`,
+      );
+    }
+    const child = spawn(process.execPath, args, {
+      cwd: this.cwd,
+      env: { ...process.env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       const lines = chunk.split(/\r?\n/).filter(Boolean);
@@ -561,6 +578,10 @@ function normalizeReasoningEffort(value: unknown): CodexWorkerReasoningEffort | 
   }
   const effort = value.trim() as CodexWorkerReasoningEffort;
   return SUPPORTED_REASONING_EFFORTS.has(effort) ? effort : undefined;
+}
+
+function serializeTomlString(value: string): string {
+  return JSON.stringify(value);
 }
 
 function mergeAbortSignals(...signals: Array<AbortSignal | undefined>): {

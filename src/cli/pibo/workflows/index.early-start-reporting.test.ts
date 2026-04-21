@@ -212,8 +212,15 @@ describe("workflow early-start reporting", () => {
     originalHome = process.env.HOME;
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-pibo-early-start-"));
     process.env.HOME = tempHome;
-    existsSync.mockReturnValue(true);
-    readFileSync.mockReturnValue("controller prompt template");
+    existsSync.mockImplementation(
+      (filePath: string) => !String(filePath).endsWith("codex-controller-run-contract.json"),
+    );
+    readFileSync.mockImplementation((filePath: string) => {
+      if (String(filePath).endsWith("codex-controller-run-contract.json")) {
+        throw new Error("run contract should not be read in this fresh-run test setup");
+      }
+      return "controller prompt template";
+    });
     ensureWorkflowSessions.mockResolvedValue({
       orchestrator: "agent:langgraph:workflow:run-1:orchestrator:main",
     });

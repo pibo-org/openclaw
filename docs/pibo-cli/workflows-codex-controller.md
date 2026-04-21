@@ -79,11 +79,24 @@ The workflow runtime now sends controller context in two phases on the same pers
 
 2. Per-round delta message
 
-- omits the stable controller contract/context by default
+- includes a compact persisted run-contract reminder from the workflow artifact store
 - sends only bounded dynamic supervisory context for the current round
 - includes compact visible worker history, bounded controller history, current status hints, progress evidence, drift signals, and current `WORKER_OUTPUT`
 
-This means the runtime no longer rebuilds the full controller wrapper prompt every round.
+This means the runtime still avoids rebuilding the full controller wrapper prompt every round, but no longer relies only on early transcript context for long runs or after compaction.
+
+## Persisted run contract
+
+Each `codex_controller` run now writes `codex-controller-run-contract.json` under the workflow artifact store.
+
+It snapshots the resolved stable contract for that run:
+
+- normalized workflow input after defaults/aliases are resolved
+- the controller prompt contents loaded from `controllerPromptPath`
+- the resolved optional `contextWorkspaceDir`
+- worker-scoped Codex `developer_instructions` derived from the same contract
+
+The module reuses that persisted artifact as the run-local source of truth when the same run id is re-entered, instead of assuming the original prompt file, agent workspace config, or early transcript context are still sufficient.
 
 ## Controller contract handling
 
@@ -139,7 +152,7 @@ If manual compaction is explicitly wanted, set:
 - `workerCompactionMode: "acp_control_command"` also still works as a legacy alias
 - optionally `workerCompactionAfterRound` to delay the first manual compaction
 
-The implementation now uses the Codex app server (`thread/resume` + `thread/compact/start`), not ACP control commands.
+The implementation now uses the Codex app server (`thread/resume` + `thread/compact/start`), not ACP control commands, and it passes the same run-scoped worker instructions through that app-server path without writing to global Codex config files.
 
 ## Worker turn timeout and retry behavior
 

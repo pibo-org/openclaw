@@ -11,7 +11,7 @@ import {
   throwIfWorkflowAbortRequested,
 } from "../abort.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
-import { writeWorkflowArtifact } from "../store.js";
+import { workflowArtifactPath, writeWorkflowArtifact } from "../store.js";
 import type {
   WorkflowModule,
   WorkflowModuleContext,
@@ -166,15 +166,32 @@ type DriftAssessment = {
   recommendation: "normal_continue" | "corrective_continue_required" | "escalate_or_correct";
 };
 
+type CodexControllerRunContract = {
+  version: 1;
+  moduleId: "codex_controller";
+  runId: string;
+  createdAt: string;
+  input: NormalizedCodexControllerInput;
+  controllerPrompt: string;
+  workerDeveloperInstructions: string;
+  contextWorkspaceDir?: string;
+};
+
 const DEFAULT_MAX_ROUNDS = 10;
 const DEFAULT_CONTROLLER_PROMPT_PATH =
   "/home/pibo/.openclaw/workspace/prompts/coding-controller-prompt.md";
 const DEFAULT_WORKER_COMPACTION_MODE: WorkerCompactionMode = "off";
 const DEFAULT_WORKER_COMPACTION_AFTER_ROUND = 3;
+const CODEX_CONTROLLER_RUN_CONTRACT_ARTIFACT = "codex-controller-run-contract.json";
 const CODEX_WORKER_HARD_TURN_TIMEOUT_SECONDS = 2 * 60 * 60;
 const CODEX_WORKER_IDLE_TIMEOUT_SECONDS = 8 * 60;
 const CODEX_WORKER_RETRY_DELAYS_MS = [1_000] as const;
 const CODEX_WORKER_TRANSPORT_TRANSITION_RETRY_DELAY_MS = 250;
+const WORKER_FINISH_QUALITY_LINES = [
+  "Before claiming done, remove avoidable transient artifacts created only during verification, such as __pycache__/ and .pytest_cache/, unless the task explicitly wants them kept.",
+  "Keep README usage aligned with the commands that actually work in this repository.",
+  "If you run tests or smoke checks, make sure the repository is left in a tidy post-verification state.",
+] as const;
 const RETRYABLE_CODEX_WORKER_PROMPT_FAILURE_RE = [
   /\btimed out after \d+ms\b/i,
   /\brpc timeout\b/i,
@@ -289,6 +306,95 @@ function loadControllerPrompt(promptPath: string): string {
     throw new Error(`Controller-Prompt ist leer: ${promptPath}`);
   }
   return raw;
+}
+
+function buildWorkerDeveloperInstructions(input: NormalizedCodexControllerInput): string {
+  return [
+    "You are the Codex worker inside OpenClaw's codex_controller workflow.",
+    "Treat this persisted run contract as the stable source of truth for the whole run, including retries, resumes, and compaction.",
+    "Later user-turn prompts may narrow the next step, but they do not replace the original task, success criteria, constraints, or finish quality below.",
+    "",
+    "ORIGINAL_TASK:",
+    input.task,
+    "",
+    "SUCCESS_CRITERIA:",
+    toBulletLines(input.successCriteria),
+    "",
+    "CONSTRAINTS:",
+    toBulletLines(input.constraints),
+    "",
+    "FINISH_QUALITY:",
+    ...WORKER_FINISH_QUALITY_LINES.map((line) => `- ${line}`),
+  ].join("\n");
+}
+
+function buildRunContract(params: {
+  runId: string;
+  createdAt: string;
+  input: NormalizedCodexControllerInput;
+  controllerPrompt: string;
+  contextWorkspaceDir?: string;
+}): CodexControllerRunContract {
+  return {
+    version: 1,
+    moduleId: "codex_controller",
+    runId: params.runId,
+    createdAt: params.createdAt,
+    input: params.input,
+    controllerPrompt: params.controllerPrompt,
+    workerDeveloperInstructions: buildWorkerDeveloperInstructions(params.input),
+    ...(params.contextWorkspaceDir ? { contextWorkspaceDir: params.contextWorkspaceDir } : {}),
+  };
+}
+
+function serializeRunContract(contract: CodexControllerRunContract): string {
+  return `${JSON.stringify(contract, null, 2)}\n`;
+}
+
+function parseRunContract(raw: string, runId: string): CodexControllerRunContract {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`Persisted codex_controller run contract is not an object for run ${runId}.`);
+  }
+  if (parsed.version !== 1 || parsed.moduleId !== "codex_controller" || parsed.runId !== runId) {
+    throw new Error(
+      `Persisted codex_controller run contract metadata is invalid for run ${runId}.`,
+    );
+  }
+  const controllerPrompt =
+    typeof parsed.controllerPrompt === "string" ? parsed.controllerPrompt.trim() : "";
+  const workerDeveloperInstructions =
+    typeof parsed.workerDeveloperInstructions === "string"
+      ? parsed.workerDeveloperInstructions.trim()
+      : "";
+  const createdAt = typeof parsed.createdAt === "string" ? parsed.createdAt.trim() : "";
+  if (!controllerPrompt || !workerDeveloperInstructions || !createdAt) {
+    throw new Error(`Persisted codex_controller run contract is incomplete for run ${runId}.`);
+  }
+  return {
+    version: 1,
+    moduleId: "codex_controller",
+    runId,
+    createdAt,
+    input: normalizeInput({
+      input: parsed.input,
+    }),
+    controllerPrompt,
+    workerDeveloperInstructions,
+    ...(typeof parsed.contextWorkspaceDir === "string" && parsed.contextWorkspaceDir.trim()
+      ? {
+          contextWorkspaceDir: path.resolve(parsed.contextWorkspaceDir.trim()),
+        }
+      : {}),
+  };
+}
+
+function loadPersistedRunContract(runId: string): CodexControllerRunContract | null {
+  const contractPath = workflowArtifactPath(runId, CODEX_CONTROLLER_RUN_CONTRACT_ARTIFACT);
+  if (!existsSync(contractPath)) {
+    return null;
+  }
+  return parseRunContract(readFileSync(contractPath, "utf8"), runId);
 }
 
 function toBulletLines(values: string[]): string {
@@ -708,14 +814,14 @@ function parseControllerDecision(raw: string): ControllerDecision {
 }
 
 function buildCodexPrompt(params: {
-  input: NormalizedCodexControllerInput;
+  runContract: CodexControllerRunContract;
   round: number;
   maxRounds: number;
   nextInstruction: string[];
 }): string {
   return [
     params.round === 1
-      ? params.input.task
+      ? params.runContract.input.task
       : [
           "Continue the same coding task in the same workspace/session.",
           "Use the controller feedback below as the next focused instruction.",
@@ -725,30 +831,25 @@ function buildCodexPrompt(params: {
         ].join("\n"),
     "",
     "SUCCESS_CRITERIA:",
-    toBulletLines(params.input.successCriteria),
+    toBulletLines(params.runContract.input.successCriteria),
     "",
     "CONSTRAINTS:",
-    toBulletLines(params.input.constraints),
+    toBulletLines(params.runContract.input.constraints),
     "",
     "FINISH_QUALITY:",
-    "- Before claiming done, remove avoidable transient artifacts created only during verification, such as __pycache__/ and .pytest_cache/, unless the task explicitly wants them kept.",
-    "- Keep README usage aligned with the commands that actually work in this repository.",
-    "- If you run tests or smoke checks, make sure the repository is left in a tidy post-verification state.",
+    ...WORKER_FINISH_QUALITY_LINES.map((line) => `- ${line}`),
   ].join("\n");
 }
 
-function buildControllerInitPrompt(params: {
-  controllerPrompt: string;
-  input: NormalizedCodexControllerInput;
-  maxRounds: number;
-}): string {
+function buildControllerInitPrompt(params: { runContract: CodexControllerRunContract }): string {
   return [
-    params.controllerPrompt,
+    params.runContract.controllerPrompt,
     "",
     "You are operating inside the codex_controller PIBO workflow module.",
     "This controller session is persistent for the whole workflow run.",
-    "Treat this message as one-time stable run context. Later messages send only bounded per-round deltas.",
-    `Round budget: ${params.maxRounds}.`,
+    "Treat the persisted run contract in this message as the stable source of truth for this run.",
+    "Later messages include the same run contract in compact form plus bounded per-round deltas.",
+    `Round budget: ${params.runContract.input.maxRetries}.`,
     "Use the controller prompt above as policy for the whole run.",
     "For round messages, first decide using the prompt's native contract if helpful. Then return a final normalized block.",
     "",
@@ -775,14 +876,23 @@ function buildControllerInitPrompt(params: {
     "- If MODULE_DECISION is DONE or ESCALATE_BLOCKED, NEXT_INSTRUCTION may be empty.",
     "- Do not silently omit the normalized block.",
     "",
+    "RUN_CONTRACT:",
+    `run_id=${params.runContract.runId}`,
+    `working_directory=${params.runContract.input.workingDirectory}`,
+    `repo_root=${params.runContract.input.repoRoot}`,
+    `closeout_context_source=${params.runContract.input.closeoutContextSource}`,
+    ...(params.runContract.contextWorkspaceDir
+      ? [`context_workspace_dir=${params.runContract.contextWorkspaceDir}`]
+      : []),
+    "",
     "ORIGINAL_TASK:",
-    params.input.task,
+    params.runContract.input.task,
     "",
     "SUCCESS_CRITERIA:",
-    toBulletLines(params.input.successCriteria),
+    toBulletLines(params.runContract.input.successCriteria),
     "",
     "CONSTRAINTS:",
-    toBulletLines(params.input.constraints),
+    toBulletLines(params.runContract.input.constraints),
     "",
     "Do not make a workflow decision in response to this initialization message.",
     "Reply exactly with: CONTROLLER_READY",
@@ -983,7 +1093,25 @@ function buildCloseoutPreflightPrompt(preflight: CloseoutPreflight): string {
   ].join("\n");
 }
 
+function buildControllerRunContractReminder(runContract: CodexControllerRunContract): string {
+  return [
+    `run_id=${runContract.runId}`,
+    `working_directory=${runContract.input.workingDirectory}`,
+    `repo_root=${runContract.input.repoRoot}`,
+    `closeout_context_source=${runContract.input.closeoutContextSource}`,
+    `round_budget=${runContract.input.maxRetries}`,
+    ...(runContract.contextWorkspaceDir
+      ? [`context_workspace_dir=${runContract.contextWorkspaceDir}`]
+      : []),
+    `normalized_decision_block=MODULE_DECISION|MODULE_REASON|NEXT_INSTRUCTION|BLOCKER`,
+    `original_task=${truncateText(runContract.input.task, 240)}`,
+    `success_criteria=${runContract.input.successCriteria.length ? runContract.input.successCriteria.join(" | ") : "none"}`,
+    `constraints=${runContract.input.constraints.length ? runContract.input.constraints.join(" | ") : "none"}`,
+  ].join("\n");
+}
+
 function buildControllerDeltaPrompt(params: {
+  runContract: CodexControllerRunContract;
   round: number;
   maxRounds: number;
   workerOutput: string;
@@ -995,8 +1123,11 @@ function buildControllerDeltaPrompt(params: {
 }): string {
   return [
     `ROUND_CONTEXT: ${params.round}/${params.maxRounds}`,
-    "Use the stable controller policy and normalized workflow contract already provided in this session.",
+    "Use the stable controller policy and the persisted run contract below as the source of truth for this run.",
     "Evaluate only the bounded dynamic context below.",
+    "",
+    "RUN_CONTRACT:",
+    buildControllerRunContractReminder(params.runContract),
     "",
     "RECENT_VISIBLE_WORKER_HISTORY:",
     formatWorkerHistory(params.recentWorkerHistory),
@@ -1905,11 +2036,28 @@ export const codexControllerWorkflowModule: WorkflowModule = {
   manifest: codexControllerWorkflowModuleManifest,
   async start(request, ctx: WorkflowModuleContext) {
     ctx.throwIfAbortRequested?.();
-    const input = normalizeInput(request);
-    const cfg = loadConfig();
-    const contextWorkspaceDir = resolveContextWorkspaceDir(input, cfg);
     const createdAt = ctx.nowIso();
-    const controllerPrompt = loadControllerPrompt(input.controllerPromptPath);
+    const requestedInput = normalizeInput(request);
+    const persistedRunContract = loadPersistedRunContract(ctx.runId);
+    const runContract =
+      persistedRunContract ??
+      buildRunContract({
+        runId: ctx.runId,
+        createdAt,
+        input: requestedInput,
+        controllerPrompt: loadControllerPrompt(requestedInput.controllerPromptPath),
+        contextWorkspaceDir: resolveContextWorkspaceDir(requestedInput, loadConfig()),
+      });
+    const input = runContract.input;
+    const contextWorkspaceDir = runContract.contextWorkspaceDir;
+    const runContractArtifact =
+      persistedRunContract === null
+        ? writeWorkflowArtifact(
+            ctx.runId,
+            CODEX_CONTROLLER_RUN_CONTRACT_ARTIFACT,
+            serializeRunContract(runContract),
+          )
+        : workflowArtifactPath(ctx.runId, CODEX_CONTROLLER_RUN_CONTRACT_ARTIFACT);
     const sessions = await ensureWorkflowSessions({
       runId: ctx.runId,
       specs: [
@@ -1926,6 +2074,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       contextWorkspaceDir,
       model: input.workerModel,
       reasoningEffort: input.workerReasoningEffort,
+      developerInstructions: runContract.workerDeveloperInstructions,
     });
     sessions.worker = buildPendingCodexWorkerSessionLabel(ctx.runId);
     sessions.extras = {
@@ -1938,6 +2087,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       ...(input.agentId ? { contextAgentId: input.agentId } : {}),
       ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
       controllerPromptPath: input.controllerPromptPath,
+      runContractArtifact,
+      runContractVersion: String(runContract.version),
+      workerInstructionMode: "developer_instructions",
       ...(input.workerModel ? { workerModel: input.workerModel } : {}),
       ...(input.workerReasoningEffort
         ? { workerReasoningEffort: input.workerReasoningEffort }
@@ -1957,7 +2109,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       terminalReason: null,
       currentRound: 0,
       maxRounds: input.maxRetries,
-      artifacts: [],
+      artifacts: [runContractArtifact],
       latestWorkerOutput: null,
       latestCriticVerdict: null,
       createdAt,
@@ -1977,6 +2129,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         workingDirectory: input.workingDirectory,
         repoRoot: input.repoRoot,
         closeoutContextSource: input.closeoutContextSource,
+        runContractArtifact,
+        runContractSource: persistedRunContract ? "persisted" : "new",
         ...(input.agentId ? { contextAgentId: input.agentId } : {}),
         ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
         codexAgentId: input.codexAgentId,
@@ -1987,6 +2141,23 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           : {}),
       },
     });
+    ctx.trace.emit(
+      persistedRunContract
+        ? {
+            kind: "custom",
+            stepId: "run",
+            summary: "Persisted codex_controller run contract rehydrated.",
+            payload: {
+              artifactPath: runContractArtifact,
+            },
+          }
+        : {
+            kind: "artifact_written",
+            stepId: "run",
+            artifactPath: runContractArtifact,
+            summary: "codex_controller run contract written",
+          },
+    );
     await emitTracedWorkflowReportEvent({
       trace: ctx.trace,
       stepId: "run",
@@ -2006,9 +2177,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
     await runWorkflowAgentOnSession({
       sessionKey: sessions.orchestrator!,
       message: buildControllerInitPrompt({
-        controllerPrompt,
-        input,
-        maxRounds: input.maxRetries,
+        runContract,
       }),
       idempotencyKey: `${ctx.runId}:controller:init`,
       timeoutMs: 60 * 60 * 1000,
@@ -2083,7 +2252,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       }
 
       const codexPrompt = buildCodexPrompt({
-        input,
+        runContract,
         round,
         maxRounds: input.maxRetries,
         nextInstruction,
@@ -2195,6 +2364,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       });
       const closeoutPreflight = buildCloseoutPreflight(closeoutAssessment);
       const controllerMessage = buildControllerDeltaPrompt({
+        runContract,
         round,
         maxRounds: input.maxRetries,
         workerOutput: codexResult.text,
