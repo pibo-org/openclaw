@@ -102,20 +102,20 @@ describe("browser pool router", () => {
     expect(result.leaseId).toBe("lease_1");
   });
 
-  it("extends TTL on heartbeat", async () => {
+  it("extends TTL on renew", async () => {
     const { router } = await createHarness();
     const acquired = await router.acquire({
       holder: { agentId: "agent-1", sessionKey: "session-1" },
     });
 
-    const heartbeat = await router.heartbeat({
+    const renew = await router.renew({
       profile: acquired.profile,
       leaseId: acquired.leaseId,
       ttlSeconds: 7200,
     });
 
-    expect(heartbeat.lastSeenAt).toBe("2026-04-20T20:00:00.000Z");
-    expect(heartbeat.expiresAt).toBe("2026-04-20T22:00:00.000Z");
+    expect(renew.lastSeenAt).toBe("2026-04-20T20:00:00.000Z");
+    expect(renew.expiresAt).toBe("2026-04-20T22:00:00.000Z");
   });
 
   it("releases with the correct leaseId", async () => {

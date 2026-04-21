@@ -371,14 +371,14 @@ export function registerPiboCli(program: Command) {
       },
     );
   browserPool
-    .command("heartbeat")
-    .description("Extend a dev browser profile lease")
+    .command("renew")
+    .description("Renew a dev browser profile lease")
     .requiredOption("--browser-profile <name>", "Profile name")
     .requiredOption("--lease-id <id>", "Lease id")
     .option("--ttl-seconds <n>", `Lease TTL in seconds (default: 3600)`)
     .action(async (opts: { browserProfile?: string; leaseId?: string; ttlSeconds?: string }) => {
-      const { browserPoolHeartbeat } = await loadBrowserPoolModule();
-      await browserPoolHeartbeat({
+      const { browserPoolRenew } = await loadBrowserPoolModule();
+      await browserPoolRenew({
         profile: opts.browserProfile,
         leaseId: opts.leaseId,
         ttlSeconds: opts.ttlSeconds,

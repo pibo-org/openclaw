@@ -132,19 +132,20 @@ describe("pibo cli", () => {
     const pibo = program.commands.find((command) => command.name() === "pibo");
     const browserPool = pibo?.commands.find((command) => command.name() === "browser-pool");
     const acquire = browserPool?.commands.find((command) => command.name() === "acquire");
+    const renew = browserPool?.commands.find((command) => command.name() === "renew");
     const release = browserPool?.commands.find((command) => command.name() === "release");
 
     const browserPoolHelp = browserPool?.helpInformation() ?? "";
     const acquireHelp = acquire?.helpInformation() ?? "";
-    const heartbeat = browserPool?.commands.find((command) => command.name() === "heartbeat");
-    const heartbeatHelp = heartbeat?.helpInformation() ?? "";
+    const renewHelp = renew?.helpInformation() ?? "";
     const releaseHelp = release?.helpInformation() ?? "";
 
     expect(browserPoolHelp).toContain("Dev browser profile router");
     expect(acquireHelp).toContain("--agent-id <id>");
     expect(acquireHelp).toContain("--session-key <key>");
     expect(acquireHelp).toContain("--workflow-run-id <id>");
-    expect(heartbeatHelp).toContain("--browser-profile <name>");
+    expect(browserPool?.commands.some((command) => command.name() === "heartbeat")).toBe(false);
+    expect(renewHelp).toContain("--browser-profile <name>");
     expect(releaseHelp).toContain("--lease-id <id>");
     expect(releaseHelp).toContain("--browser-profile <name>");
   });

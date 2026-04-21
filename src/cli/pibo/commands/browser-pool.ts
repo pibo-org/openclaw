@@ -82,7 +82,7 @@ export async function browserPoolAcquire(opts: {
   printJson(result);
 }
 
-export async function browserPoolHeartbeat(opts: {
+export async function browserPoolRenew(opts: {
   profile?: string;
   leaseId?: string;
   ttlSeconds?: string;
@@ -96,7 +96,7 @@ export async function browserPoolHeartbeat(opts: {
   if (!leaseId) {
     throw new BrowserPoolError("INVALID_ARGUMENT", "leaseId is required.");
   }
-  const result = await router.heartbeat({
+  const result = await router.renew({
     profile,
     leaseId,
     ttlSeconds: parseOptionalTtlSeconds(opts.ttlSeconds) ?? DEFAULT_LEASE_TTL_SECONDS,

@@ -58,12 +58,12 @@ describe("browser pool command", () => {
     });
   });
 
-  it("validates heartbeat arguments", async () => {
+  it("validates renew arguments", async () => {
     await withTempHome("openclaw-browser-pool-cli-", async () => {
       await writeBrowserPoolConfig();
       await expect(
         createProgram().parseAsync(
-          ["pibo", "browser-pool", "heartbeat", "--browser-profile", "dev-01"],
+          ["pibo", "browser-pool", "renew", "--browser-profile", "dev-01"],
           {
             from: "user",
           },
@@ -163,7 +163,7 @@ describe("browser pool command", () => {
     });
   });
 
-  it("runs the full CLI acquire -> heartbeat -> release flow", async () => {
+  it("runs the full CLI acquire -> renew -> release flow", async () => {
     await withTempHome("openclaw-browser-pool-cli-", async () => {
       await writeBrowserPoolConfig();
 
@@ -182,7 +182,7 @@ describe("browser pool command", () => {
         [
           "pibo",
           "browser-pool",
-          "heartbeat",
+          "renew",
           "--browser-profile",
           "dev-01",
           "--lease-id",
@@ -190,8 +190,8 @@ describe("browser pool command", () => {
         ],
         { from: "user" },
       );
-      const heartbeatPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0] ?? "{}"));
-      expect(heartbeatPayload).toMatchObject({
+      const renewPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0] ?? "{}"));
+      expect(renewPayload).toMatchObject({
         ok: true,
         profile: "dev-01",
         leaseId: acquirePayload.leaseId,

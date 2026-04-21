@@ -16,10 +16,10 @@ import {
   BrowserPoolError,
   DEV_BROWSER_PROFILES,
   type BrowserPoolAcquireResult,
-  type BrowserPoolHeartbeatResult,
   type BrowserPoolHolderContext,
   type BrowserPoolLease,
   type BrowserPoolReleaseResult,
+  type BrowserPoolRenewResult,
   type BrowserPoolState,
   type BrowserPoolStatusResult,
   type BrowserPoolSweepReclaimedResult,
@@ -233,11 +233,11 @@ export function createBrowserPoolRouter(deps: RouterDeps = {}) {
       });
     },
 
-    async heartbeat(params: {
+    async renew(params: {
       profile: string;
       leaseId: string;
       ttlSeconds?: number;
-    }): Promise<BrowserPoolHeartbeatResult> {
+    }): Promise<BrowserPoolRenewResult> {
       const profile = assertDevBrowserProfileName(params.profile);
       const ttlSeconds = validateLeaseTtlSeconds(params.ttlSeconds ?? DEFAULT_LEASE_TTL_SECONDS);
       if (!params.leaseId.trim()) {

@@ -81,7 +81,7 @@ describe("runCli pibo browser-pool", () => {
     }
   });
 
-  it("keeps root --profile working while browser-pool heartbeat/release use --browser-profile", async () => {
+  it("keeps root --profile working while browser-pool renew/release use --browser-profile", async () => {
     await withTempHome("openclaw-browser-pool-run-cli-", async () => {
       await writeBrowserPoolConfig();
 
@@ -114,15 +114,15 @@ describe("runCli pibo browser-pool", () => {
         "work",
         "pibo",
         "browser-pool",
-        "heartbeat",
+        "renew",
         "--browser-profile",
         "dev-01",
         "--lease-id",
         acquirePayload.leaseId,
       ]);
 
-      const heartbeatPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0] ?? "{}"));
-      expect(heartbeatPayload).toMatchObject({
+      const renewPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0] ?? "{}"));
+      expect(renewPayload).toMatchObject({
         ok: true,
         profile: "dev-01",
         leaseId: acquirePayload.leaseId,

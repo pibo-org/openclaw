@@ -47,6 +47,14 @@ For local development from the repo checkout, the intended entrypoint is:
 
 - `pnpm openclaw -- pibo ...`
 
+## Browser pool
+
+The dev browser profile pool uses the native OpenClaw subcommands:
+
+- `openclaw pibo browser-pool acquire --agent-id <id> --session-key <key>`
+- `openclaw pibo browser-pool renew --browser-profile <name> --lease-id <id>`
+- `openclaw pibo browser-pool release --browser-profile <name> --lease-id <id>`
+
 ## Browser DevTools MCP
 
 For PIBo's built-in `chrome-devtools` MCP registration, the canonical local
@@ -75,19 +83,14 @@ openclaw pibo mcp call chrome-devtools list_pages --json '{}'
 definition from `~/.config/pibo/mcp-servers.json` directly. They do not fall back
 to the active OpenClaw MCP layer.
 
-Only activate a server in OpenClaw when you want it exposed to the model/runtime
-tool layer as `mcp.servers`:
+Operational note after the 2026-04-21 DevTools-tool removal:
 
-```bash
-openclaw pibo mcp activate-openclaw chrome-devtools
-```
-
-Operational note after the 2026-04-20 MCP fixes:
-
-- real `openclaw pibo mcp call ...` runs now finalize cleanly instead of hanging after output
+- `chrome-devtools` is now an operator CLI surface here, not a first-class model/runtime tool
+- use `openclaw pibo mcp ...` for Chrome DevTools discovery and calls
+- use `openclaw browser ...` for browser interaction and state checks
+- real `openclaw pibo mcp call ...` runs finalize cleanly instead of hanging after output
 - this applies both to successful tool calls and to the common Chrome-not-reachable error path
 - `openclaw pibo mcp doctor chrome-devtools` proves the MCP server runtime and discovery path, not that Chrome itself is reachable
-- `openclaw pibo mcp activate-openclaw ...` is the explicit opt-in step for making a PIBo-registered server visible to OpenClaw model/runtime tools
 - actual browser-backed tool calls still require the OpenClaw browser to be running on `18800`
 - after a gateway restart, check `openclaw browser status`; if it shows `running: false`, start the browser before blaming the MCP layer
 

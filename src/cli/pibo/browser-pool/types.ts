@@ -82,7 +82,7 @@ export type BrowserPoolAcquireResult = {
   };
 };
 
-export type BrowserPoolHeartbeatResult = {
+export type BrowserPoolRenewResult = {
   ok: true;
   profile: DevBrowserProfileName;
   leaseId: string;
