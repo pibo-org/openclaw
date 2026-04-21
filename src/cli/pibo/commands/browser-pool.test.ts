@@ -70,16 +70,35 @@ describe("browser pool command", () => {
     await withTempHome("openclaw-browser-pool-cli-", async () => {
       await writeBrowserPoolConfig();
       await expect(
-        createProgram().parseAsync(["pibo", "browser-pool", "heartbeat", "--profile", "dev-01"], {
-          from: "user",
-        }),
+        createProgram().parseAsync(
+          ["pibo", "browser-pool", "heartbeat", "--browser-profile", "dev-01"],
+          {
+            from: "user",
+          },
+        ),
       ).rejects.toMatchObject({
         code: "commander.missingMandatoryOptionValue",
       });
     });
   });
 
-  it("validates release arguments", async () => {
+  it("validates release arguments when the profile is provided", async () => {
+    await withTempHome("openclaw-browser-pool-cli-", async () => {
+      await writeBrowserPoolConfig();
+      await expect(
+        createProgram().parseAsync(
+          ["pibo", "browser-pool", "release", "--browser-profile", "dev-01"],
+          {
+            from: "user",
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "commander.missingMandatoryOptionValue",
+      });
+    });
+  });
+
+  it("validates release arguments when the lease id is provided", async () => {
     await withTempHome("openclaw-browser-pool-cli-", async () => {
       await writeBrowserPoolConfig();
       await expect(
@@ -144,7 +163,7 @@ describe("browser pool command", () => {
 
       await createProgram().parseAsync(["pibo", "browser-pool", "status"], { from: "user" });
 
-      expect(logSpy.mock.calls.map((call) => call[0])).toEqual([
+      expect(logSpy.mock.calls.map((call: [unknown, ...unknown[]]) => call[0])).toEqual([
         expect.stringContaining("dev-01: active"),
         expect.stringContaining("dev-02: stale"),
         "dev-03: free",
@@ -172,7 +191,7 @@ describe("browser pool command", () => {
           "pibo",
           "browser-pool",
           "heartbeat",
-          "--profile",
+          "--browser-profile",
           "dev-01",
           "--lease-id",
           acquirePayload.leaseId,
@@ -191,7 +210,7 @@ describe("browser pool command", () => {
           "pibo",
           "browser-pool",
           "release",
-          "--profile",
+          "--browser-profile",
           "dev-01",
           "--lease-id",
           acquirePayload.leaseId,

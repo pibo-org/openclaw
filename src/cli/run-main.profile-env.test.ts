@@ -149,6 +149,15 @@ describe("runCli profile env bootstrap", () => {
     expect(process.env.OPENCLAW_PROFILE).toBe("rawdog");
   });
 
+  it("preserves interleaved root --profile behavior before dotenv loading", async () => {
+    fileState.hasCliDotEnv = true;
+    await runCli(["node", "openclaw", "status", "--profile", "rawdog"]);
+
+    expect(dotenvState.loadDotEnv).toHaveBeenCalledOnce();
+    expect(dotenvState.state.profileAtDotenvLoad).toBe("rawdog");
+    expect(process.env.OPENCLAW_PROFILE).toBe("rawdog");
+  });
+
   it("rejects --container combined with --profile", async () => {
     await expect(
       runCli(["node", "openclaw", "--container", "demo", "--profile", "rawdog", "status"]),

@@ -349,21 +349,25 @@ export function registerPiboCli(program: Command) {
   browserPool
     .command("heartbeat")
     .description("Extend a dev browser profile lease")
-    .requiredOption("--profile <name>", "Profile name")
+    .requiredOption("--browser-profile <name>", "Profile name")
     .requiredOption("--lease-id <id>", "Lease id")
     .option("--ttl-seconds <n>", `Lease TTL in seconds (default: 3600)`)
-    .action(async (opts: { profile?: string; leaseId?: string; ttlSeconds?: string }) => {
+    .action(async (opts: { browserProfile?: string; leaseId?: string; ttlSeconds?: string }) => {
       const { browserPoolHeartbeat } = await loadBrowserPoolModule();
-      await browserPoolHeartbeat(opts);
+      await browserPoolHeartbeat({
+        profile: opts.browserProfile,
+        leaseId: opts.leaseId,
+        ttlSeconds: opts.ttlSeconds,
+      });
     });
   browserPool
     .command("release")
     .description("Stop the browser and release the lease for a dev profile")
-    .requiredOption("--profile <name>", "Profile name")
+    .requiredOption("--browser-profile <name>", "Profile name")
     .requiredOption("--lease-id <id>", "Lease id")
-    .action(async (opts: { profile?: string; leaseId?: string }) => {
+    .action(async (opts: { browserProfile?: string; leaseId?: string }) => {
       const { browserPoolRelease } = await loadBrowserPoolModule();
-      await browserPoolRelease(opts);
+      await browserPoolRelease({ profile: opts.browserProfile, leaseId: opts.leaseId });
     });
   browserPool
     .command("sweep-stale")

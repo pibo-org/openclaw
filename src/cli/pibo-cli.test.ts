@@ -104,13 +104,17 @@ describe("pibo cli", () => {
 
     const browserPoolHelp = browserPool?.helpInformation() ?? "";
     const acquireHelp = acquire?.helpInformation() ?? "";
+    const heartbeat = browserPool?.commands.find((command) => command.name() === "heartbeat");
+    const heartbeatHelp = heartbeat?.helpInformation() ?? "";
     const releaseHelp = release?.helpInformation() ?? "";
 
     expect(browserPoolHelp).toContain("Dev browser profile router");
     expect(acquireHelp).toContain("--agent-id <id>");
     expect(acquireHelp).toContain("--session-key <key>");
     expect(acquireHelp).toContain("--workflow-run-id <id>");
+    expect(heartbeatHelp).toContain("--browser-profile <name>");
     expect(releaseHelp).toContain("--lease-id <id>");
+    expect(releaseHelp).toContain("--browser-profile <name>");
   });
 
   it("exposes agentic find help", () => {

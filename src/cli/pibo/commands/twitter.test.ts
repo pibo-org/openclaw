@@ -13,6 +13,7 @@ import {
   getTwitterStatePath,
   normalizeTwitterCheckOptions,
   readTwitterState,
+  type Tweet,
   writeTwitterState,
 } from "./twitter.js";
 
@@ -222,7 +223,7 @@ describe("pibo twitter command", () => {
   });
 
   it("expands only tweets marked by feed show more detection", async () => {
-    const tweets = [
+    const tweets: Tweet[] = [
       {
         statusId: "1",
         url: "https://x.com/alice/status/1",
@@ -249,7 +250,7 @@ describe("pibo twitter command", () => {
       },
     ];
 
-    const fetchStatusPageText = vi.fn(async (tweet: (typeof tweets)[number]) => {
+    const fetchStatusPageText = vi.fn(async (tweet: Tweet) => {
       switch (tweet.statusId) {
         case "1":
           return "Preview only with the full public status-page text attached";
@@ -260,11 +261,7 @@ describe("pibo twitter command", () => {
       }
     });
 
-    const expanded = await expandTweetsWithStatusPageText(
-      tweets,
-      ["1", "3"],
-      fetchStatusPageText,
-    );
+    const expanded = await expandTweetsWithStatusPageText(tweets, ["1", "3"], fetchStatusPageText);
 
     expect(expanded).toEqual([
       {

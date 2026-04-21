@@ -740,75 +740,76 @@ async function extractVisibleTweetCandidates(page: Page): Promise<ExtractedTweet
     ]);
 
     const articles = Array.from(document.querySelectorAll("article[data-testid=tweet]"));
+    const candidates: ExtractedTweetCandidate[] = [];
 
-    return articles
-      .map((article) => {
-        const statusLink = article.querySelector("a[href*='/status/']");
-        const href = statusLink?.getAttribute("href") ?? "";
-        const statusMatch = href.match(/\/([^/?#]+)\/status\/(\d+)/);
-        const statusId = statusMatch?.[2] ?? "";
-        if (!statusId) {
-          return null;
+    for (const article of articles) {
+      const statusLink = article.querySelector("a[href*='/status/']");
+      const href = statusLink?.getAttribute("href") ?? "";
+      const statusMatch = href.match(/\/([^/?#]+)\/status\/(\d+)/);
+      const statusId = statusMatch?.[2] ?? "";
+      if (!statusId) {
+        continue;
+      }
+
+      const statusAuthor = statusMatch?.[1] ? `@${statusMatch[1]}` : "";
+      const tweetText = (
+        article.querySelector("[data-testid=tweetText]")?.textContent ?? ""
+      ).trim();
+      const hasFeedShowMore = Array.from(article.querySelectorAll("button, [role=button]")).some(
+        (element) =>
+          (element.textContent ?? "")
+            .replace(/\u00A0/g, " ")
+            .replace(/\r/g, "")
+            .trim()
+            .toLowerCase() === showMoreLabel,
+      );
+      const handles: string[] = [];
+
+      for (const link of article.querySelectorAll("a[role=link]")) {
+        const profileHref = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+        const handleMatch = profileHref.match(/^\/([^/?#]{1,30})$/);
+        if (!handleMatch) {
+          continue;
         }
 
-        const statusAuthor = statusMatch?.[1] ? `@${statusMatch[1]}` : "";
-        const tweetText = (
-          article.querySelector("[data-testid=tweetText]")?.textContent ?? ""
-        ).trim();
-        const hasFeedShowMore = Array.from(article.querySelectorAll("button, [role=button]")).some(
-          (element) =>
-            (element.textContent ?? "")
-              .replace(/\u00A0/g, " ")
-              .replace(/\r/g, "")
-              .trim()
-              .toLowerCase() === showMoreLabel,
-        );
-        const handles: string[] = [];
-
-        for (const link of article.querySelectorAll("a[role=link]")) {
-          const profileHref = (link as HTMLAnchorElement).getAttribute("href") ?? "";
-          const handleMatch = profileHref.match(/^\/([^/?#]{1,30})$/);
-          if (!handleMatch) {
-            continue;
-          }
-
-          const handle = handleMatch[1].trim();
-          if (!handle || blockedWords.has(handle.toLowerCase())) {
-            continue;
-          }
-
-          const normalizedHandle = `@${handle}`;
-          if (!handles.includes(normalizedHandle)) {
-            handles.push(normalizedHandle);
-          }
+        const handle = handleMatch[1].trim();
+        if (!handle || blockedWords.has(handle.toLowerCase())) {
+          continue;
         }
 
-        const hasRepost = Array.from(article.querySelectorAll("span")).some((element) =>
-          /reposted$/i.test((element.textContent ?? "").trim()),
-        );
-
-        let author = statusAuthor || handles[0] || "";
-        let repostedFrom: string | null = null;
-
-        if (hasRepost && handles.length >= 2) {
-          author = statusAuthor || handles[1] || handles[0] || "";
-          repostedFrom = handles.find((handle) => handle !== author) ?? null;
+        const normalizedHandle = `@${handle}`;
+        if (!handles.includes(normalizedHandle)) {
+          handles.push(normalizedHandle);
         }
+      }
 
-        const url = author
-          ? `https://x.com/${author.replace(/^@/, "")}/status/${statusId}`
-          : `https://x.com/i/web/status/${statusId}`;
+      const hasRepost = Array.from(article.querySelectorAll("span")).some((element) =>
+        /reposted$/i.test((element.textContent ?? "").trim()),
+      );
 
-        return {
-          statusId,
-          url,
-          author,
-          text: tweetText,
-          repostedFrom,
-          hasFeedShowMore,
-        };
-      })
-      .filter((candidate): candidate is ExtractedTweetCandidate => Boolean(candidate));
+      let author = statusAuthor || handles[0] || "";
+      let repostedFrom: string | null = null;
+
+      if (hasRepost && handles.length >= 2) {
+        author = statusAuthor || handles[1] || handles[0] || "";
+        repostedFrom = handles.find((handle) => handle !== author) ?? null;
+      }
+
+      const url = author
+        ? `https://x.com/${author.replace(/^@/, "")}/status/${statusId}`
+        : `https://x.com/i/web/status/${statusId}`;
+
+      candidates.push({
+        statusId,
+        url,
+        author,
+        text: tweetText,
+        repostedFrom,
+        hasFeedShowMore,
+      });
+    }
+
+    return candidates;
   }, FEED_TWEET_SHOW_MORE_LABEL);
 }
 
