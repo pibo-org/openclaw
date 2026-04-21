@@ -80,24 +80,6 @@ async function handleWorkflowsSubcommand(args: string[]): Promise<string> {
   }
 }
 
-function parseWorkflowStartArgument(argument: string | undefined): {
-  moduleId?: string;
-  inputJson?: string;
-} {
-  const trimmed = argument?.trim();
-  if (!trimmed) {
-    return {};
-  }
-  const firstSpace = trimmed.indexOf(" ");
-  if (firstSpace === -1) {
-    return { moduleId: trimmed };
-  }
-  return {
-    moduleId: trimmed.slice(0, firstSpace).trim() || undefined,
-    inputJson: trimmed.slice(firstSpace + 1).trim() || undefined,
-  };
-}
-
 function parseWorkflowArtifactArgument(argument: string | undefined): {
   runId?: string;
   name?: string;
@@ -133,11 +115,11 @@ const helpCommands = (): string =>
 
 const helpWorkflows = (): string =>
   `Workflows — generische PIBO Workflow-Module\n\n` +
+  `Mutierende Starts laufen nur noch ueber die CLI mit explizitem Trusted-Routing-Vertrag.\n` +
+  `Nutze dafuer: \`openclaw pibo workflows start|start-async ... --owner-session-key ... --channel ... --to ...\`\n\n` +
   `Befehle:\n` +
   `  list                        Registrierte Workflow-Module anzeigen\n` +
   `  describe <moduleId>         Manifest eines Moduls anzeigen\n` +
-  `  start <moduleId> [json]     Workflow-Run starten\n` +
-  `  start-async <moduleId> [json] Workflow-Run asynchron starten\n` +
   `  wait <runId>                Auf terminalen Status warten\n` +
   `  status <runId>              Status eines Runs anzeigen\n` +
   `  progress <runId>            Kompakten Laufstatus anzeigen\n` +
@@ -150,7 +132,6 @@ const helpWorkflows = (): string =>
   `Beispiele:\n` +
   `  /pibo workflows list\n` +
   `  /pibo workflows describe langgraph_worker_critic\n` +
-  `  /pibo workflows start langgraph_worker_critic {"task":"...","successCriteria":["..."]}\n` +
   `  /pibo workflows progress <runId>`;
 
 const commandRegistry: Record<string, CommandModule> = {
@@ -217,40 +198,18 @@ const commandRegistry: Record<string, CommandModule> = {
             : "❌ Bitte gib eine moduleId an.\n\nVerwendung: `/pibo workflows describe <moduleId>`",
       },
       start: {
-        description: "Workflow-Run starten",
-        usage: "start <moduleId> [json] [--max-rounds <n>]",
-        handler: async (_ctx, argument, flags) => {
-          const parsed = parseWorkflowStartArgument(argument);
-          if (!parsed.moduleId) {
-            return "❌ Bitte gib eine moduleId an.\n\nVerwendung: `/pibo workflows start <moduleId> [json] [--max-rounds <n>]`";
-          }
-          const args = ["start", parsed.moduleId];
-          if (parsed.inputJson) {
-            args.push("--json", parsed.inputJson);
-          }
-          if (flags?.["max-rounds"]) {
-            args.push("--max-rounds", flags["max-rounds"]);
-          }
-          return handleWorkflowsSubcommand(args);
-        },
+        description: "Veraltet: Workflow-Starts laufen nur noch ueber die CLI",
+        usage:
+          "start <moduleId> [json] -> openclaw pibo workflows start <moduleId> --owner-session-key ... --channel ... --to ...",
+        handler: async () =>
+          "❌ `/pibo workflows start` ist entfernt.\n\nWorkflow-Starts brauchen jetzt expliziten Trusted-Routing-Kontext.\nNutze stattdessen:\n`openclaw pibo workflows start <moduleId> --owner-session-key <key> --channel <channel> --to <target> [--account-id <id>] [--thread-id <id>] [--json <json>|--stdin] [--max-rounds <n>]`",
       },
       "start-async": {
-        description: "Workflow-Run asynchron starten",
-        usage: "start-async <moduleId> [json] [--max-rounds <n>]",
-        handler: async (_ctx, argument, flags) => {
-          const parsed = parseWorkflowStartArgument(argument);
-          if (!parsed.moduleId) {
-            return "❌ Bitte gib eine moduleId an.\n\nVerwendung: `/pibo workflows start-async <moduleId> [json] [--max-rounds <n>]`";
-          }
-          const args = ["start-async", parsed.moduleId];
-          if (parsed.inputJson) {
-            args.push("--json", parsed.inputJson);
-          }
-          if (flags?.["max-rounds"]) {
-            args.push("--max-rounds", flags["max-rounds"]);
-          }
-          return handleWorkflowsSubcommand(args);
-        },
+        description: "Veraltet: asynchrone Workflow-Starts laufen nur noch ueber die CLI",
+        usage:
+          "start-async <moduleId> [json] -> openclaw pibo workflows start-async <moduleId> --owner-session-key ... --channel ... --to ...",
+        handler: async () =>
+          "❌ `/pibo workflows start-async` ist entfernt.\n\nWorkflow-Starts brauchen jetzt expliziten Trusted-Routing-Kontext.\nNutze stattdessen:\n`openclaw pibo workflows start-async <moduleId> --owner-session-key <key> --channel <channel> --to <target> [--account-id <id>] [--thread-id <id>] [--json <json>|--stdin] [--max-rounds <n>]`",
       },
       wait: {
         description: "Auf terminalen Workflow-Status warten",

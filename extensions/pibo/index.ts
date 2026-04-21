@@ -10,19 +10,6 @@ import {
 import { registerDynamicPromptCommands } from "./src/dynamic-commands.js";
 import { handlePiboRawSessionToolGuard } from "./src/raw-session-tool-guard.js";
 import { handlePiboCommand } from "./src/router.js";
-import {
-  createPiboWorkflowArtifactTool,
-  createPiboWorkflowArtifactsTool,
-  createPiboWorkflowAbortTool,
-  createPiboWorkflowDescribeTool,
-  createPiboWorkflowProgressTool,
-  createPiboWorkflowStartAsyncTool,
-  createPiboWorkflowStartTool,
-  createPiboWorkflowStatusTool,
-  createPiboWorkflowTraceEventsTool,
-  createPiboWorkflowTraceSummaryTool,
-  createPiboWorkflowWaitTool,
-} from "./src/workflow-tools.js";
 
 const PIBO_GLOBAL_SYSTEM_PROMPT_PATH = fileURLToPath(
   new URL("./pibo-global-system-prompt.md", import.meta.url),
@@ -53,39 +40,6 @@ export default definePluginEntry({
       handler: async (ctx: PluginCommandContext) => ({ text: await handlePiboCommand(api, ctx) }),
     });
 
-    api.registerTool(createPiboWorkflowStartTool(api), {
-      names: ["pibo_workflow_start"],
-    });
-    api.registerTool(createPiboWorkflowStartAsyncTool(api), {
-      names: ["pibo_workflow_start_async"],
-    });
-    api.registerTool(createPiboWorkflowStatusTool(api), {
-      names: ["pibo_workflow_status"],
-    });
-    api.registerTool(createPiboWorkflowProgressTool(api), {
-      names: ["pibo_workflow_progress"],
-    });
-    api.registerTool(createPiboWorkflowWaitTool(api), {
-      names: ["pibo_workflow_wait"],
-    });
-    api.registerTool(createPiboWorkflowAbortTool(api), {
-      names: ["pibo_workflow_abort"],
-    });
-    api.registerTool(createPiboWorkflowDescribeTool(api), {
-      names: ["pibo_workflow_describe"],
-    });
-    api.registerTool(createPiboWorkflowTraceSummaryTool(api), {
-      names: ["pibo_workflow_trace_summary"],
-    });
-    api.registerTool(createPiboWorkflowTraceEventsTool(api), {
-      names: ["pibo_workflow_trace_events"],
-    });
-    api.registerTool(createPiboWorkflowArtifactsTool(api), {
-      names: ["pibo_workflow_artifacts"],
-    });
-    api.registerTool(createPiboWorkflowArtifactTool(api), {
-      names: ["pibo_workflow_artifact"],
-    });
     api.registerTool(createPiboDelegateStartTool(api), {
       names: ["pibo_delegate_start"],
     });

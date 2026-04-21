@@ -2,26 +2,38 @@ import { describe, expect, it } from "vitest";
 import { runPiboWorkflows } from "./workflow-runtime.js";
 
 describe("pibo workflow runtime cli bridge", () => {
-  it("treats --json as input for start-async and still returns human text", async () => {
+  it("renders list as JSON when --json is requested on a read-only command", async () => {
     const text = await runPiboWorkflows(
       {
         runtime: {
           piboWorkflows: {
-            startAsync: async (_moduleId: string, request: { input?: unknown }) => ({
-              runId: "run-async-1",
-              moduleId: "noop",
-              status: "pending",
-              echoedInput: request.input,
-            }),
+            list: async () => [
+              {
+                moduleId: "noop",
+                displayName: "Noop",
+                description: "demo module",
+                kind: "analysis_workflow" as const,
+                version: "1.0.0",
+                requiredAgents: [],
+                terminalStates: ["done" as const],
+                supportsAbort: false,
+                inputSchemaSummary: [],
+                artifactContract: [],
+              },
+            ],
           },
         },
       } as never,
-      ["start-async", "noop", "--json", '{"prompt":"demo"}'],
+      ["list", "--json"],
     );
 
-    expect(text).toContain("Run asynchron gestartet: run-async-1");
-    expect(text).toContain("Status: pending");
-    expect(text).not.toContain('"runId"');
+    expect(JSON.parse(text)).toEqual({
+      modules: [
+        expect.objectContaining({
+          moduleId: "noop",
+        }),
+      ],
+    });
   });
 
   it("renders wait as JSON only when output-json is requested", async () => {

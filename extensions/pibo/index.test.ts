@@ -108,17 +108,6 @@ describe("bundled pibo extension", () => {
         "pibo_delegate_start",
         "pibo_delegate_continue",
         "pibo_delegate_status",
-        "pibo_workflow_start",
-        "pibo_workflow_start_async",
-        "pibo_workflow_wait",
-        "pibo_workflow_status",
-        "pibo_workflow_progress",
-        "pibo_workflow_abort",
-        "pibo_workflow_describe",
-        "pibo_workflow_trace_summary",
-        "pibo_workflow_trace_events",
-        "pibo_workflow_artifacts",
-        "pibo_workflow_artifact",
       ]),
     );
     expect(hooks).toEqual(
@@ -131,7 +120,10 @@ describe("bundled pibo extension", () => {
     const beforePromptBuild = hooks.find((hook) => hook.hookName === "before_prompt_build");
     expect(beforePromptBuild?.handler).toBeTypeOf("function");
     const beforePromptBuildHandler = beforePromptBuild?.handler as
-      | ((event: { prompt: string; messages: unknown[] }, ctx: unknown) => unknown | Promise<unknown>)
+      | ((
+          event: { prompt: string; messages: unknown[] },
+          ctx: unknown,
+        ) => unknown | Promise<unknown>)
       | undefined;
     expect(await beforePromptBuildHandler?.({ prompt: "test", messages: [] }, {})).toEqual({
       prependSystemContext: fs.readFileSync(PIBO_GLOBAL_SYSTEM_PROMPT_PATH, "utf8").trim(),

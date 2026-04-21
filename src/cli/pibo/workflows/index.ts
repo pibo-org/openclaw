@@ -28,6 +28,7 @@ import type {
   WorkflowTraceEventQuery,
   WorkflowTraceSummary,
 } from "./tracing/types.js";
+import { buildTrustedWorkflowContext } from "./trusted-context.js";
 import type {
   WorkflowArtifactContent,
   WorkflowArtifactInfo,
@@ -105,6 +106,47 @@ function readPositiveNumberOption(raw?: string) {
   }
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+type TrustedWorkflowMutationCliOptions = {
+  ownerSessionKey?: string;
+  channel?: string;
+  to?: string;
+  accountId?: string;
+  threadId?: string;
+};
+
+function requireNonEmptyCliOption(value: string | undefined, flag: string): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) {
+    throw new Error(`${flag} is required`);
+  }
+  return normalized;
+}
+
+function buildWorkflowStartRequestFromCli(
+  params: {
+    input: unknown;
+    maxRounds?: string;
+  } & TrustedWorkflowMutationCliOptions,
+): WorkflowStartRequest {
+  const trustedContext = buildTrustedWorkflowContext({
+    ownerSessionKey: requireNonEmptyCliOption(params.ownerSessionKey, "--owner-session-key"),
+    channel: requireNonEmptyCliOption(params.channel, "--channel"),
+    to: requireNonEmptyCliOption(params.to, "--to"),
+    ...(typeof params.accountId === "string" && params.accountId.trim()
+      ? { accountId: params.accountId.trim() }
+      : {}),
+    ...(typeof params.threadId === "string" && params.threadId.trim()
+      ? { threadId: params.threadId.trim() }
+      : {}),
+  });
+  return {
+    input: params.input,
+    maxRounds: readPositiveNumberOption(params.maxRounds),
+    origin: trustedContext.origin,
+    reporting: trustedContext.reporting,
+  };
 }
 
 function artifactNameFromPath(artifactPath?: string | null) {
@@ -964,16 +1006,21 @@ export function workflowsDescribe(moduleId: string, opts: { json?: boolean }) {
 
 export async function workflowsStart(
   moduleId: string,
-  opts: { json?: string; stdin?: boolean; maxRounds?: string; outputJson?: boolean },
+  opts: {
+    json?: string;
+    stdin?: boolean;
+    maxRounds?: string;
+    outputJson?: boolean;
+  } & TrustedWorkflowMutationCliOptions,
 ) {
   try {
     const stdinInput = await readMaybeStdin(opts.stdin);
     const argInput = opts.json ? readJsonArg(opts.json) : undefined;
     const input = stdinInput ?? argInput ?? {};
-    const request: WorkflowStartRequest = {
+    const request = buildWorkflowStartRequestFromCli({
+      ...opts,
       input,
-      maxRounds: readPositiveNumberOption(opts.maxRounds),
-    };
+    });
     const record = await startWorkflowRun(moduleId, request);
 
     if (opts.outputJson) {
@@ -994,16 +1041,21 @@ export async function workflowsStart(
 
 export async function workflowsStartAsync(
   moduleId: string,
-  opts: { json?: string; stdin?: boolean; maxRounds?: string; outputJson?: boolean },
+  opts: {
+    json?: string;
+    stdin?: boolean;
+    maxRounds?: string;
+    outputJson?: boolean;
+  } & TrustedWorkflowMutationCliOptions,
 ) {
   try {
     const stdinInput = await readMaybeStdin(opts.stdin);
     const argInput = opts.json ? readJsonArg(opts.json) : undefined;
     const input = stdinInput ?? argInput ?? {};
-    const request: WorkflowStartRequest = {
+    const request = buildWorkflowStartRequestFromCli({
+      ...opts,
       input,
-      maxRounds: readPositiveNumberOption(opts.maxRounds),
-    };
+    });
     const record = await startWorkflowRunAsync(moduleId, request);
 
     if (opts.outputJson) {

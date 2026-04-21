@@ -21,7 +21,10 @@ Current reality:
 
 - workflow code lives under `src/cli/pibo/workflows/`
 - `openclaw pibo workflows ...` is the native source of truth
+- workflow mutation starts now require explicit trusted routing flags:
+  `--owner-session-key`, `--channel`, `--to`, with optional `--account-id` and `--thread-id`
 - `extensions/pibo` now uses OpenClaw's in-process runtime surface instead of shelling out to the external `pibo-cli` repo
+- `extensions/pibo` only registers the delegate tools globally; workflow start/status/abort tooling is no longer exposed as global agent tools
 - `langgraph_worker_critic` runs through OpenClaw-managed workflow sessions with persisted session keys in the run record
 
 The former standalone `pibo-cli` repo remains a historical migration source, not an active workflow runtime dependency.

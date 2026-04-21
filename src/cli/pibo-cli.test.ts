@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { withTempHome } from "../config/home-env.test-harness.js";
 import { registerPiboCli } from "./pibo-cli.js";
 
@@ -47,6 +47,38 @@ describe("pibo cli", () => {
     expect(pibo?.commands.some((command) => command.name() === "workflows")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "start-async")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "wait")).toBe(true);
+  });
+
+  it("requires explicit trusted routing flags for workflow starts", async () => {
+    const program = createProgram();
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(
+      program.parseAsync(["pibo", "workflows", "start", "noop"], { from: "user" }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("--owner-session-key"),
+    });
+
+    stderrWrite.mockRestore();
+  });
+
+  it("documents trusted routing flags for workflow start commands", () => {
+    const program = createProgram();
+    const pibo = program.commands.find((command) => command.name() === "pibo");
+    const workflows = pibo?.commands.find((command) => command.name() === "workflows");
+    const start = workflows?.commands.find((command) => command.name() === "start");
+    const startAsync = workflows?.commands.find((command) => command.name() === "start-async");
+
+    const startHelp = start?.helpInformation() ?? "";
+    const startAsyncHelp = startAsync?.helpInformation() ?? "";
+
+    expect(startHelp).toContain("--owner-session-key <key>");
+    expect(startHelp).toContain("--channel <name>");
+    expect(startHelp).toContain("--to <target>");
+    expect(startHelp).toContain("--account-id <id>");
+    expect(startHelp).toContain("--thread-id <id>");
+    expect(startAsyncHelp).toContain("--owner-session-key <key>");
+    expect(startAsyncHelp).toContain("--thread-id <id>");
   });
 
   it("exposes MCP help with separated registry and OpenClaw activation semantics", () => {

@@ -44,6 +44,30 @@ async function loadWorkflowReadOnlyModule() {
   return import("./pibo/workflows/read-only.js");
 }
 
+type TrustedWorkflowMutationCliOptions = {
+  json?: string;
+  stdin?: boolean;
+  maxRounds?: string;
+  outputJson?: boolean;
+  ownerSessionKey?: string;
+  channel?: string;
+  to?: string;
+  accountId?: string;
+  threadId?: string;
+};
+
+function addTrustedWorkflowMutationOptions(command: Command) {
+  return command
+    .requiredOption(
+      "--owner-session-key <key>",
+      "Trusted owner session key for origin-topic reporting",
+    )
+    .requiredOption("--channel <name>", "Trusted origin channel for workflow reporting")
+    .requiredOption("--to <target>", "Trusted origin destination for workflow reporting")
+    .option("--account-id <id>", "Optional trusted origin account id")
+    .option("--thread-id <id>", "Optional trusted origin thread/topic id");
+}
+
 export function registerPiboCli(program: Command) {
   const pibo = program.command("pibo").description("PIBo CLI modules ported into OpenClaw");
 
@@ -430,48 +454,30 @@ export function registerPiboCli(program: Command) {
       const { workflowsDescribe } = await loadWorkflowReadOnlyModule();
       workflowsDescribe(moduleId, { json: opts.json });
     });
-  workflows
-    .command("start <moduleId>")
-    .description("Workflow-Run starten")
-    .option("--json <json>", "JSON-Input inline oder als @datei.json")
-    .option("--stdin", "JSON-Input von stdin lesen")
-    .option("--max-rounds <n>", "Maximale Rundenzahl")
-    .option("--output-json", "Run-Record als JSON ausgeben")
-    .action(
-      async (
-        moduleId: string,
-        opts: {
-          json?: string;
-          stdin?: boolean;
-          maxRounds?: string;
-          outputJson?: boolean;
-        },
-      ) => {
-        const { workflowsStart } = await loadWorkflowModule();
-        await workflowsStart(moduleId, opts);
-      },
-    );
-  workflows
-    .command("start-async <moduleId>")
-    .description("Workflow-Run asynchron starten")
-    .option("--json <json>", "JSON-Input inline oder als @datei.json")
-    .option("--stdin", "JSON-Input von stdin lesen")
-    .option("--max-rounds <n>", "Maximale Rundenzahl")
-    .option("--output-json", "Initialen Run-Record als JSON ausgeben")
-    .action(
-      async (
-        moduleId: string,
-        opts: {
-          json?: string;
-          stdin?: boolean;
-          maxRounds?: string;
-          outputJson?: boolean;
-        },
-      ) => {
-        const { workflowsStartAsync } = await loadWorkflowModule();
-        await workflowsStartAsync(moduleId, opts);
-      },
-    );
+  addTrustedWorkflowMutationOptions(
+    workflows
+      .command("start <moduleId>")
+      .description("Workflow-Run starten")
+      .option("--json <json>", "JSON-Input inline oder als @datei.json")
+      .option("--stdin", "JSON-Input von stdin lesen")
+      .option("--max-rounds <n>", "Maximale Rundenzahl")
+      .option("--output-json", "Run-Record als JSON ausgeben"),
+  ).action(async (moduleId: string, opts: TrustedWorkflowMutationCliOptions) => {
+    const { workflowsStart } = await loadWorkflowModule();
+    await workflowsStart(moduleId, opts);
+  });
+  addTrustedWorkflowMutationOptions(
+    workflows
+      .command("start-async <moduleId>")
+      .description("Workflow-Run asynchron starten")
+      .option("--json <json>", "JSON-Input inline oder als @datei.json")
+      .option("--stdin", "JSON-Input von stdin lesen")
+      .option("--max-rounds <n>", "Maximale Rundenzahl")
+      .option("--output-json", "Initialen Run-Record als JSON ausgeben"),
+  ).action(async (moduleId: string, opts: TrustedWorkflowMutationCliOptions) => {
+    const { workflowsStartAsync } = await loadWorkflowModule();
+    await workflowsStartAsync(moduleId, opts);
+  });
   workflows
     .command("wait <runId>")
     .description("Auf terminalen Workflow-Status warten")

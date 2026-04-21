@@ -14,6 +14,8 @@ import {
   startWorkflowRun,
   startWorkflowRunAsync,
   waitForWorkflowRun,
+  workflowsStart,
+  workflowsStartAsync,
 } from "./index.js";
 import { writeWorkflowArtifact } from "./store.js";
 
@@ -142,6 +144,77 @@ describe("pibo workflows runtime", () => {
     const reloaded = getWorkflowRunStatus(initial.runId);
     expect(reloaded.status).toBe("done");
     expect(getWorkflowTraceEvents(initial.runId).length).toBeGreaterThan(0);
+  });
+
+  it("builds trusted origin/reporting for CLI workflow starts", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await workflowsStart("noop", {
+      json: '{"prompt":"cli-demo"}',
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:333",
+      channel: "telegram",
+      to: "group:-100123",
+      accountId: "telegram-default",
+      threadId: "333",
+      outputJson: true,
+    });
+
+    const rawRecord = consoleLog.mock.calls[0]?.[0];
+    expect(typeof rawRecord).toBe("string");
+    const record = JSON.parse(String(rawRecord));
+    expect(record.origin).toEqual({
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:333",
+      channel: "telegram",
+      to: "group:-100123",
+      accountId: "telegram-default",
+      threadId: "333",
+    });
+    expect(record.reporting).toEqual({
+      deliveryMode: "topic_origin",
+      senderPolicy: "emitting_agent",
+      headerMode: "runtime_header",
+      events: ["started", "blocked", "completed"],
+    });
+    expect(getWorkflowTraceEvents(record.runId).map((event) => event.kind)).toContain(
+      "report_delivery_attempted",
+    );
+  });
+
+  it("builds trusted origin/reporting for async CLI workflow starts", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await workflowsStartAsync("noop", {
+      json: '{"prompt":"cli-async-demo"}',
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:444",
+      channel: "telegram",
+      to: "group:-100123",
+      accountId: "telegram-default",
+      threadId: "444",
+      outputJson: true,
+    });
+
+    const rawInitialRecord = consoleLog.mock.calls[0]?.[0];
+    expect(typeof rawInitialRecord).toBe("string");
+    const initialRecord = JSON.parse(String(rawInitialRecord));
+    expect(initialRecord.status).toBe("pending");
+    expect(initialRecord.origin).toEqual({
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:444",
+      channel: "telegram",
+      to: "group:-100123",
+      accountId: "telegram-default",
+      threadId: "444",
+    });
+    expect(initialRecord.reporting).toEqual({
+      deliveryMode: "topic_origin",
+      senderPolicy: "emitting_agent",
+      headerMode: "runtime_header",
+      events: ["started", "blocked", "completed"],
+    });
+
+    const wait = await waitForWorkflowRun(initialRecord.runId, 5_000);
+    expect(wait.status).toBe("ok");
+    expect(wait.run?.origin).toEqual(initialRecord.origin);
+    expect(wait.run?.reporting).toEqual(initialRecord.reporting);
   });
 
   it("derives compact progress snapshots and filtered trace events", async () => {

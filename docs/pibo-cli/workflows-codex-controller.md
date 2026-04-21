@@ -31,7 +31,7 @@ It is intended for tasks where:
 - native registry: `src/cli/pibo/workflows/modules/index.ts`
 - native CLI: `openclaw pibo workflows ...`
 - plugin/runtime bridge: `runtime.piboWorkflows`
-- agent/tool bridge: `pibo_workflow_start|status|describe|abort`
+- global PIBO agent tools now keep only delegate surfaces; workflow mutation starts go through the CLI contract
 
 ## Why the worker uses Codex SDK directly
 
@@ -185,13 +185,23 @@ node scripts/run-vitest.mjs run --config vitest.cli.config.ts \
   src/cli/pibo/workflows/modules/codex-controller.test.ts
 pnpm openclaw -- pibo workflows list
 pnpm openclaw -- pibo workflows describe codex_controller
-pnpm openclaw -- pibo workflows start noop --json '{"prompt":"smoke"}' --output-json
+pnpm openclaw -- pibo workflows start noop \
+  --owner-session-key 'agent:main:telegram:group:-100123:topic:333' \
+  --channel telegram \
+  --to 'group:-100123' \
+  --thread-id 333 \
+  --json '{"prompt":"smoke"}' \
+  --output-json
 ```
 
 Optional module smoke shape:
 
 ```bash
 pnpm openclaw -- pibo workflows start codex_controller \
+  --owner-session-key 'agent:main:telegram:group:-100123:topic:333' \
+  --channel telegram \
+  --to 'group:-100123' \
+  --thread-id 333 \
   --json '{
     "task": "Inspect the repo and summarize one safe improvement.",
     "workingDirectory": "/absolute/path/to/repo",

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
 type WorkflowManifest = Awaited<
@@ -35,13 +34,8 @@ function hasFlag(args: string[], flag: string) {
   return args.includes(flag);
 }
 
-function usesJsonInput(args: string[]) {
-  const command = args[0];
-  return command === "start" || command === "start-async";
-}
-
 function wantsJsonOutput(args: string[]) {
-  return hasFlag(args, "--output-json") || (hasFlag(args, "--json") && !usesJsonInput(args));
+  return hasFlag(args, "--output-json") || hasFlag(args, "--json");
 }
 
 function readOptionValue(args: string[], flag: string): string | undefined {
@@ -50,16 +44,6 @@ function readOptionValue(args: string[], flag: string): string | undefined {
     return undefined;
   }
   return args[index + 1];
-}
-
-function readJsonArg(raw?: string): unknown {
-  if (!raw) {
-    return {};
-  }
-  if (raw.startsWith("@")) {
-    return JSON.parse(readFileSync(raw.slice(1), "utf8"));
-  }
-  return JSON.parse(raw);
 }
 
 function terminalStatesText(states: WorkflowManifest["terminalStates"]) {
@@ -236,57 +220,6 @@ async function executeWorkflowCommand(
       return {
         data: manifest,
         text: formatManifestText(manifest),
-      };
-    }
-    case "start": {
-      const moduleId = args[1]?.trim();
-      if (!moduleId) {
-        throw new Error("Workflow moduleId required");
-      }
-      const input = readJsonArg(readOptionValue(args, "--json"));
-      const rawMaxRounds = readOptionValue(args, "--max-rounds");
-      const parsedMaxRounds = rawMaxRounds === undefined ? undefined : Number(rawMaxRounds);
-      const maxRounds =
-        parsedMaxRounds !== undefined && Number.isFinite(parsedMaxRounds) && parsedMaxRounds > 0
-          ? parsedMaxRounds
-          : undefined;
-      const result = await api.runtime.piboWorkflows.start(moduleId, {
-        input,
-        maxRounds,
-      });
-      return {
-        data: result,
-        text: [
-          `Run gestartet: ${result.runId}`,
-          `Module: ${result.moduleId}`,
-          `Status: ${result.status}`,
-          ...(result.terminalReason ? [`Reason: ${result.terminalReason}`] : []),
-        ].join("\n"),
-      };
-    }
-    case "start-async": {
-      const moduleId = args[1]?.trim();
-      if (!moduleId) {
-        throw new Error("Workflow moduleId required");
-      }
-      const input = readJsonArg(readOptionValue(args, "--json"));
-      const rawMaxRounds = readOptionValue(args, "--max-rounds");
-      const parsedMaxRounds = rawMaxRounds === undefined ? undefined : Number(rawMaxRounds);
-      const maxRounds =
-        parsedMaxRounds !== undefined && Number.isFinite(parsedMaxRounds) && parsedMaxRounds > 0
-          ? parsedMaxRounds
-          : undefined;
-      const result = await api.runtime.piboWorkflows.startAsync(moduleId, {
-        input,
-        maxRounds,
-      });
-      return {
-        data: result,
-        text: [
-          `Run asynchron gestartet: ${result.runId}`,
-          `Module: ${result.moduleId}`,
-          `Status: ${result.status}`,
-        ].join("\n"),
       };
     }
     case "wait": {
@@ -480,12 +413,4 @@ export async function runPiboWorkflows(api: OpenClawPluginApi, args: string[]): 
     return JSON.stringify(result.data, null, 2);
   }
   return result.text;
-}
-
-export async function runPiboWorkflowsJson(
-  api: OpenClawPluginApi,
-  args: string[],
-): Promise<unknown> {
-  const result = await executeWorkflowCommand(api, args);
-  return result.data;
 }
