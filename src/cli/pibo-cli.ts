@@ -59,6 +59,7 @@ type TrustedWorkflowMutationCliOptions = {
   threadId?: string;
   task?: string;
   cwd?: string;
+  existingWorkingDirectory?: boolean;
   repoRoot?: string;
   agentId?: string;
   success?: string[];
@@ -513,6 +514,10 @@ export function registerPiboCli(program: Command) {
       .option("--wait-timeout-ms <n>", "Wartezeit fuer --wait in Millisekunden")
       .option("--task <text>", "codex_controller task text")
       .option("--cwd <path>", "codex_controller workingDirectory; defaults to pwd")
+      .option(
+        "--existing-working-directory",
+        "codex_controller opt out of workflow-owned linked-worktree isolation and run directly in --cwd",
+      )
       .option("--repo-root <path>", "codex_controller explicit strict closeout repo root")
       .option("--agent-id <id>", "codex_controller optional agent workspace context")
       .option("--success <text>", "codex_controller success criterion", collectRepeatedOption, [])

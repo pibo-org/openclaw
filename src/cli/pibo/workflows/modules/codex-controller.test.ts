@@ -10,7 +10,9 @@ const ensureWorkflowSessions = vi.fn();
 const runWorkflowAgentOnSession = vi.fn();
 const writeWorkflowArtifact = vi.fn();
 const workflowArtifactPath = vi.fn((runId: string, name: string) => `${runId}/${name}`);
+const workflowOwnedWorktreesDir = vi.fn(() => "/workflow-owned-worktrees");
 const existsSync = vi.fn();
+const mkdirSync = vi.fn();
 const readFileSync = vi.fn();
 const loadConfig = vi.fn<() => OpenClawConfig>(() => ({}));
 const resolveCodexWorkerDefaultOptions = vi.fn(() => ({}));
@@ -28,6 +30,7 @@ const emitTracedWorkflowReportEvent = vi.fn(async () => ({
 }));
 const traceEmit = vi.fn();
 const artifactContents = new Map<string, string>();
+const gitCommandCalls: string[] = [];
 
 function controllerRun(text: string, runId = "controller-run") {
   return {
@@ -58,6 +61,7 @@ function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
     const cwd = args[1];
     const gitArgs = args.slice(2);
     const joined = gitArgs.join(" ");
+    gitCommandCalls.push(`git -C ${cwd} ${joined}`);
     const head = scenario.head ?? "1111111111111111111111111111111111111111";
     const mergeBase = scenario.mergeBase ?? head;
     if (joined === "rev-parse --show-toplevel") {
@@ -86,6 +90,18 @@ function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
     }
     if (joined === "merge-base HEAD origin/main") {
       return `${mergeBase}\n`;
+    }
+    if (
+      joined.startsWith("worktree add --detach /workflow-owned-worktrees/") &&
+      joined.endsWith(" HEAD")
+    ) {
+      return `HEAD is now at ${head}\n`;
+    }
+    if (joined.startsWith("worktree remove --force /workflow-owned-worktrees/")) {
+      return "";
+    }
+    if (joined === "worktree prune") {
+      return "";
     }
     throw new Error(`Unexpected git command: ${joined}`);
   });
@@ -170,6 +186,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...actual,
     existsSync,
+    mkdirSync,
     readFileSync,
   };
 });
@@ -193,6 +210,7 @@ vi.mock("../agent-runtime.js", () => ({
 vi.mock("../store.js", () => ({
   writeWorkflowArtifact,
   workflowArtifactPath,
+  workflowOwnedWorktreesDir,
 }));
 
 vi.mock("../../../../config/config.js", () => ({
@@ -213,10 +231,12 @@ describe("codex_controller module", () => {
     vi.clearAllMocks();
     vi.resetModules();
     artifactContents.clear();
+    gitCommandCalls.length = 0;
     existsSync.mockImplementation((filePath: string) => {
       const normalizedPath = String(filePath);
       return artifactContents.has(normalizedPath) || !normalizedPath.endsWith(".json");
     });
+    mkdirSync.mockImplementation(() => undefined);
     readFileSync.mockImplementation((filePath: string) => {
       const normalizedPath = String(filePath);
       return artifactContents.get(normalizedPath) ?? "controller prompt template";
@@ -272,6 +292,9 @@ describe("codex_controller module", () => {
     expect(manifest.inputSchemaSummary).toContain(
       "agentId (string, optional): selects agent-workspace bootstrap for the controller (skills/system prompt) and adds that workspace as extra readable Codex context; does not change worker cwd or import full Main/session chat, memory, or docs.",
     );
+    expect(manifest.inputSchemaSummary).toContain(
+      'workingDirectoryMode ("workflow_owned_worktree"|"existing", optional): defaults to workflow-owned linked-worktree isolation when the requested path is inside a git checkout; use `existing` only when the operator intentionally wants the worker to run in the provided directory.',
+    );
   });
 
   it("rejects missing workingDirectory with repoPath-specific guidance", async () => {
@@ -314,6 +337,7 @@ describe("codex_controller module", () => {
           input: {
             task: "Ship the fix",
             workingDirectory: "/repo",
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-1", abortController),
@@ -356,6 +380,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -375,6 +400,104 @@ describe("codex_controller module", () => {
     );
   });
 
+  it("provisions a workflow-owned linked worktree by default for git checkouts and removes it after success", async () => {
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      createModuleContext("run-1"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(record.input).toEqual(
+      expect.objectContaining({
+        workingDirectory: "/workflow-owned-worktrees/run-1",
+        requestedWorkingDirectory: "/repo",
+        repoRoot: "/repo",
+        workingDirectoryMode: "workflow_owned_worktree",
+        workspaceOwnership: "workflow_owned",
+        workflowOwnedWorktree: {
+          kind: "linked_worktree",
+          rootPath: "/workflow-owned-worktrees/run-1",
+          sourceRepoRoot: "/repo",
+        },
+      }),
+    );
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/workflow-owned-worktrees/run-1",
+      }),
+    );
+    expect(record.sessions.extras?.workingDirectoryMode).toBe("workflow_owned_worktree");
+    expect(record.sessions.extras?.workspaceOwnership).toBe("workflow_owned");
+    expect(record.sessions.extras?.workflowOwnedWorktreeRoot).toBe(
+      "/workflow-owned-worktrees/run-1",
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo worktree add --detach /workflow-owned-worktrees/run-1 HEAD",
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo worktree remove --force /workflow-owned-worktrees/run-1",
+    );
+    expect(gitCommandCalls).toContain("git -C /repo worktree prune");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "run-summary.txt",
+      expect.stringContaining("closeout-mode: workflow_owned_worktree_local"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "run-summary.txt",
+      expect.stringContaining("workspace-cleanup-status: passed"),
+    );
+  });
+
+  it("keeps an explicit existing workingDirectory without provisioning or auto-cleanup", async () => {
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
+        },
+      },
+      createModuleContext("run-existing"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(record.input).toEqual(
+      expect.objectContaining({
+        workingDirectory: "/repo",
+        requestedWorkingDirectory: "/repo",
+        repoRoot: "/repo",
+        workingDirectoryMode: "existing",
+        workspaceOwnership: "operator_owned",
+      }),
+    );
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/repo",
+      }),
+    );
+    expect(gitCommandCalls).not.toContain(
+      "git -C /repo worktree add --detach /workflow-owned-worktrees/run-existing HEAD",
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-existing",
+      "run-summary.txt",
+      expect.stringContaining("workspace-cleanup-status: not_applicable"),
+    );
+  });
+
   it("accepts maxRounds as the preferred input budget alias", async () => {
     mockSingleRoundDoneLoop();
 
@@ -385,6 +508,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           maxRounds: 1,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-max-rounds"),
@@ -416,6 +540,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           agentId: "writer",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -462,6 +587,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           agentId: "writer",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -498,6 +624,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo-a",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -517,6 +644,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix again",
           workingDirectory: "/repo-b",
           agentId: "writer",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-2"),
@@ -557,6 +685,7 @@ describe("codex_controller module", () => {
           agentId: "writer",
           successCriteria: ["Tests pass"],
           constraints: ["Do not touch unrelated files"],
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -675,6 +804,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Task for run one",
           workingDirectory: "/repo-one",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -684,6 +814,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Task for run two",
           workingDirectory: "/repo-two",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-2"),
@@ -733,6 +864,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -820,6 +952,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-timeout-default"),
@@ -869,6 +1002,7 @@ describe("codex_controller module", () => {
           input: {
             task: "Ship the fix",
             workingDirectory: "/repo",
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-retry-success"),
@@ -931,6 +1065,7 @@ describe("codex_controller module", () => {
           input: {
             task: "Ship the fix",
             workingDirectory: "/repo",
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-transport-retry"),
@@ -989,6 +1124,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-transport-evidence"),
@@ -1029,6 +1165,7 @@ describe("codex_controller module", () => {
           input: {
             task: "Ship the fix",
             workingDirectory: "/repo",
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-retry-exhausted"),
@@ -1074,6 +1211,7 @@ describe("codex_controller module", () => {
           input: {
             task: "Ship the fix",
             workingDirectory: "/repo",
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-no-retry"),
@@ -1102,6 +1240,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           maxRetries: 1,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-dirty"),
@@ -1151,6 +1290,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           maxRetries: 1,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-worktree"),
@@ -1211,6 +1351,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo/slices/task",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-linked-worktree-done"),
@@ -1248,6 +1389,51 @@ describe("codex_controller module", () => {
     expect(controllerPrompt).toContain("head_integrated_into_base=true");
   });
 
+  it("does not block a workflow-owned worktree DONE just because the shared repo has sibling worktrees or integration drift", async () => {
+    mockCloseoutGitScenario({
+      head: "2222222222222222222222222222222222222222",
+      mergeBase: "1111111111111111111111111111111111111111",
+      worktreeList: [
+        "worktree /repo",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/main",
+        "worktree /workflow-owned-worktrees/run-owned-shared-noise",
+        "HEAD 2222222222222222222222222222222222222222",
+        "detached",
+        "worktree /repo-linked",
+        "HEAD 3333333333333333333333333333333333333333",
+        "branch refs/heads/feature",
+      ].join("\n"),
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          repoRoot: "/repo",
+        },
+      },
+      createModuleContext("run-owned-shared-noise"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-owned-shared-noise",
+      "closeout-assessment.json",
+      expect.stringContaining('"closeoutMode": "workflow_owned_worktree_local"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-owned-shared-noise",
+      "run-summary.txt",
+      expect.stringContaining(
+        "closeout-reason: Closeout passed: workflow-owned linked worktree is clean; shared-repo integration and sibling worktrees are outside this run.",
+      ),
+    );
+  });
+
   it("remaps DONE on not-integrated preflight failure to continue instead of terminal closeout", async () => {
     mockCloseoutGitScenario({
       head: "2222222222222222222222222222222222222222",
@@ -1263,6 +1449,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
           repoRoot: "/repo",
           maxRetries: 1,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-integration"),
@@ -1281,6 +1468,52 @@ describe("codex_controller module", () => {
       "run-integration",
       "run-summary.txt",
       expect.stringContaining("status: max_rounds_reached"),
+    );
+  });
+
+  it("blocks terminal success when workflow-owned worktree cleanup fails", async () => {
+    mockCloseoutGitScenario({
+      worktreeList: [
+        "worktree /repo",
+        "HEAD 1111111111111111111111111111111111111111",
+        "branch refs/heads/main",
+        "worktree /workflow-owned-worktrees/run-cleanup-failed",
+        "HEAD 1111111111111111111111111111111111111111",
+        "detached",
+      ].join("\n"),
+    });
+    mockSingleRoundDoneLoop();
+    const previousImplementation = execFileSync.getMockImplementation();
+    execFileSync.mockImplementation((command: string, args: string[]) => {
+      const cwd = args[1];
+      const joined = args.slice(2).join(" ");
+      if (
+        cwd === "/repo" &&
+        joined === "worktree remove --force /workflow-owned-worktrees/run-cleanup-failed"
+      ) {
+        throw new Error("cleanup remove failed");
+      }
+      return previousImplementation?.(command, args);
+    });
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      createModuleContext("run-cleanup-failed"),
+    );
+
+    expect(record.status).toBe("blocked");
+    expect(record.terminalReason).toContain("workspace cleanup failed");
+    expect(record.terminalReason).toContain("cleanup remove failed");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-cleanup-failed",
+      "run-summary.txt",
+      expect.stringContaining("workspace-cleanup-status: blocked"),
     );
   });
 
@@ -1307,6 +1540,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -1355,6 +1589,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           workerCompactionAfterRound: 2,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -1409,6 +1644,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo",
           workerCompactionMode: "acp_control_command",
           workerCompactionAfterRound: 2,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -1477,6 +1713,7 @@ describe("codex_controller module", () => {
           task: "Ship the fix",
           workingDirectory: "/repo",
           maxRetries: 2,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -1588,6 +1825,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo/slices/task",
           repoRoot: "/repo",
           maxRetries: 1,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-ambient-preflight"),
@@ -1638,6 +1876,7 @@ describe("codex_controller module", () => {
           workingDirectory: "/repo/slices/task",
           repoRoot: "/repo",
           maxRetries: 1,
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-worktree-preflight"),
@@ -1686,6 +1925,7 @@ describe("codex_controller module", () => {
         input: {
           task: "Ship the fix",
           workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
         },
       },
       createModuleContext("run-1"),
@@ -1718,6 +1958,7 @@ describe("codex_controller module", () => {
           input: {
             task: "Ship the fix",
             workingDirectory: "/repo",
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-1"),
@@ -1782,6 +2023,7 @@ describe("codex_controller module", () => {
             task: "Ship the fix",
             workingDirectory: "/repo",
             maxRetries: 2,
+            workingDirectoryMode: "existing",
           },
         },
         createModuleContext("run-1"),

@@ -21,7 +21,7 @@ Diese Datei bleibt nützlich für quellnahe technische Details, ist aber nicht a
 It is intended for tasks where:
 
 - the coding worker should keep its own persistent Codex thread
-- the worker must stay anchored to an explicit `workingDirectory`
+- the worker must stay anchored to an explicit execution `workingDirectory`, with default git runs isolated into a workflow-owned linked worktree instead of inheriting ambient repo dirt
 - the worker should only receive explicit workflow/task context, not ambient Main/session chat, memory, or docs
 - an optional `agentId` should be able to switch agent-workspace bootstrap context and add extra readable workspace context without moving the worker cwd or inheriting the full Main/session context
 - a controller should decide whether to continue, stop as done, or escalate a real blocker
@@ -52,6 +52,7 @@ For `codex_controller`, `run` accepts direct operator flags:
 
 - `--task <text>`
 - `--cwd <path>`; defaults to the current `pwd` when omitted
+- `--existing-working-directory`; opt out of workflow-owned linked-worktree isolation and run directly in `--cwd`
 - `--repo-root <path>`
 - `--agent-id <id>`
 - repeated `--success <text>`
@@ -91,9 +92,10 @@ The workflow has three separate context layers. They should not be conflated.
 
 1. Execution workspace: `workingDirectory`
 
-- `workingDirectory` is the Codex SDK worker `cwd`.
-- This is where the worker runs commands, reads the repo by default, edits files, and executes verification.
-- Setting `agentId` does **not** move the worker to another cwd. The worker still runs in `workingDirectory`.
+- `workingDirectory` in the low-level input is the requested project/worktree path.
+- When that path is inside a git checkout, the default runtime path is now a workflow-owned linked worktree under the PIBO workflow state dir, and the Codex SDK worker `cwd` becomes that clean isolated worktree path.
+- `workingDirectoryMode=existing` keeps the old behavior and runs directly in the provided path.
+- Setting `agentId` still does **not** move the worker away from the resolved execution cwd.
 
 2. Explicit run contract: workflow input and controller follow-up
 
@@ -116,6 +118,8 @@ Practical reading of `agentId`:
 - no: implicitly inherit ambient Main/session chat, memory, or docs
 
 If `repoRoot` is omitted and `workingDirectory` is an active linked git worktree, closeout is scoped to that current worktree: the run must still end clean, but it does not need to self-integrate into `main` or close sibling worktrees just to report success. Provide `repoRoot` when the product needs shared-repo integration semantics instead.
+
+In the new default workflow-owned mode, the worker still receives an explicit execution cwd, but that cwd is owned by the workflow. Closeout is scoped to that owned worktree, and successful runs remove it automatically.
 
 ## Controller prompt/session model
 
@@ -150,7 +154,7 @@ Each `codex_controller` run now writes `codex-controller-run-contract.json` unde
 
 It snapshots the resolved stable contract for that run:
 
-- normalized workflow input after defaults/aliases are resolved
+- normalized workflow input after defaults/aliases are resolved, including requested-vs-effective working directory and workflow-owned worktree ownership metadata when applicable
 - the controller prompt contents loaded from `controllerPromptPath`
 - the resolved optional `contextWorkspaceDir`
 - worker-scoped Codex `developer_instructions` derived from the same contract
@@ -185,12 +189,20 @@ This preserves decision-parsing reliability while avoiding stable prompt re-inje
 
 The runtime now executes a read-only closeout assessment on the real DONE -> terminal path before it returns `done`:
 
-- resolve the effective closeout repo from `repoRoot` first, with `workingDirectory` fallback
+- workflow-owned linked worktrees close out against the owned worktree itself, not against the shared repo root
+- existing-checkout runs resolve the effective closeout repo from `repoRoot` first, with `workingDirectory` fallback
 - require a clean repo/worktree
-- if `repoRoot` is explicit, require no additional linked worktrees and require `HEAD` to be integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
+- if the worker is running in an operator-owned existing checkout and `repoRoot` is explicit, require no additional linked worktrees and require `HEAD` to be integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
 - if `repoRoot` is omitted and the worker is running in a linked worktree, treat closeout as worktree-local and defer sibling-worktree cleanup plus mainline integration to a later explicit repo-root closeout step
+- if the worker is running in a workflow-owned linked worktree, treat closeout as worktree-local and then remove that owned worktree on successful completion
 
 If that closeout gate fails, the workflow ends as `blocked` instead of `done`.
+
+Cleanup is ownership-aware:
+
+- only workflow-owned linked worktrees under the workflow state dir are auto-removed
+- operator-owned or manually supplied worktrees are never auto-removed
+- if workflow-owned cleanup itself fails after closeout passed, the run ends blocked with an explicit cleanup reason instead of pretending success
 
 Artifacts now include:
 
@@ -219,7 +231,7 @@ The implementation now uses the Codex app server (`thread/resume` + `thread/comp
 
 Current module-scoped policy:
 
-- worker prompt timeout: `300s`
+- worker prompt timeout: `7200s`
 - retry budget for worker prompt turns: `2` total attempts (`1` automatic retry)
 - retry backoff: `1000ms`
 

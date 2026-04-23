@@ -43,7 +43,10 @@ describe("pibo workflows read-only", () => {
       "- task (string, required): original coding task passed directly to Codex; the worker only gets explicit workflow/task fields, not ambient Main/session chat, memory, or docs.",
     );
     expect(lines).toContain(
-      "- workingDirectory (string, required in the low-level contract; run codex_controller defaults --cwd to pwd): absolute project/worktree path used as the persistent Codex SDK worker cwd; the worker runs here.",
+      "- workingDirectory (string, required in the low-level contract; run codex_controller defaults --cwd to pwd): requested project/worktree path. By default, git checkouts are provisioned into a workflow-owned clean linked worktree and Codex runs there; set workingDirectoryMode=existing to run directly in the provided path.",
+    );
+    expect(lines).toContain(
+      '- workingDirectoryMode ("workflow_owned_worktree"|"existing", optional): defaults to workflow-owned linked-worktree isolation when the requested path is inside a git checkout; use `existing` only when the operator intentionally wants the worker to run in the provided directory.',
     );
     expect(lines).toContain(
       "- agentId (string, optional): selects agent-workspace bootstrap for the controller (skills/system prompt) and adds that workspace as extra readable Codex context; does not change worker cwd or import full Main/session chat, memory, or docs.",

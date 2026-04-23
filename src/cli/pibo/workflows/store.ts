@@ -21,6 +21,10 @@ export function workflowArtifactsDir(runId: string) {
   return path.join(workflowsStateDir(), "artifacts", runId);
 }
 
+export function workflowOwnedWorktreesDir() {
+  return path.join(workflowsStateDir(), "worktrees");
+}
+
 export function workflowRunPath(runId: string) {
   return path.join(workflowRunsDir(), `${runId}.json`);
 }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { resolveAgentWorkspaceDir } from "../../../../agents/agent-scope.js";
@@ -11,7 +11,11 @@ import {
   throwIfWorkflowAbortRequested,
 } from "../abort.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
-import { workflowArtifactPath, writeWorkflowArtifact } from "../store.js";
+import {
+  workflowArtifactPath,
+  workflowOwnedWorktreesDir,
+  writeWorkflowArtifact,
+} from "../store.js";
 import type {
   WorkflowModule,
   WorkflowModuleContext,
@@ -31,11 +35,20 @@ import {
 import { codexControllerWorkflowModuleManifest } from "./manifests.js";
 
 type WorkerCompactionMode = "off" | "app_server";
+type WorkingDirectoryMode = "workflow_owned_worktree" | "existing";
+type WorkspaceOwnership = "workflow_owned" | "operator_owned";
+
+type WorkflowOwnedWorktree = {
+  kind: "linked_worktree";
+  rootPath: string;
+  sourceRepoRoot: string;
+};
 
 type CodexControllerInput = {
   task: string;
   workingDirectory: string;
   repoRoot?: string;
+  workingDirectoryMode?: WorkingDirectoryMode;
   agentId?: string;
   maxRetries?: number;
   successCriteria: string[];
@@ -49,6 +62,19 @@ type CodexControllerInput = {
   workerCompactionAfterRound?: number;
 };
 
+type RequestedCodexControllerInput = Omit<
+  Required<CodexControllerInput>,
+  "repoRoot" | "agentId" | "workerModel" | "workerReasoningEffort" | "workingDirectoryMode"
+> & {
+  requestedWorkingDirectory: string;
+  requestedRepoRoot?: string;
+  requestedWorkingDirectoryMode?: WorkingDirectoryMode;
+  agentId?: string;
+  workerModel?: string;
+  workerReasoningEffort?: CodexWorkerReasoningEffort;
+  closeoutContextSource: "repoRoot" | "workingDirectory";
+};
+
 type NormalizedCodexControllerInput = Omit<
   Required<CodexControllerInput>,
   "agentId" | "workerModel" | "workerReasoningEffort"
@@ -56,15 +82,27 @@ type NormalizedCodexControllerInput = Omit<
   agentId?: string;
   workerModel?: string;
   workerReasoningEffort?: CodexWorkerReasoningEffort;
+  requestedWorkingDirectory: string;
+  workspaceOwnership: WorkspaceOwnership;
+  workflowOwnedWorktree?: WorkflowOwnedWorktree;
   closeoutContextSource: "repoRoot" | "workingDirectory";
 };
 
 type CloseoutContext = Pick<
   NormalizedCodexControllerInput,
-  "workingDirectory" | "repoRoot" | "closeoutContextSource"
+  | "workingDirectory"
+  | "requestedWorkingDirectory"
+  | "repoRoot"
+  | "workingDirectoryMode"
+  | "workspaceOwnership"
+  | "workflowOwnedWorktree"
+  | "closeoutContextSource"
 >;
 
-type CloseoutMode = "repo_integrated" | "linked_worktree_local";
+type CloseoutMode =
+  | "repo_integrated"
+  | "linked_worktree_local"
+  | "workflow_owned_worktree_local";
 
 type CloseoutCheckCode =
   | "git_repo_missing"
@@ -88,7 +126,11 @@ type CloseoutAssessment = {
   trace: string[];
   context: {
     workingDirectory: string;
+    requestedWorkingDirectory: string;
     requestedRepoRoot: string;
+    workingDirectoryMode: WorkingDirectoryMode;
+    workspaceOwnership: WorkspaceOwnership;
+    workflowOwnedWorktreeRoot: string | null;
     closeoutContextSource: CloseoutContext["closeoutContextSource"];
     closeoutMode: CloseoutMode;
     resolvedRepoRoot: string | null;
@@ -119,6 +161,7 @@ type CloseoutPreflight = {
   mode: CloseoutMode;
   repoRoot: string | null;
   workingDirectory: string;
+  requestedWorkingDirectory: string;
   baseRef: string | null;
   head: string | null;
   checks: {
@@ -128,6 +171,12 @@ type CloseoutPreflight = {
   };
   dirtyPaths: string[];
   openWorktreePaths: string[];
+  trace: string[];
+};
+
+type WorkspaceCleanupResult = {
+  status: "not_applicable" | "skipped" | "passed" | "blocked";
+  reason: string;
   trace: string[];
 };
 
@@ -235,7 +284,36 @@ function normalizeCompactionMode(value: unknown): WorkerCompactionMode {
   return DEFAULT_WORKER_COMPACTION_MODE;
 }
 
-function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControllerInput {
+function normalizeWorkingDirectoryMode(value: unknown): WorkingDirectoryMode | undefined {
+  if (value === "existing" || value === "workflow_owned_worktree") {
+    return value;
+  }
+  return undefined;
+}
+
+function runGitCommand(cwd: string, args: string[]): { ok: true; output: string } | {
+  ok: false;
+  message: string;
+} {
+  try {
+    return {
+      ok: true,
+      output: execFileSync("git", ["-C", cwd, ...args], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim(),
+    };
+  } catch (error) {
+    const stderr =
+      typeof error === "object" && error !== null && "stderr" in error
+        ? String((error as { stderr?: unknown }).stderr ?? "")
+        : "";
+    const message = stderr.trim() || (error instanceof Error ? error.message : String(error));
+    return { ok: false, message };
+  }
+}
+
+function normalizeRequestedInput(request: WorkflowStartRequest): RequestedCodexControllerInput {
   const record = request.input as Record<string, unknown>;
   if (!record || typeof record !== "object") {
     throw new Error("codex_controller erwartet ein JSON-Objekt als Input.");
@@ -254,8 +332,6 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
       "codex_controller benötigt `input.workingDirectory`. Falls `repoPath` übergeben wurde, bitte in `workingDirectory` umbenennen.",
     );
   }
-  const workingDirectory = path.resolve(rawWorkingDirectory);
-  const repoRoot = path.resolve(rawRepoRoot || workingDirectory);
   const maxRetries =
     normalizePositiveInteger(record.maxRetries) ??
     normalizePositiveInteger(record.maxRounds) ??
@@ -270,8 +346,11 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
   });
   return {
     task,
-    workingDirectory,
-    repoRoot,
+    requestedWorkingDirectory: path.resolve(rawWorkingDirectory),
+    ...(rawRepoRoot ? { requestedRepoRoot: path.resolve(rawRepoRoot) } : {}),
+    ...(normalizeWorkingDirectoryMode(record.workingDirectoryMode)
+      ? { requestedWorkingDirectoryMode: normalizeWorkingDirectoryMode(record.workingDirectoryMode) }
+      : {}),
     agentId,
     maxRetries,
     successCriteria: normalizeStringArray(record.successCriteria),
@@ -295,6 +374,174 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
       normalizePositiveInteger(record.workerCompactionAfterRound) ??
       DEFAULT_WORKER_COMPACTION_AFTER_ROUND,
     closeoutContextSource: rawRepoRoot ? "repoRoot" : "workingDirectory",
+  };
+}
+
+function normalizePersistedInput(record: Record<string, unknown>): NormalizedCodexControllerInput {
+  const requested = normalizeRequestedInput({
+    input: {
+      ...record,
+      workingDirectory:
+        typeof record.requestedWorkingDirectory === "string" && record.requestedWorkingDirectory.trim()
+          ? record.requestedWorkingDirectory
+          : record.workingDirectory,
+      repoRoot:
+        typeof record.repoRoot === "string" && record.repoRoot.trim() ? record.repoRoot : undefined,
+      workingDirectoryMode:
+        typeof record.workingDirectoryMode === "string" && record.workingDirectoryMode.trim()
+          ? record.workingDirectoryMode
+          : "existing",
+    },
+  });
+  const workingDirectory =
+    typeof record.workingDirectory === "string" && record.workingDirectory.trim()
+      ? path.resolve(record.workingDirectory)
+      : requested.requestedWorkingDirectory;
+  const workspaceOwnership: WorkspaceOwnership =
+    record.workspaceOwnership === "workflow_owned" ? "workflow_owned" : "operator_owned";
+  const workflowOwnedWorktree =
+    workspaceOwnership === "workflow_owned" &&
+    record.workflowOwnedWorktree &&
+    typeof record.workflowOwnedWorktree === "object"
+      ? ({
+          kind: "linked_worktree",
+          rootPath: path.resolve(
+            String(
+              (record.workflowOwnedWorktree as { rootPath?: unknown }).rootPath ?? workingDirectory,
+            ),
+          ),
+          sourceRepoRoot: path.resolve(
+            String(
+              (record.workflowOwnedWorktree as { sourceRepoRoot?: unknown }).sourceRepoRoot ??
+                requested.requestedRepoRoot ??
+                requested.requestedWorkingDirectory,
+            ),
+          ),
+        } satisfies WorkflowOwnedWorktree)
+      : undefined;
+  return {
+    task: requested.task,
+    workingDirectory,
+    requestedWorkingDirectory: requested.requestedWorkingDirectory,
+    repoRoot: path.resolve(requested.requestedRepoRoot ?? workingDirectory),
+    workingDirectoryMode:
+      normalizeWorkingDirectoryMode(record.workingDirectoryMode) ??
+      (workflowOwnedWorktree ? "workflow_owned_worktree" : "existing"),
+    workspaceOwnership,
+    ...(workflowOwnedWorktree ? { workflowOwnedWorktree } : {}),
+    agentId: requested.agentId,
+    maxRetries: requested.maxRetries,
+    successCriteria: requested.successCriteria,
+    constraints: requested.constraints,
+    codexAgentId: requested.codexAgentId,
+    controllerAgentId: requested.controllerAgentId,
+    controllerPromptPath: requested.controllerPromptPath,
+    workerModel: requested.workerModel,
+    workerReasoningEffort: requested.workerReasoningEffort,
+    workerCompactionMode: requested.workerCompactionMode,
+    workerCompactionAfterRound: requested.workerCompactionAfterRound,
+    closeoutContextSource: requested.closeoutContextSource,
+  };
+}
+
+function buildWorkflowOwnedWorktreeRoot(runId: string): string {
+  const worktreeDir = path.resolve(workflowOwnedWorktreesDir());
+  const safeRunId = runId.replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return path.join(worktreeDir, safeRunId);
+}
+
+function resolveGitTopLevel(startPath: string): string | null {
+  return (
+    runGitReadOnly(startPath, ["rev-parse", "--show-toplevel"]) ??
+    findGitRoot(startPath) ??
+    null
+  );
+}
+
+function resolveExecutionWorkspace(params: {
+  runId: string;
+  requestedInput: RequestedCodexControllerInput;
+}): NormalizedCodexControllerInput {
+  const requestedMode = params.requestedInput.requestedWorkingDirectoryMode;
+  const sourceRepoRoot = resolveGitTopLevel(params.requestedInput.requestedWorkingDirectory);
+  const shouldUseWorkflowOwnedWorktree =
+    requestedMode === "workflow_owned_worktree" ||
+    (requestedMode === undefined && sourceRepoRoot !== null);
+  if (requestedMode === "workflow_owned_worktree" && !sourceRepoRoot) {
+    throw new Error(
+      `codex_controller konnte kein workflow-eigenes linked worktree anlegen, weil ${params.requestedInput.requestedWorkingDirectory} kein git checkout ist.`,
+    );
+  }
+  if (!shouldUseWorkflowOwnedWorktree || !sourceRepoRoot) {
+    return {
+      task: params.requestedInput.task,
+      workingDirectory: params.requestedInput.requestedWorkingDirectory,
+      requestedWorkingDirectory: params.requestedInput.requestedWorkingDirectory,
+      repoRoot: path.resolve(
+        params.requestedInput.requestedRepoRoot ?? params.requestedInput.requestedWorkingDirectory,
+      ),
+      workingDirectoryMode: "existing",
+      workspaceOwnership: "operator_owned",
+      agentId: params.requestedInput.agentId,
+      maxRetries: params.requestedInput.maxRetries,
+      successCriteria: params.requestedInput.successCriteria,
+      constraints: params.requestedInput.constraints,
+      codexAgentId: params.requestedInput.codexAgentId,
+      controllerAgentId: params.requestedInput.controllerAgentId,
+      controllerPromptPath: params.requestedInput.controllerPromptPath,
+      workerModel: params.requestedInput.workerModel,
+      workerReasoningEffort: params.requestedInput.workerReasoningEffort,
+      workerCompactionMode: params.requestedInput.workerCompactionMode,
+      workerCompactionAfterRound: params.requestedInput.workerCompactionAfterRound,
+      closeoutContextSource: params.requestedInput.closeoutContextSource,
+    };
+  }
+  const relativeWorkingDirectory = path.relative(
+    sourceRepoRoot,
+    params.requestedInput.requestedWorkingDirectory,
+  );
+  const worktreeRootPath = buildWorkflowOwnedWorktreeRoot(params.runId);
+  mkdirSync(path.dirname(worktreeRootPath), { recursive: true });
+  const addResult = runGitCommand(sourceRepoRoot, [
+    "worktree",
+    "add",
+    "--detach",
+    worktreeRootPath,
+    "HEAD",
+  ]);
+  if (!addResult.ok) {
+    throw new Error(
+      `codex_controller konnte kein workflow-eigenes linked worktree anlegen: ${addResult.message}`,
+    );
+  }
+  const workingDirectory =
+    relativeWorkingDirectory && relativeWorkingDirectory !== "."
+      ? path.join(worktreeRootPath, relativeWorkingDirectory)
+      : worktreeRootPath;
+  return {
+    task: params.requestedInput.task,
+    workingDirectory,
+    requestedWorkingDirectory: params.requestedInput.requestedWorkingDirectory,
+    repoRoot: path.resolve(params.requestedInput.requestedRepoRoot ?? sourceRepoRoot),
+    workingDirectoryMode: "workflow_owned_worktree",
+    workspaceOwnership: "workflow_owned",
+    workflowOwnedWorktree: {
+      kind: "linked_worktree",
+      rootPath: worktreeRootPath,
+      sourceRepoRoot,
+    },
+    agentId: params.requestedInput.agentId,
+    maxRetries: params.requestedInput.maxRetries,
+    successCriteria: params.requestedInput.successCriteria,
+    constraints: params.requestedInput.constraints,
+    codexAgentId: params.requestedInput.codexAgentId,
+    controllerAgentId: params.requestedInput.controllerAgentId,
+    controllerPromptPath: params.requestedInput.controllerPromptPath,
+    workerModel: params.requestedInput.workerModel,
+    workerReasoningEffort: params.requestedInput.workerReasoningEffort,
+    workerCompactionMode: params.requestedInput.workerCompactionMode,
+    workerCompactionAfterRound: params.requestedInput.workerCompactionAfterRound,
+    closeoutContextSource: params.requestedInput.closeoutContextSource,
   };
 }
 
@@ -377,9 +624,7 @@ function parseRunContract(raw: string, runId: string): CodexControllerRunContrac
     moduleId: "codex_controller",
     runId,
     createdAt,
-    input: normalizeInput({
-      input: parsed.input,
-    }),
+    input: normalizePersistedInput((parsed.input ?? {}) as Record<string, unknown>),
     controllerPrompt,
     workerDeveloperInstructions,
     ...(typeof parsed.contextWorkspaceDir === "string" && parsed.contextWorkspaceDir.trim()
@@ -880,8 +1125,14 @@ function buildControllerInitPrompt(params: { runContract: CodexControllerRunCont
     "RUN_CONTRACT:",
     `run_id=${params.runContract.runId}`,
     `working_directory=${params.runContract.input.workingDirectory}`,
+    `requested_working_directory=${params.runContract.input.requestedWorkingDirectory}`,
+    `working_directory_mode=${params.runContract.input.workingDirectoryMode}`,
+    `workspace_ownership=${params.runContract.input.workspaceOwnership}`,
     `repo_root=${params.runContract.input.repoRoot}`,
     `closeout_context_source=${params.runContract.input.closeoutContextSource}`,
+    ...(params.runContract.input.workflowOwnedWorktree
+      ? [`workflow_owned_worktree_root=${params.runContract.input.workflowOwnedWorktree.rootPath}`]
+      : []),
     ...(params.runContract.contextWorkspaceDir
       ? [`context_workspace_dir=${params.runContract.contextWorkspaceDir}`]
       : []),
@@ -978,7 +1229,8 @@ function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflig
         : "unknown";
   const repoRoot = assessment.context.resolvedRepoRoot;
   const openWorktreePaths =
-    assessment.context.closeoutMode === "linked_worktree_local"
+    assessment.context.closeoutMode === "linked_worktree_local" ||
+    assessment.context.closeoutMode === "workflow_owned_worktree_local"
       ? []
       : assessment.git.worktreePaths.filter(
           (worktreePath) => path.resolve(worktreePath) !== repoRoot,
@@ -993,6 +1245,7 @@ function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflig
     mode: assessment.context.closeoutMode,
     repoRoot,
     workingDirectory: assessment.context.workingDirectory,
+    requestedWorkingDirectory: assessment.context.requestedWorkingDirectory,
     baseRef: assessment.git.baseRef,
     head: assessment.git.head,
     checks: {
@@ -1082,6 +1335,7 @@ function buildCloseoutPreflightPrompt(preflight: CloseoutPreflight): string {
     `summary=${preflight.summary}`,
     `repo_root=${preflight.repoRoot ?? "unresolved"}`,
     `working_directory=${preflight.workingDirectory}`,
+    `requested_working_directory=${preflight.requestedWorkingDirectory}`,
     `base_ref=${preflight.baseRef ?? "unknown"}`,
     `head=${preflight.head ?? "unknown"}`,
     `repo_clean=${formatCloseoutPreflightCheckValue(preflight.checks.repoClean)}`,
@@ -1098,8 +1352,14 @@ function buildControllerRunContractReminder(runContract: CodexControllerRunContr
   return [
     `run_id=${runContract.runId}`,
     `working_directory=${runContract.input.workingDirectory}`,
+    `requested_working_directory=${runContract.input.requestedWorkingDirectory}`,
+    `working_directory_mode=${runContract.input.workingDirectoryMode}`,
+    `workspace_ownership=${runContract.input.workspaceOwnership}`,
     `repo_root=${runContract.input.repoRoot}`,
     `closeout_context_source=${runContract.input.closeoutContextSource}`,
+    ...(runContract.input.workflowOwnedWorktree
+      ? [`workflow_owned_worktree_root=${runContract.input.workflowOwnedWorktree.rootPath}`]
+      : []),
     `round_budget=${runContract.input.maxRetries}`,
     ...(runContract.contextWorkspaceDir
       ? [`context_workspace_dir=${runContract.contextWorkspaceDir}`]
@@ -1158,7 +1418,13 @@ function buildWorkflowStartedMessage(input: NormalizedCodexControllerInput): str
     `Task: ${input.task}`,
     `Round budget: ${input.maxRetries}`,
     `Worker cwd: ${input.workingDirectory}`,
+    `Requested working directory: ${input.requestedWorkingDirectory}`,
+    `Working directory mode: ${input.workingDirectoryMode}`,
+    `Workspace ownership: ${input.workspaceOwnership}`,
     `Closeout repo root: ${input.repoRoot} (${input.closeoutContextSource})`,
+    ...(input.workflowOwnedWorktree
+      ? [`Workflow-owned worktree root: ${input.workflowOwnedWorktree.rootPath}`]
+      : []),
     ...(input.workerModel ? [`Worker model: ${input.workerModel}`] : []),
     ...(input.workerReasoningEffort
       ? [`Worker reasoning effort: ${input.workerReasoningEffort}`]
@@ -1238,6 +1504,13 @@ function detectCloseoutMode(
     runGitReadOnly(resolvedRepoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]) ??
     runGitReadOnly(resolvedRepoRoot, ["rev-parse", "--git-common-dir"]);
   const commonGitDir = commonGitDirRaw ? path.resolve(resolvedRepoRoot, commonGitDirRaw) : null;
+  if (context.workspaceOwnership === "workflow_owned" && context.workflowOwnedWorktree) {
+    return {
+      mode: "workflow_owned_worktree_local",
+      absoluteGitDir: absoluteGitDir ? path.resolve(absoluteGitDir) : null,
+      commonGitDir,
+    };
+  }
   const mode =
     context.closeoutContextSource === "workingDirectory" &&
     absoluteGitDir &&
@@ -1252,12 +1525,31 @@ function detectCloseoutMode(
   };
 }
 
+function buildAssessmentContext(params: {
+  context: CloseoutContext;
+  requestedRepoRoot: string;
+  closeoutMode: CloseoutMode;
+  resolvedRepoRoot: string | null;
+}) {
+  return {
+    workingDirectory: params.context.workingDirectory,
+    requestedWorkingDirectory: params.context.requestedWorkingDirectory,
+    requestedRepoRoot: params.requestedRepoRoot,
+    workingDirectoryMode: params.context.workingDirectoryMode,
+    workspaceOwnership: params.context.workspaceOwnership,
+    workflowOwnedWorktreeRoot: params.context.workflowOwnedWorktree?.rootPath ?? null,
+    closeoutContextSource: params.context.closeoutContextSource,
+    closeoutMode: params.closeoutMode,
+    resolvedRepoRoot: params.resolvedRepoRoot,
+  } satisfies CloseoutAssessment["context"];
+}
+
 function assessCloseout(context: CloseoutContext): CloseoutAssessment {
   const requestedRepoRoot = context.repoRoot;
-  const directRequestedRepoRoot = runGitReadOnly(requestedRepoRoot, [
-    "rev-parse",
-    "--show-toplevel",
-  ]);
+  const preferWorkingDirectoryRoot = context.workspaceOwnership === "workflow_owned";
+  const directRequestedRepoRoot = preferWorkingDirectoryRoot
+    ? null
+    : runGitReadOnly(requestedRepoRoot, ["rev-parse", "--show-toplevel"]);
   const directWorkingDirectoryRoot =
     directRequestedRepoRoot === null
       ? runGitReadOnly(context.workingDirectory, ["rev-parse", "--show-toplevel"])
@@ -1277,8 +1569,17 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
     : null;
   const trace: string[] = [
     `closeout_context=${context.closeoutContextSource}`,
+    `working_directory_mode=${context.workingDirectoryMode}`,
+    `workspace_ownership=${context.workspaceOwnership}`,
     `requested_repo_root=${requestedRepoRoot}`,
+    `requested_working_directory=${context.requestedWorkingDirectory}`,
     `working_directory=${context.workingDirectory}`,
+    ...(context.workflowOwnedWorktree
+      ? [
+          `workflow_owned_worktree_root=${context.workflowOwnedWorktree.rootPath}`,
+          `workflow_owned_worktree_source_repo_root=${context.workflowOwnedWorktree.sourceRepoRoot}`,
+        ]
+      : []),
     `resolved_repo_root=${resolvedRepoRoot ?? "unresolved"}`,
   ];
   const checks: CloseoutCheck[] = [];
@@ -1295,13 +1596,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       reason:
         "Closeout blocked: git repo root could not be resolved from repoRoot/workingDirectory.",
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode: "repo_integrated",
         resolvedRepoRoot: null,
-      },
+      }),
       git: {
         head: null,
         baseRef: null,
@@ -1338,13 +1638,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       status: "blocked",
       reason: "Closeout blocked: git HEAD could not be resolved.",
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head: null,
         baseRef: null,
@@ -1372,13 +1671,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       status: "blocked",
       reason: `Closeout blocked: repo/worktree is dirty (${dirtyPaths.join(", ")}).`,
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head,
         baseRef: null,
@@ -1399,33 +1697,45 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
     runGitReadOnly(resolvedRepoRoot, ["worktree", "list", "--porcelain"]),
   );
   trace.push(`worktree_count=${worktreePaths.length}`);
-  if (closeoutMode === "linked_worktree_local") {
+  if (
+    closeoutMode === "linked_worktree_local" ||
+    closeoutMode === "workflow_owned_worktree_local"
+  ) {
     checks.push({
       code: "open_worktree",
       ok: true,
-      summary: "Linked worktree closeout allows sibling worktrees when repoRoot is omitted.",
+      summary:
+        closeoutMode === "workflow_owned_worktree_local"
+          ? "Workflow-owned linked worktree closeout allows sibling worktrees."
+          : "Linked worktree closeout allows sibling worktrees when repoRoot is omitted.",
     });
     checks.push({
       code: "not_integrated",
       ok: true,
-      summary: "Linked worktree closeout does not require self-integration into mainline.",
+      summary:
+        closeoutMode === "workflow_owned_worktree_local"
+          ? "Workflow-owned linked worktree closeout does not require shared-repo integration."
+          : "Linked worktree closeout does not require self-integration into mainline.",
     });
     trace.push(
-      `linked_worktree_closeout=current_worktree_only${worktreePaths.length ? `:${worktreePaths.join(",")}` : ""}`,
+      closeoutMode === "workflow_owned_worktree_local"
+        ? `workflow_owned_worktree_closeout=current_worktree_only${worktreePaths.length ? `:${worktreePaths.join(",")}` : ""}`
+        : `linked_worktree_closeout=current_worktree_only${worktreePaths.length ? `:${worktreePaths.join(",")}` : ""}`,
     );
     trace.push("closeout=pass");
     return {
       status: "pass",
       reason:
-        "Closeout passed: linked worktree is clean; sibling worktrees and mainline integration are deferred until an explicit repoRoot closeout.",
+        closeoutMode === "workflow_owned_worktree_local"
+          ? "Closeout passed: workflow-owned linked worktree is clean; shared-repo integration and sibling worktrees are outside this run."
+          : "Closeout passed: linked worktree is clean; sibling worktrees and mainline integration are deferred until an explicit repoRoot closeout.",
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head,
         baseRef: null,
@@ -1449,13 +1759,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       status: "blocked",
       reason: `Closeout blocked: open linked worktrees detected (${worktreePaths.join(", ")}).`,
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head,
         baseRef: null,
@@ -1494,13 +1803,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       reason:
         "Closeout blocked: integration ref (origin/main|origin/master|main|master) is missing.",
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head,
         baseRef: null,
@@ -1525,13 +1833,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       status: "blocked",
       reason: `Closeout blocked: merge-base against ${baseRef} could not be resolved.`,
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head,
         baseRef,
@@ -1556,13 +1863,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       status: "blocked",
       reason: `Closeout blocked: HEAD ${head} is not integrated into ${baseRef} (merge-base ${mergeBase}).`,
       trace,
-      context: {
-        workingDirectory: context.workingDirectory,
+      context: buildAssessmentContext({
+        context,
         requestedRepoRoot,
-        closeoutContextSource: context.closeoutContextSource,
         closeoutMode,
         resolvedRepoRoot,
-      },
+      }),
       git: {
         head,
         baseRef,
@@ -1584,13 +1890,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
     status: "pass",
     reason: `Closeout passed: repo clean, no extra worktrees, HEAD integrated into ${baseRef}.`,
     trace,
-    context: {
-      workingDirectory: context.workingDirectory,
+    context: buildAssessmentContext({
+      context,
       requestedRepoRoot,
-      closeoutContextSource: context.closeoutContextSource,
       closeoutMode,
       resolvedRepoRoot,
-    },
+    }),
     git: {
       head,
       baseRef,
@@ -1606,6 +1911,63 @@ function buildCloseoutArtifact(assessment: CloseoutAssessment): string {
   return `${JSON.stringify(assessment, null, 2)}\n`;
 }
 
+function cleanupWorkflowOwnedWorkspace(input: NormalizedCodexControllerInput): WorkspaceCleanupResult {
+  if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
+    return {
+      status: "not_applicable",
+      reason: "No workflow-owned workspace cleanup was required.",
+      trace: [],
+    };
+  }
+  const managedRoot = path.resolve(workflowOwnedWorktreesDir());
+  const worktreeRoot = path.resolve(input.workflowOwnedWorktree.rootPath);
+  const sourceRepoRoot = path.resolve(input.workflowOwnedWorktree.sourceRepoRoot);
+  if (!pathIsInsideDirectory(worktreeRoot, managedRoot)) {
+    return {
+      status: "blocked",
+      reason: `Refusing to remove non-managed worktree path: ${worktreeRoot}.`,
+      trace: [`managed_root=${managedRoot}`, `worktree_root=${worktreeRoot}`],
+    };
+  }
+  const removeResult = runGitCommand(sourceRepoRoot, ["worktree", "remove", "--force", worktreeRoot]);
+  const trace = [
+    `managed_root=${managedRoot}`,
+    `worktree_root=${worktreeRoot}`,
+    `source_repo_root=${sourceRepoRoot}`,
+  ];
+  if (!removeResult.ok) {
+    const remainingPaths = parseGitWorktreePaths(
+      runGitReadOnly(sourceRepoRoot, ["worktree", "list", "--porcelain"]),
+    ).map((entry) => path.resolve(entry));
+    if (!remainingPaths.includes(worktreeRoot)) {
+      runGitCommand(sourceRepoRoot, ["worktree", "prune"]);
+      return {
+        status: "passed",
+        reason: `Workflow-owned worktree was already absent from git metadata: ${worktreeRoot}.`,
+        trace: [...trace, "cleanup=already_absent"],
+      };
+    }
+    return {
+      status: "blocked",
+      reason: `Failed to remove workflow-owned worktree ${worktreeRoot}: ${removeResult.message}`,
+      trace: [...trace, `cleanup_error=${removeResult.message}`],
+    };
+  }
+  const pruneResult = runGitCommand(sourceRepoRoot, ["worktree", "prune"]);
+  return {
+    status: "passed",
+    reason:
+      pruneResult.ok
+        ? `Workflow-owned worktree removed: ${worktreeRoot}.`
+        : `Workflow-owned worktree removed but prune reported: ${pruneResult.message}`,
+    trace: [
+      ...trace,
+      "cleanup=removed",
+      ...(pruneResult.ok ? ["prune=ok"] : [`prune_error=${pruneResult.message}`]),
+    ],
+  };
+}
+
 function buildRunSummary(params: {
   status: WorkflowRunRecord["status"];
   round: number;
@@ -1613,6 +1975,7 @@ function buildRunSummary(params: {
   workerSession: string;
   controllerSession: string | undefined;
   closeout?: CloseoutAssessment;
+  workspaceCleanup?: WorkspaceCleanupResult;
 }): string {
   return (
     [
@@ -1626,9 +1989,15 @@ function buildRunSummary(params: {
       `closeout-reason: ${params.closeout?.reason ?? "not_run"}`,
       `closeout-repo-root: ${params.closeout?.context.resolvedRepoRoot ?? "n/a"}`,
       `closeout-working-directory: ${params.closeout?.context.workingDirectory ?? "n/a"}`,
+      `closeout-requested-working-directory: ${params.closeout?.context.requestedWorkingDirectory ?? "n/a"}`,
+      `closeout-working-directory-mode: ${params.closeout?.context.workingDirectoryMode ?? "n/a"}`,
+      `closeout-workspace-ownership: ${params.closeout?.context.workspaceOwnership ?? "n/a"}`,
       `closeout-head: ${params.closeout?.git.head ?? "n/a"}`,
       `closeout-base-ref: ${params.closeout?.git.baseRef ?? "n/a"}`,
       `closeout-trace: ${(params.closeout?.trace ?? ["not_run"]).join(" | ")}`,
+      `workspace-cleanup-status: ${params.workspaceCleanup?.status ?? "not_run"}`,
+      `workspace-cleanup-reason: ${params.workspaceCleanup?.reason ?? "not_run"}`,
+      `workspace-cleanup-trace: ${(params.workspaceCleanup?.trace ?? ["not_run"]).join(" | ")}`,
     ].join("\n") + "\n"
   );
 }
@@ -2038,16 +2407,22 @@ export const codexControllerWorkflowModule: WorkflowModule = {
   async start(request, ctx: WorkflowModuleContext) {
     ctx.throwIfAbortRequested?.();
     const createdAt = ctx.nowIso();
-    const requestedInput = normalizeInput(request);
+    const requestedInput = normalizeRequestedInput(request);
     const persistedRunContract = loadPersistedRunContract(ctx.runId);
+    const resolvedInput =
+      persistedRunContract?.input ??
+      resolveExecutionWorkspace({
+        runId: ctx.runId,
+        requestedInput,
+      });
     const runContract =
       persistedRunContract ??
       buildRunContract({
         runId: ctx.runId,
         createdAt,
-        input: requestedInput,
+        input: resolvedInput,
         controllerPrompt: loadControllerPrompt(requestedInput.controllerPromptPath),
-        contextWorkspaceDir: resolveContextWorkspaceDir(requestedInput, loadConfig()),
+        contextWorkspaceDir: resolveContextWorkspaceDir(resolvedInput, loadConfig()),
       });
     const input = runContract.input;
     const contextWorkspaceDir = runContract.contextWorkspaceDir;
@@ -2083,8 +2458,17 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       codexWorkerRuntime: "codex_sdk",
       codexWorkerSessionKind: "codex_sdk_thread",
       workingDirectory: input.workingDirectory,
+      requestedWorkingDirectory: input.requestedWorkingDirectory,
+      workingDirectoryMode: input.workingDirectoryMode,
+      workspaceOwnership: input.workspaceOwnership,
       repoRoot: input.repoRoot,
       closeoutContextSource: input.closeoutContextSource,
+      ...(input.workflowOwnedWorktree
+        ? {
+            workflowOwnedWorktreeRoot: input.workflowOwnedWorktree.rootPath,
+            workflowOwnedWorktreeSourceRepoRoot: input.workflowOwnedWorktree.sourceRepoRoot,
+          }
+        : {}),
       ...(input.agentId ? { contextAgentId: input.agentId } : {}),
       ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
       controllerPromptPath: input.controllerPromptPath,
@@ -2128,10 +2512,19 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       payload: {
         maxRounds: input.maxRetries,
         workingDirectory: input.workingDirectory,
+        requestedWorkingDirectory: input.requestedWorkingDirectory,
+        workingDirectoryMode: input.workingDirectoryMode,
+        workspaceOwnership: input.workspaceOwnership,
         repoRoot: input.repoRoot,
         closeoutContextSource: input.closeoutContextSource,
         runContractArtifact,
         runContractSource: persistedRunContract ? "persisted" : "new",
+        ...(input.workflowOwnedWorktree
+          ? {
+              workflowOwnedWorktreeRoot: input.workflowOwnedWorktree.rootPath,
+              workflowOwnedWorktreeSourceRepoRoot: input.workflowOwnedWorktree.sourceRepoRoot,
+            }
+          : {}),
         ...(input.agentId ? { contextAgentId: input.agentId } : {}),
         ...(contextWorkspaceDir ? { contextWorkspaceDir } : {}),
         codexAgentId: input.codexAgentId,
@@ -2360,7 +2753,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       });
       const closeoutAssessment = assessCloseout({
         workingDirectory: input.workingDirectory,
+        requestedWorkingDirectory: input.requestedWorkingDirectory,
         repoRoot: input.repoRoot,
+        workingDirectoryMode: input.workingDirectoryMode,
+        workspaceOwnership: input.workspaceOwnership,
+        workflowOwnedWorktree: input.workflowOwnedWorktree,
         closeoutContextSource: input.closeoutContextSource,
       });
       const closeoutPreflight = buildCloseoutPreflight(closeoutAssessment);
@@ -2448,7 +2845,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       if (decision.decision === "DONE") {
         const closeout = assessCloseout({
           workingDirectory: input.workingDirectory,
+          requestedWorkingDirectory: input.requestedWorkingDirectory,
           repoRoot: input.repoRoot,
+          workingDirectoryMode: input.workingDirectoryMode,
+          workspaceOwnership: input.workspaceOwnership,
+          workflowOwnedWorktree: input.workflowOwnedWorktree,
           closeoutContextSource: input.closeoutContextSource,
         });
         const closeoutArtifact = writeWorkflowArtifact(
@@ -2462,20 +2863,33 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           round,
           role: "controller",
         });
+        const workspaceCleanup =
+          closeout.status === "pass"
+            ? cleanupWorkflowOwnedWorkspace(input)
+            : {
+                status: "skipped",
+                reason: "Workspace cleanup skipped because closeout did not pass.",
+                trace: [],
+              } satisfies WorkspaceCleanupResult;
         const closeoutBlocked = closeout.status !== "pass";
+        const cleanupBlocked = workspaceCleanup.status === "blocked";
+        const finalBlocked = closeoutBlocked || cleanupBlocked;
         const finalReason = closeoutBlocked
           ? `Closeout mismatch after controller DONE: ${closeout.reason}`
-          : decision.reason.join(" ").trim() || "Controller approved completion.";
+          : cleanupBlocked
+            ? `Workflow-owned workspace cleanup failed after closeout passed: ${workspaceCleanup.reason}`
+            : decision.reason.join(" ").trim() || "Controller approved completion.";
         const summaryArtifact = writeWorkflowArtifact(
           ctx.runId,
           "run-summary.txt",
           buildRunSummary({
-            status: closeoutBlocked ? "blocked" : "done",
+            status: finalBlocked ? "blocked" : "done",
             round,
             reason: finalReason,
             workerSession: sessions.worker ?? buildPendingCodexWorkerSessionLabel(ctx.runId),
             controllerSession: sessions.orchestrator,
             closeout,
+            workspaceCleanup,
           }),
         );
         emitArtifactWritten({
@@ -2484,18 +2898,35 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           round,
           role: "controller",
         });
+        if (workspaceCleanup.status !== "not_applicable" && workspaceCleanup.status !== "skipped") {
+          ctx.trace.emit({
+            kind: workspaceCleanup.status === "blocked" ? "warning" : "custom",
+            stepId,
+            round,
+            role: "controller",
+            status: workspaceCleanup.status === "blocked" ? "blocked" : "done",
+            summary: workspaceCleanup.reason,
+            payload: {
+              workspaceCleanupStatus: workspaceCleanup.status,
+              workspaceCleanupTrace: workspaceCleanup.trace,
+            },
+          });
+        }
         ctx.trace.emit({
-          kind: closeoutBlocked ? "run_blocked" : "run_completed",
+          kind: finalBlocked ? "run_blocked" : "run_completed",
           stepId,
           round,
           role: "controller",
-          status: closeoutBlocked ? "blocked" : "done",
+          status: finalBlocked ? "blocked" : "done",
           summary: finalReason,
           payload: {
             closeoutStatus: closeout.status,
             closeoutReason: closeout.reason,
             closeoutTrace: closeout.trace,
             closeoutArtifact,
+            workspaceCleanupStatus: workspaceCleanup.status,
+            workspaceCleanupReason: workspaceCleanup.reason,
+            workspaceCleanupTrace: workspaceCleanup.trace,
           },
         });
         await emitTracedWorkflowReportEvent({
@@ -2503,8 +2934,8 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           stepId,
           moduleId: "codex_controller",
           runId: ctx.runId,
-          phase: closeoutBlocked ? "workflow_blocked" : "workflow_done",
-          eventType: closeoutBlocked ? "blocked" : "completed",
+          phase: finalBlocked ? "workflow_blocked" : "workflow_done",
+          eventType: finalBlocked ? "blocked" : "completed",
           messageText: closeoutBlocked
             ? [
                 "Closeout mismatch after controller DONE.",
@@ -2516,6 +2947,17 @@ export const codexControllerWorkflowModule: WorkflowModule = {
                 "Trace:",
                 ...closeout.trace.map((line) => `- ${line}`),
               ].join("\n")
+            : cleanupBlocked
+              ? [
+                  "Workflow-owned workspace cleanup failed after closeout passed.",
+                  `Round: ${round}/${input.maxRetries}`,
+                  "",
+                  "Reason:",
+                  `- ${workspaceCleanup.reason}`,
+                  "",
+                  "Trace:",
+                  ...workspaceCleanup.trace.map((line) => `- ${line}`),
+                ].join("\n")
             : buildControllerCompletionMessage({
                 finalResult: codexResult.text,
                 decision,
@@ -2525,7 +2967,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           emittingAgentId: input.controllerAgentId,
           origin: request.origin,
           reporting: request.reporting,
-          status: closeoutBlocked ? "blocked" : "done",
+          status: finalBlocked ? "blocked" : "done",
           role: "orchestrator",
           round,
           targetSessionKey: sessions.orchestrator,
@@ -2534,7 +2976,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           runId: record.runId,
           input,
           sessions,
-          status: closeoutBlocked ? "blocked" : "done",
+          status: finalBlocked ? "blocked" : "done",
           terminalReason: finalReason,
           currentRound: round,
           maxRounds: input.maxRetries,

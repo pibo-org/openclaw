@@ -329,6 +329,32 @@ describe("pibo workflows runtime", () => {
     expect(payload.resolvedOrigin).toEqual(payload.record.origin);
   });
 
+  it("passes --existing-working-directory through to codex_controller input", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process, "cwd").mockReturnValue(tempHome);
+
+    await workflowsRun("codex_controller", {
+      task: "Ship the fix",
+      existingWorkingDirectory: true,
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:333",
+      channel: "telegram",
+      to: "group:-100123",
+      threadId: "333",
+      outputJson: true,
+    });
+
+    const payload = JSON.parse(String(consoleLog.mock.calls[0]?.[0])) as {
+      record: {
+        input: Record<string, unknown>;
+      };
+    };
+    expect(payload.record.input).toMatchObject({
+      task: "Ship the fix",
+      workingDirectory: tempHome,
+      workingDirectoryMode: "existing",
+    });
+  });
+
   it("resolves --reply-here from bundled MCP session context", async () => {
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(process, "cwd").mockReturnValue(tempHome);

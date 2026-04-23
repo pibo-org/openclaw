@@ -50,14 +50,15 @@ export const codexControllerWorkflowModuleManifest = {
   description:
     "Runs a persistent Codex SDK worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
   kind: "agent_workflow",
-  version: "0.3.0",
+  version: "0.4.0",
   requiredAgents: ["codex", "codex-controller"],
   terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
   supportsAbort: true,
   inputSchemaSummary: [
     "task (string, required): original coding task passed directly to Codex; the worker only gets explicit workflow/task fields, not ambient Main/session chat, memory, or docs.",
-    "workingDirectory (string, required in the low-level contract; run codex_controller defaults --cwd to pwd): absolute project/worktree path used as the persistent Codex SDK worker cwd; the worker runs here.",
-    "repoRoot (string, optional): explicit strict closeout target for final read-only git/worktree/integration assessment. If omitted, linked-worktree runs close out against the current worktree instead of self-integrating into the shared repo root.",
+    "workingDirectory (string, required in the low-level contract; run codex_controller defaults --cwd to pwd): requested project/worktree path. By default, git checkouts are provisioned into a workflow-owned clean linked worktree and Codex runs there; set workingDirectoryMode=existing to run directly in the provided path.",
+    'workingDirectoryMode ("workflow_owned_worktree"|"existing", optional): defaults to workflow-owned linked-worktree isolation when the requested path is inside a git checkout; use `existing` only when the operator intentionally wants the worker to run in the provided directory.',
+    "repoRoot (string, optional): explicit shared repo context for closeout/integration assessment when the worker is intentionally running against an existing checkout. Workflow-owned linked-worktree runs still close out locally and clean themselves up.",
     "agentId (string, optional): selects agent-workspace bootstrap for the controller (skills/system prompt) and adds that workspace as extra readable Codex context; does not change worker cwd or import full Main/session chat, memory, or docs.",
     "maxRounds|maxRetries (number, optional): controller loop budget; operator CLI prefers --max-rounds; defaults to 10.",
     "successCriteria (string[], optional): additional completion criteria.",

@@ -125,6 +125,7 @@ type WorkflowRunOperatorCliOptions = TrustedWorkflowMutationCliOptions & {
   replyHere?: boolean;
   task?: string;
   cwd?: string;
+  existingWorkingDirectory?: boolean;
   repoRoot?: string;
   agentId?: string;
   success?: string[];
@@ -192,6 +193,7 @@ function hasCodexControllerDirectInput(opts: WorkflowRunOperatorCliOptions) {
   return Boolean(
     normalizeNonEmptyString(opts.task) ||
     normalizeNonEmptyString(opts.cwd) ||
+    opts.existingWorkingDirectory ||
     normalizeNonEmptyString(opts.repoRoot) ||
     normalizeNonEmptyString(opts.agentId) ||
     normalizeNonEmptyString(opts.workerModel) ||
@@ -214,6 +216,9 @@ function assertNoJsonDirectInputConflict(
     objectHasOwnKey(jsonInput, ["workingDirectory", "cwd"])
   ) {
     conflicts.push("--cwd conflicts with JSON field `workingDirectory`");
+  }
+  if (opts.existingWorkingDirectory && objectHasOwnKey(jsonInput, ["workingDirectoryMode"])) {
+    conflicts.push("--existing-working-directory conflicts with JSON field `workingDirectoryMode`");
   }
   if (normalizeNonEmptyString(opts.repoRoot) && objectHasOwnKey(jsonInput, ["repoRoot"])) {
     conflicts.push("--repo-root conflicts with JSON field `repoRoot`");
@@ -430,6 +435,9 @@ function buildCodexControllerInputForRun(params: {
   }
   if (repoRoot) {
     baseInput.repoRoot = resolveExistingDirectory(repoRoot, "--repo-root");
+  }
+  if (opts.existingWorkingDirectory) {
+    baseInput.workingDirectoryMode = "existing";
   }
   if (agentId) {
     baseInput.agentId = agentId;
