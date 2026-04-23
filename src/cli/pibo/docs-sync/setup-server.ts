@@ -7,10 +7,18 @@ import { fileURLToPath } from "url";
 import { DocsSyncConfig, readConfig, writeConfig, defaultConfig } from "./config.js";
 import { bold, ok, fail, warn, info, commandExists, generateToken, nodeBin } from "./utils.js";
 
-// ESM path resolution
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const ASSETS_DIR = fileURLToPath(new URL("../../../../docs/pibo-cli/assets/", import.meta.url));
+function resolveAssetsDir(): string {
+  const candidates = [
+    fileURLToPath(new URL("../../../../docs/pibo-cli/assets/", import.meta.url)),
+    fileURLToPath(new URL("../docs/pibo-cli/assets/", import.meta.url)),
+    join(process.cwd(), "docs", "pibo-cli", "assets"),
+  ];
+  return (
+    candidates.find((dir) => existsSync(join(dir, "scripts", "server-watcher.js"))) || candidates[0]
+  );
+}
+
+const ASSETS_DIR = resolveAssetsDir();
 
 function readExecErrorStderr(error: unknown): string {
   if (!error || typeof error !== "object" || !("stderr" in error)) {
@@ -326,20 +334,27 @@ export async function setupServer(interactive: boolean) {
     console.log(ok("Cron-Job existiert bereits"));
   }
 
-  // Backup config to server too
-  await scpFile(
-    sshKey,
-    serverUser,
-    serverIp,
-    join(home, ".pibo-docs-sync-config.json"),
-    "/root/.pibo-docs-sync-config.json",
-  );
+  // Backup server-role config to the actual server without writing /root locally.
+  const serverCfg = {
+    ...cfg,
+    role: "server" as const,
+    version: "0.1.0",
+    createdAt: cfg.createdAt || new Date().toISOString(),
+    lastModified: new Date().toISOString(),
+  };
+  const tmpServerConfig = join(home, ".config", "tmp-pibo-docs-sync-server-config.json");
+  mkdirSync(join(home, ".config"), { recursive: true });
+  writeFileSync(tmpServerConfig, JSON.stringify(serverCfg, null, 2));
+  await scpFile(sshKey, serverUser, serverIp, tmpServerConfig, "/root/.pibo-docs-sync-config.json");
+  try {
+    unlinkSync(tmpServerConfig);
+  } catch {}
 
-  // Save config locally
-  cfg.role = "server";
+  // Keep the local controller config under the PIBo user, not /root.
+  cfg.role = "pibo";
   cfg.version = "0.1.0";
   cfg.createdAt = cfg.createdAt || new Date().toISOString();
-  writeConfig("server", cfg);
+  writeConfig("pibo", cfg);
 
   console.log("\n" + bold("✅ Server Setup abgeschlossen!"));
   console.log(info("Nächster Schritt: 'pibo docs-sync setup pibo' auf deinem PC"));
