@@ -47,6 +47,38 @@ For local development from the repo checkout, the intended entrypoint is:
 
 - `pnpm openclaw -- pibo ...`
 
+## Fresh PIBO sync setup
+
+Docs sync and workspace sync are both installed through the OpenClaw PIBO CLI.
+The workspace watcher source of truth is `src/cli/pibo/local-sync/`; install
+and repair regenerate the home-directory script/service from this repo.
+
+Docs watcher setup:
+
+```bash
+openclaw pibo docs-sync info
+openclaw pibo docs-sync prereqs
+openclaw pibo docs-sync setup-wizard
+```
+
+Workspace watcher setup:
+
+```bash
+openclaw pibo local-sync workspace install --repo <WORKSPACE_REPO_URL>
+openclaw pibo local-sync status workspace
+```
+
+Repair an existing host and converge legacy duplicate watcher services:
+
+```bash
+openclaw pibo local-sync workspace repair --repo <WORKSPACE_REPO_URL>
+openclaw pibo local-sync workspace migrate-legacy
+```
+
+The workspace watcher always ignores `.git` in code. Other ignored paths are
+loaded from the target workspace `.gitignore` when present, with the local-sync
+configured ignores as a fallback.
+
 ## Browser pool
 
 The dev browser profile pool uses the native OpenClaw subcommands:

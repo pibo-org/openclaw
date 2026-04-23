@@ -363,6 +363,9 @@ Runbook: [iOS connect](https://docs.openclaw.ai/platforms/ios).
 - Workspace root: `~/.openclaw/workspace` (configurable via `agents.defaults.workspace`).
 - Injected prompt files: `AGENTS.md`, `SOUL.md`, `TOOLS.md`.
 - Skills: `~/.openclaw/workspace/skills/<skill>/SKILL.md`.
+- PIBO hosts can install or repair the workspace watcher with
+  `openclaw pibo local-sync workspace install --repo <WORKSPACE_REPO_URL>`.
+  Docs watcher setup remains under `openclaw pibo docs-sync setup-wizard`.
 
 ## Configuration
 

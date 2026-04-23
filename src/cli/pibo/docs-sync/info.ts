@@ -40,13 +40,13 @@ export function showInfo() {
   console.log("     Standard: /var/lib/pibo-webapp/storage/docs");
 
   console.log("\n" + bold("Empfohlene Reihenfolge:"));
-  console.log("  1. pibo docs-sync info");
-  console.log("  2. pibo docs-sync prereqs");
-  console.log("  3. pibo docs-sync setup-wizard");
-  console.log("  4. oder direkt: pibo docs-sync setup server");
-  console.log("  5. dann: pibo docs-sync setup pibo");
-  console.log("  6. danach prüfen: pibo docs-sync status");
-  console.log("  7. Testlauf: pibo docs-sync test");
+  console.log("  1. openclaw pibo docs-sync info");
+  console.log("  2. openclaw pibo docs-sync prereqs");
+  console.log("  3. openclaw pibo docs-sync setup-wizard");
+  console.log("  4. oder direkt: openclaw pibo docs-sync setup server");
+  console.log("  5. dann: openclaw pibo docs-sync setup pibo");
+  console.log("  6. danach prüfen: openclaw pibo docs-sync status");
+  console.log("  7. Testlauf: openclaw pibo docs-sync test");
 
   console.log("\n" + bold("Wichtige Eingaben im Wizard:"));
   console.log("  • Server-IP");
@@ -56,10 +56,10 @@ export function showInfo() {
   console.log("  • optional: WebApp Repo / Deploy Key / Docs-Pfad / Notify-Port");
 
   console.log("\n" + bold("Wenn etwas nicht klappt:"));
-  console.log("  • pibo docs-sync prereqs   → Voraussetzungen prüfen");
-  console.log("  • pibo docs-sync status    → Gesamtstatus sehen");
-  console.log("  • pibo docs-sync doctor    → Fehler diagnostizieren");
-  console.log("  • pibo docs-sync test      → echten Sync testen");
+  console.log("  • openclaw pibo docs-sync prereqs   → Voraussetzungen prüfen");
+  console.log("  • openclaw pibo docs-sync status    → Gesamtstatus sehen");
+  console.log("  • openclaw pibo docs-sync doctor    → Fehler diagnostizieren");
+  console.log("  • openclaw pibo docs-sync test      → echten Sync testen");
 
   console.log("\n" + bold("Wichtige Grenzen:"));
   console.log("  • Die CLI kann GitHub-Repos nicht magisch erstellen");
