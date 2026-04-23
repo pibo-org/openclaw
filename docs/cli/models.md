@@ -52,6 +52,44 @@ Notes:
   stale removed-provider default.
 - `models status` may show `marker(<value>)` in auth output for non-secret placeholders (for example `OPENAI_API_KEY`, `secretref-managed`, `minimax-oauth`, `oauth:chutes`, `ollama-local`) instead of masking them as secrets.
 
+## Adding a newly released model
+
+Do not set a newly released model as the default until the provider catalog can
+resolve it. `models set` updates config and the allowlist; it does not teach a
+provider plugin about a model that the catalog cannot resolve.
+
+Safe rollout sequence:
+
+```bash
+openclaw models list --all --provider <provider> --json
+openclaw models set <provider/model>
+openclaw models status --json
+openclaw models list --json
+openclaw gateway health --json
+```
+
+For the target model, `models list --all` should show:
+
+- `available: true`
+- `missing: false`
+
+If the model is visible in an upstream tool but not in OpenClaw, update the
+provider implementation first. For OpenAI Codex subscription models, that means
+the `openai-codex` provider must expose the model through dynamic resolution and
+catalog augmentation before `openclaw models set openai-codex/<model>` is safe.
+
+Also check per-agent overrides. A global default does not override
+`agents.list[].model`:
+
+```bash
+openclaw models --agent <agent-id> status --json
+```
+
+Reasoning defaults are separate from model availability. OpenClaw's
+`agents.defaults.thinkingDefault` controls OpenClaw agent runs; Codex CLI's
+`model_reasoning_effort` controls Codex CLI defaults. A model can support
+`xhigh` without making `xhigh` the desired default.
+
 ### `models status`
 
 Options:

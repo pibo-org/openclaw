@@ -209,6 +209,44 @@ openclaw models auth login --provider openai-codex
 OpenAI's current Codex docs list `gpt-5.4` as the current Codex model. OpenClaw
 maps that to `openai-codex/gpt-5.4` for ChatGPT/Codex OAuth usage.
 
+### New Codex model rollout
+
+Codex CLI can expose a newly released model before OpenClaw's `openai-codex`
+provider catalog has been updated. Do not switch the Gateway default just
+because `codex debug models` shows a new slug.
+
+Check OpenClaw first:
+
+```bash
+openclaw models list --all --provider openai-codex --json
+```
+
+The target `openai-codex/<model>` must be present with `available: true` and
+`missing: false`.
+
+If it is not present, update the OpenAI Codex provider plugin before changing
+the default. The usual implementation points are:
+
+- `extensions/openai/openai-codex-provider.ts`
+- `resolveDynamicModel`
+- `augmentModelCatalog`
+- `supportsXHighThinking`
+- `isModernModelRef`
+- `preferRuntimeResolvedModel`, when runtime metadata should win
+- `extensions/openai/openai-codex-provider.test.ts`
+
+After the provider knows the model, use:
+
+```bash
+openclaw models set openai-codex/<model>
+openclaw models status --json
+openclaw gateway health --json
+```
+
+Reasoning defaults are independent. OpenClaw agent runs use
+`agents.defaults.thinkingDefault`; Codex CLI uses `model_reasoning_effort` in
+`~/.codex/config.toml`.
+
 This route is intentionally separate from `openai/gpt-5.4`. If you want the
 direct OpenAI Platform API path, use `openai/*` with an API key. If you want
 ChatGPT/Codex sign-in, use `openai-codex/*`.

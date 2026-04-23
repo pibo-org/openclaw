@@ -134,6 +134,71 @@ describe("openai codex provider", () => {
     });
   });
 
+  it("resolves gpt-5.5 with the same Codex capabilities as gpt-5.4", () => {
+    const provider = buildOpenAICodexProviderPlugin();
+
+    const model = provider.resolveDynamicModel?.({
+      provider: "openai-codex",
+      modelId: "gpt-5.5",
+      modelRegistry: {
+        find: (providerId: string, modelId: string) => {
+          if (providerId === "openai-codex" && modelId === "gpt-5.4") {
+            return {
+              id: "gpt-5.4",
+              name: "gpt-5.4",
+              provider: "openai-codex",
+              api: "openai-codex-responses",
+              baseUrl: "https://chatgpt.com/backend-api",
+              reasoning: true,
+              input: ["text", "image"] as const,
+              cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+              contextWindow: 1_050_000,
+              contextTokens: 272_000,
+              maxTokens: 128_000,
+            };
+          }
+          return undefined;
+        },
+      } as never,
+    });
+
+    expect(model).toMatchObject({
+      id: "gpt-5.5",
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1_050_000,
+      contextTokens: 272_000,
+      maxTokens: 128_000,
+      cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+    });
+  });
+
+  it("advertises gpt-5.5 for xhigh thinking, modern selection, and runtime resolving", () => {
+    const provider = buildOpenAICodexProviderPlugin();
+
+    expect(
+      provider.supportsXHighThinking?.({
+        provider: "openai-codex",
+        modelId: "gpt-5.5",
+      } as never),
+    ).toBe(true);
+    expect(
+      provider.isModernModelRef?.({
+        provider: "openai-codex",
+        modelId: "gpt-5.5",
+      } as never),
+    ).toBe(true);
+    expect(
+      provider.preferRuntimeResolvedModel?.({
+        provider: "openai-codex",
+        modelId: "gpt-5.5",
+      } as never),
+    ).toBe(true);
+  });
+
   it("resolves gpt-5.4-mini from codex templates with codex-sized limits", () => {
     const provider = buildOpenAICodexProviderPlugin();
 
@@ -187,6 +252,13 @@ describe("openai codex provider", () => {
       ],
     } as never);
 
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        id: "gpt-5.5",
+        contextWindow: 1_050_000,
+        contextTokens: 272_000,
+      }),
+    );
     expect(entries).toContainEqual(
       expect.objectContaining({
         id: "gpt-5.4",

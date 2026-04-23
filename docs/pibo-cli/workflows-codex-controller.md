@@ -61,6 +61,38 @@ For `codex_controller`, `run` accepts direct operator flags:
 - `--worker-model <id>`
 - `--worker-reasoning-effort <level>`
 
+### Worker model and reasoning defaults
+
+`codex_controller` has two model layers:
+
+1. The OpenClaw `codex-controller` agent model, resolved through normal
+   OpenClaw model config.
+2. The Codex SDK worker model, controlled by workflow input or Codex defaults.
+
+Use `openclaw models --agent codex-controller status --json` to inspect the
+OpenClaw agent layer.
+
+Use explicit worker overrides when a run must pin Codex behavior:
+
+```bash
+openclaw pibo workflows run codex_controller \
+  --worker-model gpt-5.5 \
+  --worker-reasoning-effort high \
+  --task "..."
+```
+
+When worker overrides are omitted, the Codex worker uses its configured Codex
+defaults. Keep `~/.codex/config.toml` aligned when changing system defaults:
+
+```toml
+model = "gpt-5.5"
+model_reasoning_effort = "high"
+```
+
+OpenClaw `thinkingDefault` and Codex `model_reasoning_effort` are separate
+settings. A model can support `xhigh` while the operating default remains
+`high`.
+
 `--reply-here` resolves the reporting target only when a trusted current origin is available. For plain local CLI use, pass `--owner-session-key`, `--channel`, `--to`, and optionally `--thread-id` explicitly, or provide `OPENCLAW_WORKFLOW_OWNER_SESSION_KEY`, `OPENCLAW_WORKFLOW_CHANNEL`, `OPENCLAW_WORKFLOW_TO`, and optionally `OPENCLAW_WORKFLOW_ACCOUNT_ID` / `OPENCLAW_WORKFLOW_THREAD_ID`.
 
 The low-level JSON contract remains available:

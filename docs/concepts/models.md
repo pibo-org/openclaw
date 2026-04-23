@@ -39,6 +39,36 @@ Related:
 - Set your primary to the strongest latest-generation model available to you.
 - Use fallbacks for cost/latency-sensitive tasks and lower-stakes chat.
 - For tool-enabled agents or untrusted inputs, avoid older/weaker model tiers.
+- For newly released models, verify provider-catalog availability before
+  changing the default. A config-only default can still fail at runtime if the
+  provider plugin cannot resolve the model.
+
+## Newly released models
+
+Use a catalog-first rollout:
+
+```bash
+openclaw models list --all --provider <provider> --json
+openclaw models set <provider/model>
+openclaw models status --json
+openclaw gateway health --json
+```
+
+The target model should be `available: true` and `missing: false` before it is
+made the default. If it is absent from the full provider catalog, update or add
+the provider-catalog support first.
+
+For provider plugins that synthesize forward-compatible models, also add tests
+for:
+
+- dynamic model resolution
+- catalog augmentation
+- reasoning/thinking capability policy
+- modern-model/default-selection policy when applicable
+
+OpenAI Codex subscription models use the `openai-codex/*` route. Codex CLI may
+know about a model before OpenClaw does; treat that as upstream evidence, not as
+OpenClaw catalog readiness.
 
 ## Onboarding (recommended)
 
