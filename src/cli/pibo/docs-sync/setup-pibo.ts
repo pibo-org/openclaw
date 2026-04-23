@@ -294,7 +294,28 @@ export async function setupPibo(interactive: boolean) {
       .replace(/{{PATH}}/g, process.env.PATH || "/usr/local/bin:/usr/bin:/bin")
       .replace(/{{DOCS_PATH}}/g, docsPath),
   );
-  console.log(ok("3 Service-Files geschrieben"));
+
+  // reconcile.service + timer: fallback push if a watcher event was missed
+  const reconcileServiceTmpl = readFileSync(
+    join(ASSETS_DIR, "services", "pibo-reconcile.service"),
+    "utf8",
+  );
+  writeFileSync(
+    join(systemdTarget, "pibo-docs-reconcile.service"),
+    reconcileServiceTmpl
+      .replace(/{{SCRIPTS_DIR}}/g, scriptsTarget)
+      .replace(/{{HOME}}/g, home)
+      .replace(/{{NODE_BIN_DIR}}/g, nodeDir)
+      .replace(/{{PATH}}/g, process.env.PATH || "/usr/local/bin:/usr/bin:/bin")
+      .replace(/{{DOCS_PATH}}/g, docsPath),
+  );
+
+  const reconcileTimerTmpl = readFileSync(
+    join(ASSETS_DIR, "services", "pibo-reconcile.timer"),
+    "utf8",
+  );
+  writeFileSync(join(systemdTarget, "pibo-docs-reconcile.timer"), reconcileTimerTmpl);
+  console.log(ok("4 Service-Files und 1 Timer geschrieben"));
 
   // === Enable services with proper error checking ===
   console.log("\n" + bold("Aktiviere Services..."));
@@ -320,6 +341,17 @@ export async function setupPibo(interactive: boolean) {
       console.log(warn(`Logs:\n${logs.split("\n").slice(-3).join("\n")}`));
       servicesOk = false;
     }
+  }
+
+  const reconcileTimer = "pibo-docs-reconcile.timer";
+  run(`systemctl --user enable --now ${reconcileTimer}`);
+  run(`systemctl --user start pibo-docs-reconcile.service || true`);
+  const timerActive = run(`systemctl --user is-active ${reconcileTimer}`);
+  if (timerActive === "active") {
+    console.log(ok(`${reconcileTimer}: aktiv`));
+  } else {
+    console.log(fail(`${reconcileTimer}: nicht aktiv`));
+    servicesOk = false;
   }
 
   if (!servicesOk) {

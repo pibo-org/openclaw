@@ -25,6 +25,7 @@ import {
   slugifyName,
   targetScriptsDir,
   targetStateDir,
+  timerFilePath,
   validateName,
   warn,
   watcherScriptPath,
@@ -50,6 +51,10 @@ function nowIso(): string {
 
 const WORKSPACE_TARGET_NAME = "workspace";
 const LEGACY_WORKSPACE_SERVICE_NAMES = ["pibo-workspace-watcher"];
+
+function reconcileUnitName(target: LocalSyncTarget): string {
+  return `${target.serviceName}-reconcile`;
+}
 
 function defaultWorkspacePath(): string {
   return join(homedir(), ".openclaw", "workspace");
@@ -125,8 +130,10 @@ function ensureRemoteConfigured(target: LocalSyncTarget): string | null {
 export function generateWatcherScript(target: LocalSyncTarget): string {
   const configuredIgnoreGlobs = target.ignoreGlobs.filter((glob) => glob !== ".git");
   return `#!/usr/bin/env node
-import { existsSync, readFileSync, watch } from 'node:fs';
+import { existsSync, readFileSync, statSync, watch } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -142,6 +149,7 @@ const ignoreRules = loadIgnoreRules(GITIGNORE_FILE, CONFIGURED_IGNORE_GLOBS);
 let debounceTimer = null;
 let changeCount = 0;
 const seenEvents = new Set();
+const watchedDirs = new Map();
 
 export function normalizePath(filepath) {
   return String(filepath).replaceAll("\\\\", "/").replace(/^\\.\\/+/, "").replace(/^\\/+/, "");
@@ -228,6 +236,21 @@ export function shouldProcessFile(filepath, rules = ignoreRules) {
   return !isIgnoredByRules(filepath, rules);
 }
 
+function isDirectory(fullPath) {
+  try {
+    return statSync(fullPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function shouldWatchDirectory(filepath) {
+  if (!filepath) return true;
+  const normalized = normalizePath(filepath);
+  if (isGitPath(normalized)) return false;
+  return !isIgnoredByRules(normalized, ignoreRules);
+}
+
 function debouncePush(changedFile) {
   const dedupKey = \`\${changedFile}-\${Date.now() - (Date.now() % 500)}\`;
   if (seenEvents.has(dedupKey)) return;
@@ -251,22 +274,65 @@ function debouncePush(changedFile) {
   }, DEBOUNCE_MS);
 }
 
+async function watchTree(dir) {
+  const relDir = normalizePath(path.relative(TARGET_DIR, dir));
+  if (relDir && !shouldWatchDirectory(relDir)) return;
+  if (watchedDirs.has(dir)) return;
+
+  let watcher;
+  try {
+    watcher = watch(dir, { recursive: false }, (eventType, filename) => {
+      if (!filename) return;
+      const fullPath = path.join(dir, String(filename));
+      const relPath = normalizePath(path.relative(TARGET_DIR, fullPath));
+      if (!relPath) return;
+
+      if (eventType === 'rename' && isDirectory(fullPath)) {
+        void watchTree(fullPath);
+      }
+
+      if (!shouldProcessFile(relPath)) return;
+      debouncePush(\`\${eventType} \${relPath}\`);
+    });
+  } catch (err) {
+    console.error(\`[\${new Date().toISOString()}] Watcher error for \${dir}: \${err.message}\`);
+    return;
+  }
+
+  watcher.on('error', (err) => {
+    console.error(\`[\${new Date().toISOString()}] Watcher error for \${dir}: \${err.message}\`);
+  });
+  watchedDirs.set(dir, watcher);
+
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const child = path.join(dir, entry.name);
+      const childRel = normalizePath(path.relative(TARGET_DIR, child));
+      if (!shouldWatchDirectory(childRel)) continue;
+      void watchTree(child);
+    }
+  } catch (err) {
+    console.error(\`Scan error for \${dir}: \${err.message}\`);
+  }
+}
+
+function closeWatchers() {
+  for (const watcher of watchedDirs.values()) {
+    watcher.close();
+  }
+  watchedDirs.clear();
+}
+
 function startWatcher() {
   console.log(\`[\${new Date().toISOString()}] Starting local sync watcher: \${TARGET_DIR}\`);
   console.log(\`[\${new Date().toISOString()}] Loading ignore rules from: \${GITIGNORE_FILE}\`);
-  const watcher = watch(TARGET_DIR, { recursive: true }, (eventType, filename) => {
-    if (!filename) return;
-    if (!shouldProcessFile(filename)) return;
-    debouncePush(\`\${eventType} \${filename}\`);
+  void watchTree(TARGET_DIR).then(() => {
+    console.log(\`[\${new Date().toISOString()}] Watching for changes (\${watchedDirs.size} directories)...\`);
   });
-
-  watcher.on('error', (err) => {
-    console.error(\`[\${new Date().toISOString()}] Watcher error: \${err.message}\`);
-  });
-
-  console.log(\`[\${new Date().toISOString()}] Watching for changes...\`);
-  process.on('SIGINT', () => { watcher.close(); process.exit(0); });
-  process.on('SIGTERM', () => { watcher.close(); process.exit(0); });
+  process.on('SIGINT', () => { closeWatchers(); process.exit(0); });
+  process.on('SIGTERM', () => { closeWatchers(); process.exit(0); });
 }
 
 if (process.argv[1] === THIS_FILE) {
@@ -359,6 +425,36 @@ WantedBy=default.target
 `;
 }
 
+function generateReconcileServiceFile(target: LocalSyncTarget): string {
+  return `[Unit]
+Description=PIBo Local Sync Reconcile (${target.name})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash ${pushScriptPath(target.name)}
+WorkingDirectory=${target.path}
+Environment=HOME=${homedir()}
+Environment=PATH=${process.env.PATH || "/usr/local/bin:/usr/bin:/bin"}
+`;
+}
+
+function generateReconcileTimerFile(target: LocalSyncTarget): string {
+  return `[Unit]
+Description=Run PIBo Local Sync Reconcile (${target.name}) every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=${reconcileUnitName(target)}.service
+
+[Install]
+WantedBy=timers.target
+`;
+}
+
 function installTarget(target: LocalSyncTarget): string[] {
   const notes: string[] = [];
   mkdirSync(targetScriptsDir(), { recursive: true });
@@ -369,11 +465,17 @@ function installTarget(target: LocalSyncTarget): string[] {
   writeExecutable(pushScriptPath(target.name), generatePushScript(target));
   writeUtf8(watcherScriptPath(target.name), generateWatcherScript(target));
   chmodSync(watcherScriptPath(target.name), 0o755);
+  const reconcileName = reconcileUnitName(target);
   writeUtf8(serviceFilePath(target.serviceName), generateServiceFile(target));
+  writeUtf8(serviceFilePath(reconcileName), generateReconcileServiceFile(target));
+  writeUtf8(timerFilePath(reconcileName), generateReconcileTimerFile(target));
 
   run(`systemctl --user daemon-reload`);
   run(`systemctl --user enable --now ${target.serviceName}.service`);
+  run(`systemctl --user enable --now ${reconcileName}.timer`);
+  run(`systemctl --user start ${reconcileName}.service || true`);
   notes.push(`Service ${target.serviceName}.service aktiviert`);
+  notes.push(`Fallback ${reconcileName}.timer aktiviert`);
   return notes;
 }
 
@@ -414,8 +516,10 @@ export function migrateLegacyWorkspaceServices(deps: LegacyWorkspaceMigrationDep
 
 function printTarget(target: LocalSyncTarget) {
   const active = run(`systemctl --user is-active ${target.serviceName}.service`) || "inactive";
+  const reconcileName = reconcileUnitName(target);
+  const timerActive = run(`systemctl --user is-active ${reconcileName}.timer`) || "inactive";
   console.log(
-    `${target.name}\n  path: ${target.path}\n  repo: ${target.repo}\n  branch: ${target.branch}\n  enabled: ${target.enabled ? "yes" : "no"}\n  service: ${target.serviceName}.service (${active})`,
+    `${target.name}\n  path: ${target.path}\n  repo: ${target.repo}\n  branch: ${target.branch}\n  enabled: ${target.enabled ? "yes" : "no"}\n  service: ${target.serviceName}.service (${active})\n  fallback: ${reconcileName}.timer (${timerActive})`,
   );
 }
 
@@ -544,11 +648,14 @@ function statusTarget(name?: string) {
   console.log("═".repeat(50));
   for (const target of targets) {
     const service = run(`systemctl --user is-active ${target.serviceName}.service`) || "inactive";
+    const reconcileName = reconcileUnitName(target);
+    const fallback = run(`systemctl --user is-active ${reconcileName}.timer`) || "inactive";
     const origin = run(`git -C ${target.path} remote get-url origin 2>/dev/null`) || "-";
     const branch = run(`git -C ${target.path} branch --show-current 2>/dev/null`) || "-";
     const last = run(`git -C ${target.path} log -1 --format="%s (%cr)" 2>/dev/null`) || "-";
     console.log(target.name);
     console.log(`  service: ${service}`);
+    console.log(`  fallback: ${fallback}`);
     console.log(`  branch: ${branch}`);
     console.log(`  origin: ${origin}`);
     console.log(`  last: ${last}`);
@@ -591,6 +698,17 @@ function doctorTarget(name?: string) {
         ? ok("Service-File vorhanden")
         : fail("Service-File fehlt"),
     );
+    const reconcileName = reconcileUnitName(target);
+    console.log(
+      existsSync(serviceFilePath(reconcileName))
+        ? ok("Fallback-Service-File vorhanden")
+        : fail("Fallback-Service-File fehlt"),
+    );
+    console.log(
+      existsSync(timerFilePath(reconcileName))
+        ? ok("Fallback-Timer-File vorhanden")
+        : fail("Fallback-Timer-File fehlt"),
+    );
     const remote = run(`git -C ${target.path} remote get-url origin 2>/dev/null`) || "";
     console.log(remote ? ok(`origin gesetzt: ${remote}`) : fail("origin fehlt"));
   }
@@ -613,6 +731,7 @@ function enableTarget(name: string) {
     process.exit(1);
   }
   run(`systemctl --user enable --now ${target.serviceName}.service`);
+  run(`systemctl --user enable --now ${reconcileUnitName(target)}.timer`);
   target.enabled = true;
   target.updatedAt = nowIso();
   upsertTarget(target);
@@ -626,6 +745,7 @@ function disableTarget(name: string) {
     process.exit(1);
   }
   run(`systemctl --user disable --now ${target.serviceName}.service`);
+  run(`systemctl --user disable --now ${reconcileUnitName(target)}.timer`);
   target.enabled = false;
   target.updatedAt = nowIso();
   upsertTarget(target);
@@ -656,6 +776,7 @@ function removeTargetCommand(name: string) {
     process.exit(1);
   }
   run(`systemctl --user disable --now ${target.serviceName}.service`);
+  run(`systemctl --user disable --now ${reconcileUnitName(target)}.timer`);
   removeTargetFiles(target);
   removeTarget(name);
   run(`systemctl --user daemon-reload`);

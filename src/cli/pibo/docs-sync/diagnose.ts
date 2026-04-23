@@ -29,6 +29,7 @@ export function runDiagnose() {
   const services = [
     "pibo-docs-notifier.service",
     "pibo-docs-watcher.service",
+    "pibo-docs-reconcile.timer",
     "pibo-docs-tunnel.service",
   ];
   for (const svc of services) {

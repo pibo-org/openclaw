@@ -42,6 +42,10 @@ export function serviceFilePath(serviceName: string): string {
   return join(homedir(), ".config", "systemd", "user", `${serviceName}.service`);
 }
 
+export function timerFilePath(timerName: string): string {
+  return join(homedir(), ".config", "systemd", "user", `${timerName}.timer`);
+}
+
 export function ensureParent(path: string) {
   mkdirSync(dirname(path), { recursive: true });
 }
@@ -97,6 +101,8 @@ export function removeTargetFiles(target: LocalSyncTarget) {
     pushScriptPath(target.name),
     targetMetaPath(target.name),
     serviceFilePath(target.serviceName),
+    serviceFilePath(`${target.serviceName}-reconcile`),
+    timerFilePath(`${target.serviceName}-reconcile`),
   ]) {
     try {
       if (existsSync(p)) {

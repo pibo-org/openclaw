@@ -1,0 +1,11 @@
+[Unit]
+Description=Run PIBo Docs Reconcile Push every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=pibo-docs-reconcile.service
+
+[Install]
+WantedBy=timers.target

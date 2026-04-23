@@ -8,6 +8,8 @@ export function uninstallDocsSync(role: string) {
     const services = [
       "pibo-docs-notifier.service",
       "pibo-docs-watcher.service",
+      "pibo-docs-reconcile.service",
+      "pibo-docs-reconcile.timer",
       "pibo-docs-tunnel.service",
     ];
     for (const svc of services) {
@@ -16,8 +18,14 @@ export function uninstallDocsSync(role: string) {
       console.log(ok(`Entfernt: ${svc}`));
     }
     run(`systemctl --user daemon-reload || true`);
-    console.log(warn("Scripts unter ~/docs-sync und Config/Tokens wurden NICHT automatisch gelöscht."));
-    console.log(info("Optional manuell löschen: ~/docs-sync, ~/.pibo-docs-sync-config.json, ~/.pibo-docs-sync-token"));
+    console.log(
+      warn("Scripts unter ~/docs-sync und Config/Tokens wurden NICHT automatisch gelöscht."),
+    );
+    console.log(
+      info(
+        "Optional manuell löschen: ~/docs-sync, ~/.pibo-docs-sync-config.json, ~/.pibo-docs-sync-token",
+      ),
+    );
     return;
   }
 
@@ -28,7 +36,9 @@ export function uninstallDocsSync(role: string) {
     run(`crontab -l 2>/dev/null | grep -v 'pibo-docs-sync.sh' | crontab - || true`);
     console.log(ok("Server-Service und Cron-Eintrag entfernt"));
     console.log(warn("/root/bin/, /var/docs-remote und Tokens wurden NICHT automatisch gelöscht."));
-    console.log(info("Optional manuell löschen: /root/bin/pibo-docs-*, /var/docs-remote, /root/.pibo-docs-*") );
+    console.log(
+      info("Optional manuell löschen: /root/bin/pibo-docs-*, /var/docs-remote, /root/.pibo-docs-*"),
+    );
     return;
   }
 

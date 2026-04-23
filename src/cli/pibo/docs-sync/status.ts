@@ -22,6 +22,12 @@ export function showStatus() {
   const watcherRunning = serviceRunning("pibo-docs-watcher.service", true);
   console.log(watcherRunning ? ok("Watcher: running") : fail("Watcher: NOT running"));
 
+  // Reconcile fallback timer
+  const reconcileRunning = serviceRunning("pibo-docs-reconcile.timer", true);
+  console.log(
+    reconcileRunning ? ok("Reconcile fallback: running") : fail("Reconcile fallback: NOT running"),
+  );
+
   // Tunnel
   const tunnelRunning = serviceRunning("pibo-docs-tunnel.service", true);
   console.log(tunnelRunning ? ok("Tunnel: connected") : fail("Tunnel: NOT connected (needed)"));
