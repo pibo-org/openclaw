@@ -129,20 +129,44 @@ export function ensureSkillsWatcher(params: { workspaceDir: string; config?: Ope
     void existing.watcher.close().catch(() => {});
   }
 
-  const watcher = chokidar.watch(watchTargets, {
-    ignoreInitial: true,
-    awaitWriteFinish: {
-      stabilityThreshold: debounceMs,
-      pollInterval: 100,
-    },
-    // Avoid FD exhaustion on macOS when a workspace contains huge trees.
-    // This watcher only needs to react to SKILL.md changes.
-    ignored: DEFAULT_SKILLS_WATCH_IGNORED,
-  });
+  let watcher: FSWatcher;
+  try {
+    watcher = chokidar.watch(watchTargets, {
+      ignoreInitial: true,
+      awaitWriteFinish: {
+        stabilityThreshold: debounceMs,
+        pollInterval: 100,
+      },
+      // Avoid FD exhaustion on macOS when a workspace contains huge trees.
+      // This watcher only needs to react to SKILL.md changes.
+      ignored: DEFAULT_SKILLS_WATCH_IGNORED,
+    });
+  } catch (err) {
+    log.warn(`skills watcher unavailable (${workspaceDir}); hot refresh disabled: ${String(err)}`);
+    return;
+  }
 
   const state: SkillsWatchState = { watcher, pathsKey, debounceMs };
+  let watcherClosed = false;
+
+  const closeWatcherAfterError = (err: unknown) => {
+    if (watcherClosed) {
+      return;
+    }
+    watcherClosed = true;
+    watchers.delete(workspaceDir);
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = undefined;
+    }
+    log.warn(`skills watcher error (${workspaceDir}); hot refresh disabled: ${String(err)}`);
+    void watcher.close().catch(() => {});
+  };
 
   const schedule = (changedPath?: string) => {
+    if (watcherClosed) {
+      return;
+    }
     state.pendingPath = changedPath ?? state.pendingPath;
     if (state.timer) {
       clearTimeout(state.timer);
@@ -162,9 +186,7 @@ export function ensureSkillsWatcher(params: { workspaceDir: string; config?: Ope
   watcher.on("add", (p) => schedule(p));
   watcher.on("change", (p) => schedule(p));
   watcher.on("unlink", (p) => schedule(p));
-  watcher.on("error", (err) => {
-    log.warn(`skills watcher error (${workspaceDir}): ${String(err)}`);
-  });
+  watcher.on("error", closeWatcherAfterError);
 
   watchers.set(workspaceDir, state);
 }

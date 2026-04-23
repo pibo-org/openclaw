@@ -436,6 +436,44 @@ describe("QmdMemoryManager", () => {
     await manager.close();
   });
 
+  it("closes the qmd watcher instead of surfacing ENOSPC as an unhandled error", async () => {
+    cfg = {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+          memorySearch: {
+            provider: "openai",
+            model: "mock-embed",
+            store: { path: path.join(workspaceDir, "index.sqlite"), vector: { enabled: false } },
+            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
+          },
+        },
+        list: [{ id: agentId, default: true, workspace: workspaceDir }],
+      },
+      memory: {
+        backend: "qmd",
+        qmd: {
+          includeDefaultMemory: false,
+          update: { interval: "0s", debounceMs: 0, onBoot: false },
+          paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+      },
+    } as OpenClawConfig;
+
+    const { manager } = await createManager({ mode: "full" });
+    expect(watchMock).toHaveBeenCalledTimes(1);
+    const watcher = watchMock.mock.results[0]?.value as EventEmitter & { close: Mock };
+
+    expect(() => {
+      watcher.emit("error", new Error("ENOSPC: System limit for number of file watchers reached"));
+    }).not.toThrow();
+
+    expect(watcher.close).toHaveBeenCalledTimes(1);
+    expect(logWarnMock).toHaveBeenCalledWith(expect.stringContaining("live qmd sync disabled"));
+
+    await manager.close();
+  });
+
   it("runs boot update in background by default", async () => {
     cfg = {
       ...cfg,

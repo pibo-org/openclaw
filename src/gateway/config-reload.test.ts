@@ -322,7 +322,7 @@ describe("resolveGatewayReloadSettings", () => {
   });
 });
 
-type WatcherHandler = () => void;
+type WatcherHandler = (arg?: unknown) => void;
 type WatcherEvent = "add" | "change" | "unlink" | "error";
 
 function createWatcherMock() {
@@ -334,9 +334,9 @@ function createWatcherMock() {
       handlers.set(event, existing);
       return this;
     },
-    emit(event: WatcherEvent) {
+    emit(event: WatcherEvent, arg?: unknown) {
       for (const handler of handlers.get(event) ?? []) {
-        handler();
+        handler(arg);
       }
     },
     close: vi.fn(async () => {}),
@@ -508,6 +508,74 @@ describe("startGatewayConfigReloader", () => {
       process.off("unhandledRejection", onUnhandled);
       await reloader.stop();
     }
+  });
+
+  it("disables file reload when the config watcher emits ENOSPC", async () => {
+    const readSnapshot = vi.fn<() => Promise<ConfigFileSnapshot>>();
+    const { watcher, log, reloader } = createReloaderHarness(readSnapshot);
+
+    watcher.emit("error", new Error("ENOSPC: System limit for number of file watchers reached"));
+    watcher.emit("change");
+    await vi.runAllTimersAsync();
+
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("config watcher error; file reload disabled: Error: ENOSPC"),
+    );
+    expect(watcher.close).toHaveBeenCalledTimes(1);
+    expect(readSnapshot).not.toHaveBeenCalled();
+
+    await reloader.stop();
+  });
+
+  it("keeps in-process config writes working when the config watcher cannot start", async () => {
+    vi.spyOn(chokidar, "watch").mockImplementation(() => {
+      throw new Error("ENOSPC: System limit for number of file watchers reached");
+    });
+    const readSnapshot = vi.fn<() => Promise<ConfigFileSnapshot>>();
+    const onHotReload = vi.fn(async () => {});
+    const onRestart = vi.fn();
+    const writeListeners: Array<(event: ConfigWriteNotification) => void> = [];
+    const unsubscribe = vi.fn();
+    const log = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const reloader = startGatewayConfigReloader({
+      initialConfig: { gateway: { reload: { debounceMs: 0 } } },
+      readSnapshot,
+      subscribeToWrites: (listener) => {
+        writeListeners.push(listener);
+        return unsubscribe;
+      },
+      onHotReload,
+      onRestart,
+      log,
+      watchPath: "/tmp/openclaw.json",
+    });
+
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("config watcher unavailable; file reload disabled: Error: ENOSPC"),
+    );
+
+    const notifyWrite = writeListeners[0];
+    if (!notifyWrite) {
+      throw new Error("config write listener was not registered");
+    }
+    notifyWrite({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: { gateway: { reload: { debounceMs: 0 } }, logging: { level: "debug" } },
+      runtimeConfig: { gateway: { reload: { debounceMs: 0 } }, logging: { level: "debug" } },
+      persistedHash: "next",
+      writtenAtMs: Date.now(),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(onHotReload).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    await reloader.stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it("reuses in-process write notifications and dedupes watcher rereads by persisted hash", async () => {

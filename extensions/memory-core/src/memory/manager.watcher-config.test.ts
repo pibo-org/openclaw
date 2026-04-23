@@ -10,10 +10,24 @@ import type { MemoryIndexManager } from "./index.js";
 import { registerBuiltInMemoryEmbeddingProviders } from "./provider-adapters.js";
 
 const { watchMock } = vi.hoisted(() => ({
-  watchMock: vi.fn(() => ({
-    on: vi.fn(),
-    close: vi.fn(async () => undefined),
-  })),
+  watchMock: vi.fn(() => {
+    const handlers = new Map<string, Array<(arg?: unknown) => void>>();
+    const watcher = {
+      on: vi.fn((event: string, handler: (arg?: unknown) => void) => {
+        const existing = handlers.get(event) ?? [];
+        existing.push(handler);
+        handlers.set(event, existing);
+        return watcher;
+      }),
+      close: vi.fn(async () => undefined),
+      emit(event: string, arg?: unknown) {
+        for (const handler of handlers.get(event) ?? []) {
+          handler(arg);
+        }
+      },
+    };
+    return watcher;
+  }),
 }));
 
 vi.mock("chokidar", () => ({
@@ -176,5 +190,21 @@ describe("memory watcher config", () => {
         path.join(extraDir, "**", "*.[wW][aA][vV]"),
       ]),
     );
+  });
+
+  it("closes the live memory watcher instead of surfacing ENOSPC as an unhandled error", async () => {
+    await setupWatcherWorkspace({ name: "notes.md", contents: "hello" });
+    const cfg = createWatcherConfig();
+
+    await expectWatcherManager(cfg);
+
+    const watcher = watchMock.mock.results[0]?.value as {
+      emit: (event: string, arg?: unknown) => void;
+      close: ReturnType<typeof vi.fn>;
+    };
+    expect(() => {
+      watcher.emit("error", new Error("ENOSPC: System limit for number of file watchers reached"));
+    }).not.toThrow();
+    expect(watcher.close).toHaveBeenCalledTimes(1);
   });
 });

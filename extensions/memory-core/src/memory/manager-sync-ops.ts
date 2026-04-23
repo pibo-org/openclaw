@@ -378,21 +378,44 @@ export abstract class MemoryManagerSyncOps {
         // Skip missing/unreadable additional paths.
       }
     }
-    this.watcher = chokidar.watch(Array.from(watchPaths), {
-      ignoreInitial: true,
-      ignored: (watchPath) => shouldIgnoreMemoryWatchPath(String(watchPath)),
-      awaitWriteFinish: {
-        stabilityThreshold: this.settings.sync.watchDebounceMs,
-        pollInterval: 100,
-      },
-    });
+    let watcher: FSWatcher;
+    try {
+      watcher = chokidar.watch(Array.from(watchPaths), {
+        ignoreInitial: true,
+        ignored: (watchPath) => shouldIgnoreMemoryWatchPath(String(watchPath)),
+        awaitWriteFinish: {
+          stabilityThreshold: this.settings.sync.watchDebounceMs,
+          pollInterval: 100,
+        },
+      });
+    } catch (err) {
+      log.warn(`memory file watcher unavailable; live memory sync disabled: ${String(err)}`);
+      return;
+    }
+    this.watcher = watcher;
+    let watcherClosed = false;
     const markDirty = () => {
+      if (watcherClosed) {
+        return;
+      }
       this.dirty = true;
       this.scheduleWatchSync();
     };
-    this.watcher.on("add", markDirty);
-    this.watcher.on("change", markDirty);
-    this.watcher.on("unlink", markDirty);
+    watcher.on("add", markDirty);
+    watcher.on("change", markDirty);
+    watcher.on("unlink", markDirty);
+    watcher.on("error", (err) => {
+      if (watcherClosed) {
+        return;
+      }
+      watcherClosed = true;
+      if (this.watchTimer) {
+        clearTimeout(this.watchTimer);
+        this.watchTimer = null;
+      }
+      log.warn(`memory file watcher error; live memory sync disabled: ${String(err)}`);
+      void watcher.close().catch(() => undefined);
+    });
   }
 
   protected ensureSessionListener() {

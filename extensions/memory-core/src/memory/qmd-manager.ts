@@ -1271,21 +1271,44 @@ export class QmdMemoryManager implements MemorySearchManager {
     if (watchPaths.size === 0) {
       return;
     }
-    this.watcher = chokidar.watch(Array.from(watchPaths), {
-      ignoreInitial: true,
-      ignored: (watchPath) => shouldIgnoreMemoryWatchPath(String(watchPath)),
-      awaitWriteFinish: {
-        stabilityThreshold: QMD_WATCH_STABILITY_MS,
-        pollInterval: 100,
-      },
-    });
+    let watcher: FSWatcher;
+    try {
+      watcher = chokidar.watch(Array.from(watchPaths), {
+        ignoreInitial: true,
+        ignored: (watchPath) => shouldIgnoreMemoryWatchPath(String(watchPath)),
+        awaitWriteFinish: {
+          stabilityThreshold: QMD_WATCH_STABILITY_MS,
+          pollInterval: 100,
+        },
+      });
+    } catch (err) {
+      log.warn(`qmd file watcher unavailable; live qmd sync disabled: ${String(err)}`);
+      return;
+    }
+    this.watcher = watcher;
+    let watcherClosed = false;
     const markDirty = () => {
+      if (watcherClosed) {
+        return;
+      }
       this.dirty = true;
       this.scheduleWatchSync();
     };
-    this.watcher.on("add", markDirty);
-    this.watcher.on("change", markDirty);
-    this.watcher.on("unlink", markDirty);
+    watcher.on("add", markDirty);
+    watcher.on("change", markDirty);
+    watcher.on("unlink", markDirty);
+    watcher.on("error", (err) => {
+      if (watcherClosed) {
+        return;
+      }
+      watcherClosed = true;
+      if (this.watchTimer) {
+        clearTimeout(this.watchTimer);
+        this.watchTimer = null;
+      }
+      log.warn(`qmd file watcher error; live qmd sync disabled: ${String(err)}`);
+      void watcher.close().catch(() => undefined);
+    });
   }
 
   private resolveCollectionWatchPath(collection: ManagedCollection): string {

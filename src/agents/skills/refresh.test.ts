@@ -2,15 +2,41 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const watchMock = vi.fn(() => ({
-  on: vi.fn(),
-  close: vi.fn(async () => undefined),
+const { logWarnMock } = vi.hoisted(() => ({
+  logWarnMock: vi.fn(),
 }));
+
+function createWatcherMock() {
+  const handlers = new Map<string, Array<(arg?: unknown) => void>>();
+  const watcher = {
+    on: vi.fn((event: string, handler: (arg?: unknown) => void) => {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+      return watcher;
+    }),
+    close: vi.fn(async () => undefined),
+    emit(event: string, arg?: unknown) {
+      for (const handler of handlers.get(event) ?? []) {
+        handler(arg);
+      }
+    },
+  };
+  return watcher;
+}
+
+const watchMock = vi.fn(() => createWatcherMock());
 
 let refreshModule: typeof import("./refresh.js");
 
 vi.mock("chokidar", () => ({
   default: { watch: watchMock },
+}));
+
+vi.mock("../../logging/subsystem.js", () => ({
+  createSubsystemLogger: vi.fn(() => ({
+    warn: logWarnMock,
+  })),
 }));
 
 vi.mock("./plugin-skills.js", () => ({
@@ -24,6 +50,7 @@ describe("ensureSkillsWatcher", () => {
 
   beforeEach(() => {
     watchMock.mockClear();
+    logWarnMock.mockClear();
   });
 
   afterEach(async () => {
@@ -84,5 +111,23 @@ describe("ensureSkillsWatcher", () => {
     // Should NOT ignore normal skill files
     expect(ignored.some((re) => re.test("/tmp/.hidden/skills/index.md"))).toBe(false);
     expect(ignored.some((re) => re.test("/tmp/workspace/skills/my-skill/SKILL.md"))).toBe(false);
+  });
+
+  it("closes and unregisters the watcher when watch setup hits the system watch limit", async () => {
+    refreshModule.ensureSkillsWatcher({ workspaceDir: "/tmp/workspace" });
+
+    expect(watchMock).toHaveBeenCalledTimes(1);
+    const watcher = watchMock.mock.results[0]?.value as ReturnType<typeof createWatcherMock>;
+
+    watcher.emit("error", new Error("ENOSPC: System limit for number of file watchers reached"));
+
+    expect(watcher.close).toHaveBeenCalledTimes(1);
+    expect(logWarnMock).toHaveBeenCalledWith(
+      expect.stringContaining("hot refresh disabled: Error: ENOSPC"),
+    );
+
+    refreshModule.ensureSkillsWatcher({ workspaceDir: "/tmp/workspace" });
+
+    expect(watchMock).toHaveBeenCalledTimes(2);
   });
 });

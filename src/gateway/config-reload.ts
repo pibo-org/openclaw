@@ -236,13 +236,23 @@ export function startGatewayConfigReloader(opts: {
     }
   };
 
-  const watcher = chokidar.watch(opts.watchPath, {
-    ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-    usePolling: Boolean(process.env.VITEST),
-  });
+  let watcher: ReturnType<typeof chokidar.watch> | null = null;
+  let watcherClosed = false;
+  try {
+    watcher = chokidar.watch(opts.watchPath, {
+      ignoreInitial: true,
+      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+      usePolling: Boolean(process.env.VITEST),
+    });
+  } catch (err) {
+    watcherClosed = true;
+    opts.log.warn(`config watcher unavailable; file reload disabled: ${String(err)}`);
+  }
 
   const scheduleFromWatcher = () => {
+    if (watcherClosed) {
+      return;
+    }
     schedule();
   };
 
@@ -256,17 +266,16 @@ export function startGatewayConfigReloader(opts: {
       scheduleAfter(0);
     }) ?? (() => {});
 
-  watcher.on("add", scheduleFromWatcher);
-  watcher.on("change", scheduleFromWatcher);
-  watcher.on("unlink", scheduleFromWatcher);
-  let watcherClosed = false;
-  watcher.on("error", (err) => {
+  watcher?.on("add", scheduleFromWatcher);
+  watcher?.on("change", scheduleFromWatcher);
+  watcher?.on("unlink", scheduleFromWatcher);
+  watcher?.on("error", (err) => {
     if (watcherClosed) {
       return;
     }
     watcherClosed = true;
-    opts.log.warn(`config watcher error: ${String(err)}`);
-    void watcher.close().catch(() => {});
+    opts.log.warn(`config watcher error; file reload disabled: ${String(err)}`);
+    void watcher?.close().catch(() => {});
   });
 
   return {
@@ -278,7 +287,7 @@ export function startGatewayConfigReloader(opts: {
       debounceTimer = null;
       watcherClosed = true;
       unsubscribeFromWrites();
-      await watcher.close().catch(() => {});
+      await watcher?.close().catch(() => {});
     },
   };
 }
