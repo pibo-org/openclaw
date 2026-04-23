@@ -64,7 +64,12 @@ type CodexControllerInput = {
 
 type RequestedCodexControllerInput = Omit<
   Required<CodexControllerInput>,
-  "repoRoot" | "agentId" | "workerModel" | "workerReasoningEffort" | "workingDirectoryMode"
+  | "workingDirectory"
+  | "repoRoot"
+  | "agentId"
+  | "workerModel"
+  | "workerReasoningEffort"
+  | "workingDirectoryMode"
 > & {
   requestedWorkingDirectory: string;
   requestedRepoRoot?: string;
