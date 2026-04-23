@@ -8,11 +8,13 @@ import {
   collectTweetsFromPasses,
   createEmptyTwitterState,
   expandTweetsWithStatusPageText,
-  hasFeedTweetShowMoreSignal,
   getLegacyTwitterLegacyStatePath,
   getTwitterStatePath,
+  hasFeedTweetShowMoreSignal,
   normalizeTwitterCheckOptions,
   readTwitterState,
+  runWithTimeout,
+  shouldReloadTwitterHomeForMissingFeedTab,
   type Tweet,
   writeTwitterState,
 } from "./twitter.js";
@@ -99,6 +101,40 @@ describe("pibo twitter command", () => {
       ignoreState: true,
       writeState: false,
     });
+  });
+
+  it("retries once with a home reload only for missing feed tabs on x.com/home", () => {
+    expect(
+      shouldReloadTwitterHomeForMissingFeedTab(
+        "https://x.com/home",
+        new Error("Twitter feed tab not found: Following"),
+        false,
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldReloadTwitterHomeForMissingFeedTab(
+        "https://x.com/home",
+        new Error("Twitter feed tab not found: Following"),
+        true,
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldReloadTwitterHomeForMissingFeedTab(
+        "https://x.com/someone/status/1",
+        new Error("Twitter feed tab not found: Following"),
+        false,
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldReloadTwitterHomeForMissingFeedTab(
+        "https://x.com/home",
+        new Error("Twitter following feed not ready"),
+        false,
+      ),
+    ).toBe(false);
   });
 
   it("stops when the requested number of new tweets has been collected", async () => {
@@ -250,7 +286,8 @@ describe("pibo twitter command", () => {
       },
     ];
 
-    const fetchStatusPageText = vi.fn(async (tweet: Tweet) => {
+    const fetchStatusPageText = vi.fn(async (tweet: Tweet, timeoutMs: number) => {
+      expect(timeoutMs).toBe(25);
       switch (tweet.statusId) {
         case "1":
           return "Preview only with the full public status-page text attached";
@@ -261,18 +298,115 @@ describe("pibo twitter command", () => {
       }
     });
 
-    const expanded = await expandTweetsWithStatusPageText(tweets, ["1", "3"], fetchStatusPageText);
+    const expanded = await expandTweetsWithStatusPageText(tweets, ["1", "3"], fetchStatusPageText, {
+      perTweetTimeoutMs: 25,
+      totalBudgetMs: 100,
+    });
 
-    expect(expanded).toEqual([
-      {
-        ...tweets[0],
-        text: "Preview only with the full public status-page text attached",
-      },
-      tweets[1],
-      tweets[2],
-    ]);
+    expect(expanded).toEqual({
+      tweets: [
+        {
+          ...tweets[0],
+          text: "Preview only with the full public status-page text attached",
+        },
+        tweets[1],
+        tweets[2],
+      ],
+      budgetExceeded: false,
+    });
     expect(fetchStatusPageText).toHaveBeenCalledTimes(2);
-    expect(fetchStatusPageText).toHaveBeenNthCalledWith(1, tweets[0]);
-    expect(fetchStatusPageText).toHaveBeenNthCalledWith(2, tweets[2]);
+    expect(fetchStatusPageText).toHaveBeenNthCalledWith(1, tweets[0], 25);
+    expect(fetchStatusPageText).toHaveBeenNthCalledWith(2, tweets[2], 25);
+  });
+
+  it("stops expanding once the total long-tweet budget is exhausted", async () => {
+    const tweets: Tweet[] = [
+      {
+        statusId: "1",
+        url: "https://x.com/alice/status/1",
+        author: "@alice",
+        text: "First preview",
+        feed: "following" as const,
+        repostedFrom: null,
+      },
+      {
+        statusId: "2",
+        url: "https://x.com/bob/status/2",
+        author: "@bob",
+        text: "Second preview",
+        feed: "following" as const,
+        repostedFrom: null,
+      },
+      {
+        statusId: "3",
+        url: "https://x.com/carol/status/3",
+        author: "@carol",
+        text: "Third preview",
+        feed: "following" as const,
+        repostedFrom: null,
+      },
+    ];
+
+    const nowSpy = vi.spyOn(Date, "now");
+    nowSpy.mockReturnValueOnce(0);
+    nowSpy.mockReturnValueOnce(0);
+    nowSpy.mockReturnValueOnce(25);
+    nowSpy.mockReturnValueOnce(50);
+
+    try {
+      const fetchStatusPageText = vi.fn(async (tweet: Tweet, timeoutMs: number) => {
+        return `${tweet.text} expanded within ${timeoutMs}ms`;
+      });
+
+      const expanded = await expandTweetsWithStatusPageText(
+        tweets,
+        ["1", "2", "3"],
+        fetchStatusPageText,
+        { perTweetTimeoutMs: 30, totalBudgetMs: 40 },
+      );
+
+      expect(expanded).toEqual({
+        tweets: [
+          {
+            ...tweets[0],
+            text: "First preview expanded within 30ms",
+          },
+          {
+            ...tweets[1],
+            text: "Second preview expanded within 15ms",
+          },
+          tweets[2],
+        ],
+        budgetExceeded: true,
+      });
+      expect(fetchStatusPageText).toHaveBeenCalledTimes(2);
+      expect(fetchStatusPageText).toHaveBeenNthCalledWith(1, tweets[0], 30);
+      expect(fetchStatusPageText).toHaveBeenNthCalledWith(2, tweets[1], 15);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("runWithTimeout resolves normally when the wrapped promise completes in time", async () => {
+    let settled = false;
+    const result = await runWithTimeout(
+      async () => {
+        settled = true;
+        return "ok";
+      },
+      5000,
+      "test",
+    );
+    expect(result).toBe("ok");
+    expect(settled).toBe(true);
+  });
+
+  it("runWithTimeout rejects with timeout error when the wrapped promise hangs", async () => {
+    const hang = new Promise<string>((resolve) => {
+      setTimeout(resolve, 999_999_999);
+    });
+    await expect(runWithTimeout(() => hang, 50, "hang-test")).rejects.toThrow(
+      "timeout: hang-test after 50ms",
+    );
   });
 });

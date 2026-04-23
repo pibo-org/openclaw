@@ -11,6 +11,8 @@ export const TWITTER_DEFAULT_NEW_TWEETS = 20;
 export const TWITTER_DEFAULT_MAX_SCANNED = 1000;
 export const TWITTER_STATE_SEEN_LIMIT = 5000;
 export const TWITTER_STAGNATION_PASS_LIMIT = 3;
+const TWITTER_LONG_TWEET_PER_TWEET_TIMEOUT_MS = 4_000;
+const TWITTER_LONG_TWEET_TOTAL_BUDGET_MS = 15_000;
 
 const TWITTER_STATE_SCHEMA_VERSION = 1;
 const RECOVERY_WAIT_MS = 1500;
@@ -19,7 +21,7 @@ const SAFE_RESTART_HOUR_START = 2;
 const SAFE_RESTART_HOUR_END = 6;
 const FEED_READY_WAIT_MS = 3000;
 const FEED_SCROLL_WAIT_MS = 1500;
-const STATUS_PAGE_READY_WAIT_MS = 10000;
+const TWITTER_HOME_GOTO_TIMEOUT_MS = 30000;
 const FEED_TWEET_SHOW_MORE_LABEL = "show more";
 
 export type TwitterFeed = "following" | "for-you";
@@ -277,6 +279,149 @@ export function buildTweetUrl(author: string, statusId: string): string {
   return `https://x.com/i/web/status/${statusId}`;
 }
 
+function isTwitterHomeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    return (host === "x.com" || host.endsWith(".x.com")) && parsed.pathname === "/home";
+  } catch {
+    return url.includes("x.com/home");
+  }
+}
+
+function scoreTwitterPageUrl(url: string): number {
+  const normalized = url.trim();
+  if (!normalized) {
+    return -10;
+  }
+  if (isTwitterHomeUrl(normalized)) {
+    return 100;
+  }
+  if (normalized === "https://x.com/" || normalized === "http://x.com/") {
+    return 90;
+  }
+  if (normalized.startsWith("https://x.com/") || normalized.startsWith("http://x.com/")) {
+    return normalized.endsWith("/sw.js") ? -5 : 80;
+  }
+  if (normalized.startsWith("blob:https://x.com/")) {
+    return -20;
+  }
+  return -1;
+}
+
+type TwitterPageReadiness = {
+  tweetCount: number;
+  tabCount: number;
+  bodyLength: number;
+};
+
+type TwitterPageSnapshot = {
+  url: string;
+  body: string;
+  tweetCount: number;
+  tabCount: number;
+  timelineLabel: string;
+};
+
+async function inspectTwitterPageReadiness(page: Page): Promise<TwitterPageReadiness> {
+  return page.evaluate(() => ({
+    tweetCount: document.querySelectorAll("article[data-testid=tweet]").length,
+    tabCount: document.querySelectorAll("[role=tab]").length,
+    bodyLength: (document.body?.innerText ?? "").trim().length,
+  }));
+}
+
+async function pickPreferredTwitterPage(pages: readonly Page[]): Promise<Page | null> {
+  let bestPage: Page | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const page of pages) {
+    let score = scoreTwitterPageUrl(page.url());
+    try {
+      const readiness = await inspectTwitterPageReadiness(page);
+      if (readiness.tweetCount > 0) {
+        score += 300;
+      }
+      if (readiness.tabCount > 0) {
+        score += 150;
+      }
+      if (readiness.bodyLength > 0) {
+        score += Math.min(100, readiness.bodyLength);
+      }
+    } catch {
+      // Keep URL-based score only.
+    }
+
+    if (!bestPage || score > bestScore) {
+      bestPage = page;
+      bestScore = score;
+    }
+  }
+
+  return bestPage;
+}
+
+async function pickPreferredTwitterPageFromContext(page: Page): Promise<Page> {
+  const pages = page.context().pages();
+  return (await pickPreferredTwitterPage(pages)) ?? page;
+}
+
+async function readTwitterPageSnapshot(page: Page): Promise<TwitterPageSnapshot> {
+  return page.evaluate(() => ({
+    url: location.href,
+    body: document.body?.innerText ?? "",
+    tweetCount: document.querySelectorAll("article[data-testid=tweet]").length,
+    tabCount: document.querySelectorAll("[role=tab]").length,
+    timelineLabel:
+      document
+        .querySelector("[aria-label='Home timeline'], [aria-label^='Timeline: Your Home Timeline']")
+        ?.getAttribute("aria-label") ?? "",
+  }));
+}
+
+function isReadableTwitterSnapshot(snapshot: TwitterPageSnapshot): boolean {
+  return (
+    snapshot.tweetCount > 0 || snapshot.tabCount > 0 || normalizeTweetText(snapshot.body).length > 0
+  );
+}
+
+async function waitForReadableTwitterPage(page: Page): Promise<Page> {
+  const deadline = Date.now() + 15000;
+  let lastError: unknown = null;
+
+  while (Date.now() < deadline) {
+    const candidate = await pickPreferredTwitterPageFromContext(page);
+    try {
+      const snapshot = await readTwitterPageSnapshot(candidate);
+      if (isReadableTwitterSnapshot(snapshot)) {
+        return candidate;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await wait(1500);
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Twitter page did not become readable after recovery");
+}
+
+function isLoggedOutTwitterLandingText(text: string): boolean {
+  const normalized = normalizeTweetText(text).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const loginSignals = [
+    "join today",
+    "already have an account?",
+    "sign up with google",
+    "sign up with apple",
+    "create account",
+  ];
+  return loginSignals.every((signal) => normalized.includes(signal));
+}
+
 function normalizeTweetText(text: string): string {
   return text
     .replace(/\u00A0/g, " ")
@@ -288,24 +433,47 @@ export function hasFeedTweetShowMoreSignal(controlText: string): boolean {
   return normalizeTweetText(controlText).toLowerCase() === FEED_TWEET_SHOW_MORE_LABEL;
 }
 
+export interface ExpandTweetsBudget {
+  perTweetTimeoutMs: number;
+  totalBudgetMs: number;
+}
+
+export const DEFAULT_EXPAND_TWEETS_BUDGET: ExpandTweetsBudget = {
+  perTweetTimeoutMs: TWITTER_LONG_TWEET_PER_TWEET_TIMEOUT_MS,
+  totalBudgetMs: TWITTER_LONG_TWEET_TOTAL_BUDGET_MS,
+};
+
 export async function expandTweetsWithStatusPageText(
   tweets: readonly Tweet[],
   statusIdsMarkedForExpansion: readonly string[],
-  fetchStatusPageText: (tweet: Tweet) => Promise<string | null>,
-): Promise<Tweet[]> {
+  fetchStatusPageText: (tweet: Tweet, timeoutMs: number) => Promise<string | null>,
+  budget: ExpandTweetsBudget = DEFAULT_EXPAND_TWEETS_BUDGET,
+): Promise<{ tweets: Tweet[]; budgetExceeded: boolean }> {
   const expandedTweets: Tweet[] = [];
   const statusIdsToExpand = new Set(
     statusIdsMarkedForExpansion.map((statusId) => statusId.trim()).filter(Boolean),
   );
 
-  for (const tweet of tweets) {
+  const startedAt = Date.now();
+
+  for (const [index, tweet] of tweets.entries()) {
     if (!statusIdsToExpand.has(tweet.statusId)) {
       expandedTweets.push(tweet);
       continue;
     }
 
+    const remainingBudgetMs = budget.totalBudgetMs - (Date.now() - startedAt);
+    if (remainingBudgetMs <= 0) {
+      return {
+        tweets: [...expandedTweets, ...tweets.slice(index)],
+        budgetExceeded: true,
+      };
+    }
+
+    const perTweetTimeoutMs = Math.max(1, Math.min(budget.perTweetTimeoutMs, remainingBudgetMs));
+
     try {
-      const statusPageText = await fetchStatusPageText(tweet);
+      const statusPageText = await fetchStatusPageText(tweet, perTweetTimeoutMs);
       const normalizedStatusPageText = statusPageText ? normalizeTweetText(statusPageText) : "";
       if (normalizedStatusPageText && normalizedStatusPageText !== normalizeTweetText(tweet.text)) {
         expandedTweets.push({
@@ -319,7 +487,7 @@ export async function expandTweetsWithStatusPageText(
     expandedTweets.push(tweet);
   }
 
-  return expandedTweets;
+  return { tweets: expandedTweets, budgetExceeded: false };
 }
 
 export async function collectTweetsFromPasses(
@@ -677,13 +845,13 @@ async function ensureBrowserRunning(): Promise<boolean> {
 }
 
 async function connectBrowser() {
-  const browser = await chromium.connectOverCDP(CDP_URL);
+  const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 20000 });
   const context = browser.contexts()[0];
   if (!context) {
     await browser.close();
     throw new Error("No browser context available over CDP");
   }
-  const page = context.pages().find((entry) => entry.url().includes("x.com")) ?? context.pages()[0];
+  const page = await pickPreferredTwitterPage(context.pages());
   if (!page) {
     return { browser, page: await context.newPage() };
   }
@@ -694,27 +862,145 @@ async function feedReadyCheck(page: Page): Promise<boolean> {
   return page.evaluate(() => document.querySelectorAll("article[data-testid=tweet]").length > 0);
 }
 
-async function selectFeedTab(page: Page, feed: TwitterFeed): Promise<void> {
-  const tabName = feed === "for-you" ? "For you" : "Following";
-  const roleTab = page.getByRole("tab", { name: new RegExp(`^${tabName}$`, "i") }).first();
-
-  if ((await roleTab.count()) === 0) {
-    throw new Error(`Twitter feed tab not found: ${tabName}`);
-  }
-
-  if ((await roleTab.getAttribute("aria-selected")) !== "true") {
-    await roleTab.click();
-    await page.waitForTimeout(FEED_READY_WAIT_MS);
+async function assertTwitterSessionReady(page: Page): Promise<void> {
+  const state = await readTwitterPageSnapshot(page);
+  if (
+    state.url === "https://x.com/" ||
+    state.url === "http://x.com/" ||
+    state.url.includes("/i/flow/login") ||
+    isLoggedOutTwitterLandingText(state.body)
+  ) {
+    throw new Error("Twitter/X is not logged in in the OpenClaw browser profile");
   }
 }
 
-async function navigateToFeed(page: Page, feed: TwitterFeed): Promise<void> {
-  if (!page.url().includes("x.com/home")) {
-    await page.goto("https://x.com/home", { waitUntil: "domcontentloaded" });
+async function canUseHomeTimelineFallback(page: Page, feed: TwitterFeed): Promise<boolean> {
+  if (feed !== "following") {
+    return false;
+  }
+  const state = await readTwitterPageSnapshot(page);
+  const normalizedBody = normalizeTweetText(state.body);
+  return (
+    state.tweetCount > 0 &&
+    state.tabCount === 0 &&
+    (normalizedBody.includes("Your Home Timeline") || state.timelineLabel.length > 0)
+  );
+}
+
+async function selectFeedTab(page: Page, feed: TwitterFeed): Promise<void> {
+  const tabName = feed === "for-you" ? "For you" : "Following";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const roleTab = page.getByRole("tab", { name: new RegExp(`^${tabName}$`, "i") }).first();
+    if ((await roleTab.count()) > 0) {
+      if ((await roleTab.getAttribute("aria-selected")) !== "true") {
+        await roleTab.click();
+        await page.waitForTimeout(FEED_READY_WAIT_MS);
+      }
+      return;
+    }
     await page.waitForTimeout(FEED_READY_WAIT_MS);
   }
 
-  await selectFeedTab(page, feed);
+  await assertTwitterSessionReady(page);
+  if (await canUseHomeTimelineFallback(page, feed)) {
+    console.error("Twitter Following tab not visible; using the loaded Home timeline as fallback.");
+    return;
+  }
+  throw new Error(`Twitter feed tab not found: ${tabName}`);
+}
+
+export function shouldReloadTwitterHomeForMissingFeedTab(
+  currentUrl: string,
+  error: unknown,
+  attemptedReload: boolean,
+): boolean {
+  return (
+    !attemptedReload &&
+    currentUrl.includes("x.com/home") &&
+    error instanceof Error &&
+    error.message.startsWith("Twitter feed tab not found: ")
+  );
+}
+
+function openTwitterHomeViaBrowserCli(): void {
+  execSync("openclaw browser open https://x.com/home", {
+    stdio: "pipe",
+    timeout: 45000,
+  });
+}
+
+async function openFreshTwitterHomePage(page: Page): Promise<Page> {
+  try {
+    const freshPage = await page.context().newPage();
+    await freshPage.goto("https://x.com/home", {
+      waitUntil: "domcontentloaded",
+      timeout: TWITTER_HOME_GOTO_TIMEOUT_MS,
+    });
+    await freshPage.waitForTimeout(FEED_READY_WAIT_MS);
+  } catch {
+    openTwitterHomeViaBrowserCli();
+    await wait(FEED_READY_WAIT_MS);
+  }
+
+  return pickPreferredTwitterPageFromContext(page);
+}
+
+async function reloadTwitterHome(page: Page): Promise<Page> {
+  try {
+    await page.reload({ waitUntil: "domcontentloaded", timeout: TWITTER_HOME_GOTO_TIMEOUT_MS });
+    await page.waitForTimeout(FEED_READY_WAIT_MS);
+    return page;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Timeout")) {
+      await wait(FEED_READY_WAIT_MS);
+      return page;
+    }
+    if (!(error instanceof Error) || !error.message.includes("Not attached to an active page")) {
+      throw error;
+    }
+
+    return openFreshTwitterHomePage(page);
+  }
+}
+
+async function navigateToFeed(page: Page, feed: TwitterFeed): Promise<Page> {
+  let activePage = await pickPreferredTwitterPageFromContext(page);
+  if (!isTwitterHomeUrl(activePage.url())) {
+    try {
+      await activePage.goto("https://x.com/home", {
+        waitUntil: "domcontentloaded",
+        timeout: TWITTER_HOME_GOTO_TIMEOUT_MS,
+      });
+      await activePage.waitForTimeout(FEED_READY_WAIT_MS);
+    } catch (error) {
+      openTwitterHomeViaBrowserCli();
+      await wait(FEED_READY_WAIT_MS);
+      activePage = await pickPreferredTwitterPageFromContext(activePage);
+      if (!isTwitterHomeUrl(activePage.url())) {
+        throw error;
+      }
+    }
+  }
+
+  activePage = await waitForReadableTwitterPage(activePage);
+
+  let attemptedReload = false;
+  while (true) {
+    try {
+      await assertTwitterSessionReady(activePage);
+      await selectFeedTab(activePage, feed);
+      return activePage;
+    } catch (error) {
+      if (!shouldReloadTwitterHomeForMissingFeedTab(activePage.url(), error, attemptedReload)) {
+        throw error;
+      }
+
+      attemptedReload = true;
+      console.error("Twitter feed tabs missing on Home. Reloading once before failing.");
+      activePage = await reloadTwitterHome(activePage);
+      activePage = await waitForReadableTwitterPage(activePage);
+    }
+  }
 }
 
 async function extractVisibleTweetCandidates(page: Page): Promise<ExtractedTweetCandidate[]> {
@@ -836,11 +1122,13 @@ async function collectTweetsFromPage(
 async function extractTweetTextFromStatusPage(
   page: Page,
   tweet: Pick<Tweet, "statusId" | "url">,
+  timeoutMs: number,
 ): Promise<string | null> {
   if (!tweet.statusId || !tweet.url) {
     return null;
   }
 
+  const startedAt = Date.now();
   const readStatusPageText = async () =>
     page.evaluate((expectedStatusId) => {
       const statusMarker = `/status/${expectedStatusId}`;
@@ -869,30 +1157,36 @@ async function extractTweetTextFromStatusPage(
 
   await page.goto(tweet.url, {
     waitUntil: "domcontentloaded",
-    timeout: STATUS_PAGE_READY_WAIT_MS,
+    timeout: timeoutMs,
   });
 
-  try {
-    await page.waitForFunction(
-      (expectedStatusId) => {
-        const statusMarker = `/status/${expectedStatusId}`;
-        const articles = Array.from(document.querySelectorAll("article[data-testid=tweet]"));
-        return articles.some((article) => {
-          const matchesStatusId = Array.from(article.querySelectorAll("a[href*='/status/']")).some(
-            (link) =>
+  const remainingWaitMs = timeoutMs - (Date.now() - startedAt);
+  if (remainingWaitMs > 0) {
+    try {
+      await page.waitForFunction(
+        (expectedStatusId) => {
+          const statusMarker = `/status/${expectedStatusId}`;
+          const articles = Array.from(document.querySelectorAll("article[data-testid=tweet]"));
+          return articles.some((article) => {
+            const matchesStatusId = Array.from(
+              article.querySelectorAll("a[href*='/status/']"),
+            ).some((link) =>
               ((link as HTMLAnchorElement).getAttribute("href") ?? "").includes(statusMarker),
-          );
-          if (!matchesStatusId) {
-            return false;
-          }
-          const text = (article.querySelector("[data-testid=tweetText]")?.textContent ?? "").trim();
-          return Boolean(text);
-        });
-      },
-      tweet.statusId,
-      { timeout: STATUS_PAGE_READY_WAIT_MS },
-    );
-  } catch {}
+            );
+            if (!matchesStatusId) {
+              return false;
+            }
+            const text = (
+              article.querySelector("[data-testid=tweetText]")?.textContent ?? ""
+            ).trim();
+            return Boolean(text);
+          });
+        },
+        tweet.statusId,
+        { timeout: remainingWaitMs },
+      );
+    } catch {}
+  }
 
   return readStatusPageText();
 }
@@ -908,11 +1202,17 @@ async function expandTweetsFromStatusPages(
 
   const statusPage = await page.context().newPage();
   try {
-    return await expandTweetsWithStatusPageText(
+    const result = await expandTweetsWithStatusPageText(
       tweets,
       statusIdsMarkedForExpansion,
-      async (tweet) => extractTweetTextFromStatusPage(statusPage, tweet),
+      async (tweet, timeoutMs) => extractTweetTextFromStatusPage(statusPage, tweet, timeoutMs),
     );
+    if (result.budgetExceeded) {
+      console.error(
+        `Twitter long-tweet expansion hit its ${TWITTER_LONG_TWEET_TOTAL_BUDGET_MS}ms budget; keeping feed text for the remaining tweets.`,
+      );
+    }
+    return result.tweets;
   } finally {
     await statusPage.close();
   }
@@ -955,6 +1255,41 @@ function updateTwitterStateForFailure(
   };
 }
 
+export function runWithTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error(`timeout: ${label} after ${ms}ms`));
+    }, ms);
+    if (typeof timeout === "object" && typeof timeout.unref === "function") {
+      timeout.unref();
+    }
+
+    void fn().then(
+      (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliOptions = {}) {
   const feed = normalizeTwitterFeed(feedInput);
   const normalizedOptions = normalizeTwitterCheckOptions(opts);
@@ -980,11 +1315,11 @@ export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliO
   const { browser, page } = await connectBrowser();
 
   try {
-    await navigateToFeed(page, feed);
+    const activePage = await navigateToFeed(page, feed);
 
-    if (!(await feedReadyCheck(page))) {
-      await page.waitForTimeout(FEED_READY_WAIT_MS);
-      if (!(await feedReadyCheck(page))) {
+    if (!(await feedReadyCheck(activePage))) {
+      await activePage.waitForTimeout(FEED_READY_WAIT_MS);
+      if (!(await feedReadyCheck(activePage))) {
         if (normalizedOptions.writeState) {
           writeTwitterState(
             feed,
@@ -1000,14 +1335,14 @@ export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliO
     }
 
     const loopResult = await collectTweetsFromPage(
-      page,
+      activePage,
       feed,
       knownStatusIds,
       normalizedOptions.requestedNewCount,
       normalizedOptions.maxScanned,
     );
     const expandedTweets = await expandTweetsFromStatusPages(
-      page,
+      activePage,
       loopResult.tweets,
       loopResult.statusIdsMarkedForExpansion,
     );
@@ -1051,7 +1386,7 @@ export async function twitterCheckFeed(feedInput: string, opts: TwitterCheckCliO
     }
     throw error;
   } finally {
-    await browser.close();
+    await runWithTimeout(() => browser.close(), 10_000, "browser.close");
   }
 }
 
