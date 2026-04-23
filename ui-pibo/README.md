@@ -69,9 +69,9 @@ If you prefer not to use Tailwind CSS:
 This project uses [eslint](https://eslint.org/) and [prettier](https://prettier.io/) for linting and formatting. Eslint is configured using [tanstack/eslint-config](https://tanstack.com/config/latest/docs/eslint). The following scripts are available:
 
 ```bash
-npm run lint
-npm run format
-npm run check
+pnpm --dir ui-pibo lint
+pnpm --dir ui-pibo format
+pnpm --dir ui-pibo check
 ```
 
 ## Routing

@@ -26,6 +26,13 @@ export default function Header() {
           <Link to="/editor" className="nav-link" activeProps={{ className: "nav-link is-active" }}>
             Editor
           </Link>
+          <Link
+            to="/workflows"
+            className="nav-link"
+            activeProps={{ className: "nav-link is-active" }}
+          >
+            Workflows
+          </Link>
           <a href="/chat" className="nav-link">
             Chat
           </a>

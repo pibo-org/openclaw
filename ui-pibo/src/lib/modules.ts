@@ -19,6 +19,14 @@ export const PIBO_MODULES: PiboModule[] = [
     runtime: "ui-pibo",
   },
   {
+    id: "workflows",
+    title: "Workflows Dashboard",
+    href: "/workflows",
+    description: "Read-only Dashboard fuer Workflow-Runs, Trace-Summaries, Events und Artefakte.",
+    status: "live",
+    runtime: "ui-pibo",
+  },
+  {
     id: "chat",
     title: "OpenClaw-Chat",
     href: "/chat",

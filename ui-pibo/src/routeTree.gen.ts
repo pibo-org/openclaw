@@ -12,11 +12,19 @@ import { Route as rootRouteImport } from "./routes/__root";
 import { Route as AboutRouteImport } from "./routes/about";
 import { Route as ApiDocumentsSaveRouteImport } from "./routes/api/documents/save";
 import { Route as ApiStreamChangesRouteImport } from "./routes/api/stream/changes";
+import { Route as ApiStreamWorkflowsRouteImport } from "./routes/api/stream/workflows";
 import { Route as ApiUploadsRouteImport } from "./routes/api/uploads";
 import { Route as EditorRouteImport } from "./routes/editor";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as MediaUploadsSplatRouteImport } from "./routes/media/uploads/$";
+import { Route as WorkflowsRouteImport } from "./routes/workflows";
+import { Route as WorkflowsRunIdRouteImport } from "./routes/workflows.$runId";
 
+const WorkflowsRoute = WorkflowsRouteImport.update({
+  id: "/workflows",
+  path: "/workflows",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const EditorRoute = EditorRouteImport.update({
   id: "/editor",
   path: "/editor",
@@ -32,6 +40,11 @@ const IndexRoute = IndexRouteImport.update({
   path: "/",
   getParentRoute: () => rootRouteImport,
 } as any);
+const WorkflowsRunIdRoute = WorkflowsRunIdRouteImport.update({
+  id: "/$runId",
+  path: "/$runId",
+  getParentRoute: () => WorkflowsRoute,
+} as any);
 const ApiUploadsRoute = ApiUploadsRouteImport.update({
   id: "/api/uploads",
   path: "/api/uploads",
@@ -40,6 +53,11 @@ const ApiUploadsRoute = ApiUploadsRouteImport.update({
 const MediaUploadsSplatRoute = MediaUploadsSplatRouteImport.update({
   id: "/media/uploads/$",
   path: "/media/uploads/$",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const ApiStreamWorkflowsRoute = ApiStreamWorkflowsRouteImport.update({
+  id: "/api/stream/workflows",
+  path: "/api/stream/workflows",
   getParentRoute: () => rootRouteImport,
 } as any);
 const ApiStreamChangesRoute = ApiStreamChangesRouteImport.update({
@@ -57,18 +75,24 @@ export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/about": typeof AboutRoute;
   "/editor": typeof EditorRoute;
+  "/workflows": typeof WorkflowsRouteWithChildren;
   "/api/uploads": typeof ApiUploadsRoute;
+  "/workflows/$runId": typeof WorkflowsRunIdRoute;
   "/api/documents/save": typeof ApiDocumentsSaveRoute;
   "/api/stream/changes": typeof ApiStreamChangesRoute;
+  "/api/stream/workflows": typeof ApiStreamWorkflowsRoute;
   "/media/uploads/$": typeof MediaUploadsSplatRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/about": typeof AboutRoute;
   "/editor": typeof EditorRoute;
+  "/workflows": typeof WorkflowsRouteWithChildren;
   "/api/uploads": typeof ApiUploadsRoute;
+  "/workflows/$runId": typeof WorkflowsRunIdRoute;
   "/api/documents/save": typeof ApiDocumentsSaveRoute;
   "/api/stream/changes": typeof ApiStreamChangesRoute;
+  "/api/stream/workflows": typeof ApiStreamWorkflowsRoute;
   "/media/uploads/$": typeof MediaUploadsSplatRoute;
 }
 export interface FileRoutesById {
@@ -76,9 +100,12 @@ export interface FileRoutesById {
   "/": typeof IndexRoute;
   "/about": typeof AboutRoute;
   "/editor": typeof EditorRoute;
+  "/workflows": typeof WorkflowsRouteWithChildren;
   "/api/uploads": typeof ApiUploadsRoute;
+  "/workflows/$runId": typeof WorkflowsRunIdRoute;
   "/api/documents/save": typeof ApiDocumentsSaveRoute;
   "/api/stream/changes": typeof ApiStreamChangesRoute;
+  "/api/stream/workflows": typeof ApiStreamWorkflowsRoute;
   "/media/uploads/$": typeof MediaUploadsSplatRoute;
 }
 export interface FileRouteTypes {
@@ -87,27 +114,36 @@ export interface FileRouteTypes {
     | "/"
     | "/about"
     | "/editor"
+    | "/workflows"
     | "/api/uploads"
+    | "/workflows/$runId"
     | "/api/documents/save"
     | "/api/stream/changes"
+    | "/api/stream/workflows"
     | "/media/uploads/$";
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/"
     | "/about"
     | "/editor"
+    | "/workflows"
     | "/api/uploads"
+    | "/workflows/$runId"
     | "/api/documents/save"
     | "/api/stream/changes"
+    | "/api/stream/workflows"
     | "/media/uploads/$";
   id:
     | "__root__"
     | "/"
     | "/about"
     | "/editor"
+    | "/workflows"
     | "/api/uploads"
+    | "/workflows/$runId"
     | "/api/documents/save"
     | "/api/stream/changes"
+    | "/api/stream/workflows"
     | "/media/uploads/$";
   fileRoutesById: FileRoutesById;
 }
@@ -115,14 +151,23 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
   AboutRoute: typeof AboutRoute;
   EditorRoute: typeof EditorRoute;
+  WorkflowsRoute: typeof WorkflowsRouteWithChildren;
   ApiUploadsRoute: typeof ApiUploadsRoute;
   ApiDocumentsSaveRoute: typeof ApiDocumentsSaveRoute;
   ApiStreamChangesRoute: typeof ApiStreamChangesRoute;
+  ApiStreamWorkflowsRoute: typeof ApiStreamWorkflowsRoute;
   MediaUploadsSplatRoute: typeof MediaUploadsSplatRoute;
 }
 
 declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
+    "/workflows": {
+      id: "/workflows";
+      path: "/workflows";
+      fullPath: "/workflows";
+      preLoaderRoute: typeof WorkflowsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/editor": {
       id: "/editor";
       path: "/editor";
@@ -144,6 +189,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof IndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/workflows/$runId": {
+      id: "/workflows/$runId";
+      path: "/$runId";
+      fullPath: "/workflows/$runId";
+      preLoaderRoute: typeof WorkflowsRunIdRouteImport;
+      parentRoute: typeof WorkflowsRoute;
+    };
     "/api/uploads": {
       id: "/api/uploads";
       path: "/api/uploads";
@@ -156,6 +208,13 @@ declare module "@tanstack/react-router" {
       path: "/media/uploads/$";
       fullPath: "/media/uploads/$";
       preLoaderRoute: typeof MediaUploadsSplatRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/api/stream/workflows": {
+      id: "/api/stream/workflows";
+      path: "/api/stream/workflows";
+      fullPath: "/api/stream/workflows";
+      preLoaderRoute: typeof ApiStreamWorkflowsRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/api/stream/changes": {
@@ -175,13 +234,25 @@ declare module "@tanstack/react-router" {
   }
 }
 
+interface WorkflowsRouteChildren {
+  WorkflowsRunIdRoute: typeof WorkflowsRunIdRoute;
+}
+
+const WorkflowsRouteChildren: WorkflowsRouteChildren = {
+  WorkflowsRunIdRoute: WorkflowsRunIdRoute,
+};
+
+const WorkflowsRouteWithChildren = WorkflowsRoute._addFileChildren(WorkflowsRouteChildren);
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
   EditorRoute: EditorRoute,
+  WorkflowsRoute: WorkflowsRouteWithChildren,
   ApiUploadsRoute: ApiUploadsRoute,
   ApiDocumentsSaveRoute: ApiDocumentsSaveRoute,
   ApiStreamChangesRoute: ApiStreamChangesRoute,
+  ApiStreamWorkflowsRoute: ApiStreamWorkflowsRoute,
   MediaUploadsSplatRoute: MediaUploadsSplatRoute,
 };
 export const routeTree = rootRouteImport
