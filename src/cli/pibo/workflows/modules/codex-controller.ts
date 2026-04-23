@@ -42,6 +42,10 @@ type WorkflowOwnedWorktree = {
   kind: "linked_worktree";
   rootPath: string;
   sourceRepoRoot: string;
+  managedBranch: string;
+  recoveryRef: string;
+  integrationTargetBranch: string | null;
+  integrationWorktreePath: string;
 };
 
 type CodexControllerInput = {
@@ -107,7 +111,8 @@ type CloseoutContext = Pick<
 type CloseoutMode =
   | "repo_integrated"
   | "linked_worktree_local"
-  | "workflow_owned_worktree_local";
+  | "workflow_owned_worktree_local"
+  | "workflow_owned_repo_integrated";
 
 type CloseoutCheckCode =
   | "git_repo_missing"
@@ -139,6 +144,9 @@ type CloseoutAssessment = {
     closeoutContextSource: CloseoutContext["closeoutContextSource"];
     closeoutMode: CloseoutMode;
     resolvedRepoRoot: string | null;
+    workflowOwnedIntegrationTargetBranch: string | null;
+    workflowOwnedVerificationHead: string | null;
+    workflowOwnedIntegrationWorktreePath: string | null;
   };
   git: {
     head: string | null;
@@ -164,6 +172,8 @@ type CloseoutPreflight = {
   summary: string;
   reason: string;
   mode: CloseoutMode;
+  runtimeOwnedIntegration: "required" | "not_required";
+  integrationTargetBranch: string | null;
   repoRoot: string | null;
   workingDirectory: string;
   requestedWorkingDirectory: string;
@@ -183,6 +193,19 @@ type WorkspaceCleanupResult = {
   status: "not_applicable" | "skipped" | "passed" | "blocked";
   reason: string;
   trace: string[];
+};
+
+type WorkflowOwnedIntegrationResult = {
+  status: "not_applicable" | "skipped" | "passed" | "blocked";
+  reason: string;
+  trace: string[];
+  workerHead: string | null;
+  targetBranch: string | null;
+  targetHeadBefore: string | null;
+  integratedHead: string | null;
+  managedBranch: string | null;
+  recoveryRef: string | null;
+  integrationWorktreePath: string | null;
 };
 
 type ControllerDecision = {
@@ -275,6 +298,10 @@ function normalizeStringArray(value: unknown): string[] {
   return [];
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function normalizePositiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return undefined;
@@ -296,10 +323,15 @@ function normalizeWorkingDirectoryMode(value: unknown): WorkingDirectoryMode | u
   return undefined;
 }
 
-function runGitCommand(cwd: string, args: string[]): { ok: true; output: string } | {
-  ok: false;
-  message: string;
-} {
+function runGitCommand(
+  cwd: string,
+  args: string[],
+):
+  | { ok: true; output: string }
+  | {
+      ok: false;
+      message: string;
+    } {
   try {
     return {
       ok: true,
@@ -310,8 +342,11 @@ function runGitCommand(cwd: string, args: string[]): { ok: true; output: string 
     };
   } catch (error) {
     const stderr =
-      typeof error === "object" && error !== null && "stderr" in error
-        ? String((error as { stderr?: unknown }).stderr ?? "")
+      typeof error === "object" &&
+      error !== null &&
+      "stderr" in error &&
+      typeof (error as { stderr?: unknown }).stderr === "string"
+        ? (error as { stderr: string }).stderr
         : "";
     const message = stderr.trim() || (error instanceof Error ? error.message : String(error));
     return { ok: false, message };
@@ -354,7 +389,9 @@ function normalizeRequestedInput(request: WorkflowStartRequest): RequestedCodexC
     requestedWorkingDirectory: path.resolve(rawWorkingDirectory),
     ...(rawRepoRoot ? { requestedRepoRoot: path.resolve(rawRepoRoot) } : {}),
     ...(normalizeWorkingDirectoryMode(record.workingDirectoryMode)
-      ? { requestedWorkingDirectoryMode: normalizeWorkingDirectoryMode(record.workingDirectoryMode) }
+      ? {
+          requestedWorkingDirectoryMode: normalizeWorkingDirectoryMode(record.workingDirectoryMode),
+        }
       : {}),
     agentId,
     maxRetries,
@@ -382,12 +419,16 @@ function normalizeRequestedInput(request: WorkflowStartRequest): RequestedCodexC
   };
 }
 
-function normalizePersistedInput(record: Record<string, unknown>): NormalizedCodexControllerInput {
+function normalizePersistedInput(
+  record: Record<string, unknown>,
+  runId: string,
+): NormalizedCodexControllerInput {
   const requested = normalizeRequestedInput({
     input: {
       ...record,
       workingDirectory:
-        typeof record.requestedWorkingDirectory === "string" && record.requestedWorkingDirectory.trim()
+        typeof record.requestedWorkingDirectory === "string" &&
+        record.requestedWorkingDirectory.trim()
           ? record.requestedWorkingDirectory
           : record.workingDirectory,
       repoRoot:
@@ -408,21 +449,40 @@ function normalizePersistedInput(record: Record<string, unknown>): NormalizedCod
     workspaceOwnership === "workflow_owned" &&
     record.workflowOwnedWorktree &&
     typeof record.workflowOwnedWorktree === "object"
-      ? ({
-          kind: "linked_worktree",
-          rootPath: path.resolve(
-            String(
-              (record.workflowOwnedWorktree as { rootPath?: unknown }).rootPath ?? workingDirectory,
-            ),
-          ),
-          sourceRepoRoot: path.resolve(
-            String(
-              (record.workflowOwnedWorktree as { sourceRepoRoot?: unknown }).sourceRepoRoot ??
-                requested.requestedRepoRoot ??
-                requested.requestedWorkingDirectory,
-            ),
-          ),
-        } satisfies WorkflowOwnedWorktree)
+      ? (() => {
+          const persistedWorkflowOwned = record.workflowOwnedWorktree as Record<string, unknown>;
+          const persistedRootPath = normalizeOptionalString(persistedWorkflowOwned.rootPath);
+          const persistedSourceRepoRoot = normalizeOptionalString(
+            persistedWorkflowOwned.sourceRepoRoot,
+          );
+          const persistedManagedBranch = normalizeOptionalString(
+            persistedWorkflowOwned.managedBranch,
+          );
+          const persistedRecoveryRef = normalizeOptionalString(persistedWorkflowOwned.recoveryRef);
+          const persistedIntegrationTargetBranch = normalizeOptionalString(
+            persistedWorkflowOwned.integrationTargetBranch,
+          );
+          const persistedIntegrationWorktreePath = normalizeOptionalString(
+            persistedWorkflowOwned.integrationWorktreePath,
+          );
+          const sourceRepoRoot = path.resolve(
+            persistedSourceRepoRoot ??
+              requested.requestedRepoRoot ??
+              requested.requestedWorkingDirectory,
+          );
+          return {
+            kind: "linked_worktree",
+            rootPath: path.resolve(persistedRootPath ?? workingDirectory),
+            sourceRepoRoot,
+            managedBranch: persistedManagedBranch ?? buildWorkflowOwnedManagedBranch(runId),
+            recoveryRef: persistedRecoveryRef ?? buildWorkflowOwnedRecoveryRef(runId),
+            integrationTargetBranch:
+              persistedIntegrationTargetBranch ??
+              resolveWorkflowOwnedIntegrationTarget(sourceRepoRoot).targetBranch,
+            integrationWorktreePath:
+              persistedIntegrationWorktreePath ?? buildWorkflowOwnedIntegrationWorktreeRoot(runId),
+          } satisfies WorkflowOwnedWorktree;
+        })()
       : undefined;
   return {
     task: requested.task,
@@ -455,11 +515,104 @@ function buildWorkflowOwnedWorktreeRoot(runId: string): string {
   return path.join(worktreeDir, safeRunId);
 }
 
+function buildWorkflowOwnedManagedBranch(runId: string): string {
+  const safeRunId = runId.replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return `pibo/workflows/${safeRunId}`;
+}
+
+function buildWorkflowOwnedRecoveryRef(runId: string): string {
+  const safeRunId = runId.replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return `refs/pibo/workflows/${safeRunId}/worker-head`;
+}
+
+function buildWorkflowOwnedIntegrationWorktreeRoot(runId: string): string {
+  return `${buildWorkflowOwnedWorktreeRoot(runId)}.integration`;
+}
+
+function resolveWorkflowOwnedIntegrationTarget(sourceRepoRoot: string): {
+  targetBranch: string | null;
+  trace: string[];
+  reason: string;
+} {
+  const refs = parseRefList(
+    runGitReadOnly(sourceRepoRoot, [
+      "for-each-ref",
+      "--format=%(refname:short)",
+      "refs/heads",
+      "refs/remotes",
+    ]),
+  );
+  const available = new Set(refs);
+  const trace = [`available_refs=${refs.length ? refs.join(",") : "none"}`];
+  for (const branch of ["main", "master"]) {
+    if (available.has(branch)) {
+      return {
+        targetBranch: branch,
+        trace: [...trace, `target_branch=${branch}`, "target_branch_source=local_branch"],
+        reason: `Using local integration target branch ${branch}.`,
+      };
+    }
+  }
+  for (const candidate of [
+    { remoteRef: "origin/main", branch: "main" },
+    { remoteRef: "origin/master", branch: "master" },
+  ]) {
+    if (!available.has(candidate.remoteRef)) {
+      continue;
+    }
+    const remoteHead = runGitReadOnly(sourceRepoRoot, ["rev-parse", candidate.remoteRef]);
+    if (!remoteHead) {
+      return {
+        targetBranch: null,
+        trace: [
+          ...trace,
+          `target_branch=${candidate.branch}`,
+          `target_branch_source=${candidate.remoteRef}`,
+          "target_branch_head=missing",
+        ],
+        reason: `Integration target ${candidate.remoteRef} exists but its HEAD could not be resolved.`,
+      };
+    }
+    const updateRefResult = runGitCommand(sourceRepoRoot, [
+      "update-ref",
+      `refs/heads/${candidate.branch}`,
+      remoteHead,
+    ]);
+    if (!updateRefResult.ok) {
+      return {
+        targetBranch: null,
+        trace: [
+          ...trace,
+          `target_branch=${candidate.branch}`,
+          `target_branch_source=${candidate.remoteRef}`,
+          `target_branch_update_error=${updateRefResult.message}`,
+        ],
+        reason: `Failed to create local integration target ${candidate.branch} from ${candidate.remoteRef}: ${updateRefResult.message}`,
+      };
+    }
+    return {
+      targetBranch: candidate.branch,
+      trace: [
+        ...trace,
+        `target_branch=${candidate.branch}`,
+        `target_branch_source=${candidate.remoteRef}`,
+        `target_branch_head=${remoteHead}`,
+        "target_branch_hydrated=true",
+      ],
+      reason: `Hydrated local integration target ${candidate.branch} from ${candidate.remoteRef}.`,
+    };
+  }
+  return {
+    targetBranch: null,
+    trace: [...trace, "target_branch=missing"],
+    reason:
+      "No writable local integration target could be resolved from main/master or origin/main/origin/master.",
+  };
+}
+
 function resolveGitTopLevel(startPath: string): string | null {
   return (
-    runGitReadOnly(startPath, ["rev-parse", "--show-toplevel"]) ??
-    findGitRoot(startPath) ??
-    null
+    runGitReadOnly(startPath, ["rev-parse", "--show-toplevel"]) ?? findGitRoot(startPath) ?? null
   );
 }
 
@@ -506,11 +659,16 @@ function resolveExecutionWorkspace(params: {
     params.requestedInput.requestedWorkingDirectory,
   );
   const worktreeRootPath = buildWorkflowOwnedWorktreeRoot(params.runId);
+  const managedBranch = buildWorkflowOwnedManagedBranch(params.runId);
+  const recoveryRef = buildWorkflowOwnedRecoveryRef(params.runId);
+  const integrationWorktreePath = buildWorkflowOwnedIntegrationWorktreeRoot(params.runId);
+  const integrationTarget = resolveWorkflowOwnedIntegrationTarget(sourceRepoRoot);
   mkdirSync(path.dirname(worktreeRootPath), { recursive: true });
   const addResult = runGitCommand(sourceRepoRoot, [
     "worktree",
     "add",
-    "--detach",
+    "-b",
+    managedBranch,
     worktreeRootPath,
     "HEAD",
   ]);
@@ -534,6 +692,10 @@ function resolveExecutionWorkspace(params: {
       kind: "linked_worktree",
       rootPath: worktreeRootPath,
       sourceRepoRoot,
+      managedBranch,
+      recoveryRef,
+      integrationTargetBranch: integrationTarget.targetBranch,
+      integrationWorktreePath,
     },
     agentId: params.requestedInput.agentId,
     maxRetries: params.requestedInput.maxRetries,
@@ -578,6 +740,15 @@ function buildWorkerDeveloperInstructions(input: NormalizedCodexControllerInput)
     "",
     "FINISH_QUALITY:",
     ...WORKER_FINISH_QUALITY_LINES.map((line) => `- ${line}`),
+    ...(input.workspaceOwnership === "workflow_owned"
+      ? [
+          "",
+          "WORKFLOW_OWNED_GIT_RUNTIME:",
+          "- Leave the workflow-owned worktree clean when you believe the task is done.",
+          "- Runtime-owned integration into the shared repo target happens after DONE; local cleanliness is necessary but not sufficient for final success.",
+          "- Do not delete or rewrite workflow-owned git refs, branches, or worktrees that the runtime may need for integration or recovery.",
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -629,7 +800,7 @@ function parseRunContract(raw: string, runId: string): CodexControllerRunContrac
     moduleId: "codex_controller",
     runId,
     createdAt,
-    input: normalizePersistedInput((parsed.input ?? {}) as Record<string, unknown>),
+    input: normalizePersistedInput((parsed.input ?? {}) as Record<string, unknown>, runId),
     controllerPrompt,
     workerDeveloperInstructions,
     ...(typeof parsed.contextWorkspaceDir === "string" && parsed.contextWorkspaceDir.trim()
@@ -1118,6 +1289,8 @@ function buildControllerInitPrompt(params: { runContract: CodexControllerRunCont
     "- ASK_USER or STOP_BLOCKED from the base prompt map to MODULE_DECISION: ESCALATE_BLOCKED.",
     "- Use MODULE_DECISION: DONE only when the worker output is already sufficiently complete against the original task and success criteria.",
     "- If CLOSEOUT_PREFLIGHT.status=fail, MODULE_DECISION must not be DONE.",
+    "- For workflow-owned runs, CLOSEOUT_PREFLIGHT only proves local readiness. Runtime-owned integration and cleanup still happen after MODULE_DECISION: DONE.",
+    "- Do not require the worker to manually merge into the shared repo for workflow-owned runs unless the task explicitly asks for that workflow instead of runtime-owned integration.",
     "- If CLOSEOUT_PREFLIGHT.failure_class=worker_fixable, NEXT_INSTRUCTION should name the concrete closeout fix still required.",
     "- If CLOSEOUT_PREFLIGHT.failure_class=ambient_repo_state or operator_blocker, do not pretend another worker turn will magically fix it. Prefer ESCALATE_BLOCKED unless a narrow worker-fixable substep is explicit.",
     "- If CLOSEOUT_PREFLIGHT.status=unknown, be conservative about DONE and prefer more verification or escalation over optimism.",
@@ -1136,7 +1309,12 @@ function buildControllerInitPrompt(params: { runContract: CodexControllerRunCont
     `repo_root=${params.runContract.input.repoRoot}`,
     `closeout_context_source=${params.runContract.input.closeoutContextSource}`,
     ...(params.runContract.input.workflowOwnedWorktree
-      ? [`workflow_owned_worktree_root=${params.runContract.input.workflowOwnedWorktree.rootPath}`]
+      ? [
+          `workflow_owned_worktree_root=${params.runContract.input.workflowOwnedWorktree.rootPath}`,
+          `workflow_owned_managed_branch=${params.runContract.input.workflowOwnedWorktree.managedBranch}`,
+          `workflow_owned_recovery_ref=${params.runContract.input.workflowOwnedWorktree.recoveryRef}`,
+          `workflow_owned_integration_target=${params.runContract.input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved"}`,
+        ]
       : []),
     ...(params.runContract.contextWorkspaceDir
       ? [`context_workspace_dir=${params.runContract.contextWorkspaceDir}`]
@@ -1248,6 +1426,9 @@ function buildCloseoutPreflight(assessment: CloseoutAssessment): CloseoutPreflig
     summary: failedCheckSummary,
     reason: assessment.reason,
     mode: assessment.context.closeoutMode,
+    runtimeOwnedIntegration:
+      assessment.context.workspaceOwnership === "workflow_owned" ? "required" : "not_required",
+    integrationTargetBranch: assessment.context.workflowOwnedIntegrationTargetBranch,
     repoRoot,
     workingDirectory: assessment.context.workingDirectory,
     requestedWorkingDirectory: assessment.context.requestedWorkingDirectory,
@@ -1337,6 +1518,8 @@ function buildCloseoutPreflightPrompt(preflight: CloseoutPreflight): string {
     `mode=${preflight.mode}`,
     `status=${preflight.status}`,
     `failure_class=${preflight.failureClass}`,
+    `runtime_owned_integration=${preflight.runtimeOwnedIntegration}`,
+    `integration_target_branch=${preflight.integrationTargetBranch ?? "unresolved"}`,
     `summary=${preflight.summary}`,
     `repo_root=${preflight.repoRoot ?? "unresolved"}`,
     `working_directory=${preflight.workingDirectory}`,
@@ -1363,7 +1546,12 @@ function buildControllerRunContractReminder(runContract: CodexControllerRunContr
     `repo_root=${runContract.input.repoRoot}`,
     `closeout_context_source=${runContract.input.closeoutContextSource}`,
     ...(runContract.input.workflowOwnedWorktree
-      ? [`workflow_owned_worktree_root=${runContract.input.workflowOwnedWorktree.rootPath}`]
+      ? [
+          `workflow_owned_worktree_root=${runContract.input.workflowOwnedWorktree.rootPath}`,
+          `workflow_owned_managed_branch=${runContract.input.workflowOwnedWorktree.managedBranch}`,
+          `workflow_owned_recovery_ref=${runContract.input.workflowOwnedWorktree.recoveryRef}`,
+          `workflow_owned_integration_target=${runContract.input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved"}`,
+        ]
       : []),
     `round_budget=${runContract.input.maxRetries}`,
     ...(runContract.contextWorkspaceDir
@@ -1428,7 +1616,12 @@ function buildWorkflowStartedMessage(input: NormalizedCodexControllerInput): str
     `Workspace ownership: ${input.workspaceOwnership}`,
     `Closeout repo root: ${input.repoRoot} (${input.closeoutContextSource})`,
     ...(input.workflowOwnedWorktree
-      ? [`Workflow-owned worktree root: ${input.workflowOwnedWorktree.rootPath}`]
+      ? [
+          `Workflow-owned worktree root: ${input.workflowOwnedWorktree.rootPath}`,
+          `Workflow-owned managed branch: ${input.workflowOwnedWorktree.managedBranch}`,
+          `Workflow-owned recovery ref: ${input.workflowOwnedWorktree.recoveryRef}`,
+          `Workflow-owned integration target: ${input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved"}`,
+        ]
       : []),
     ...(input.workerModel ? [`Worker model: ${input.workerModel}`] : []),
     ...(input.workerReasoningEffort
@@ -1535,6 +1728,8 @@ function buildAssessmentContext(params: {
   requestedRepoRoot: string;
   closeoutMode: CloseoutMode;
   resolvedRepoRoot: string | null;
+  workflowOwnedVerificationHead?: string | null;
+  workflowOwnedIntegrationWorktreePath?: string | null;
 }) {
   return {
     workingDirectory: params.context.workingDirectory,
@@ -1546,6 +1741,10 @@ function buildAssessmentContext(params: {
     closeoutContextSource: params.context.closeoutContextSource,
     closeoutMode: params.closeoutMode,
     resolvedRepoRoot: params.resolvedRepoRoot,
+    workflowOwnedIntegrationTargetBranch:
+      params.context.workflowOwnedWorktree?.integrationTargetBranch ?? null,
+    workflowOwnedVerificationHead: params.workflowOwnedVerificationHead ?? null,
+    workflowOwnedIntegrationWorktreePath: params.workflowOwnedIntegrationWorktreePath ?? null,
   } satisfies CloseoutAssessment["context"];
 }
 
@@ -1716,10 +1915,12 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
     });
     checks.push({
       code: "not_integrated",
-      ok: true,
+      ok: closeoutMode === "linked_worktree_local",
       summary:
         closeoutMode === "workflow_owned_worktree_local"
-          ? "Workflow-owned linked worktree closeout does not require shared-repo integration."
+          ? context.workflowOwnedWorktree?.integrationTargetBranch
+            ? `Workflow-owned linked worktree is locally ready; runtime-owned integration into ${context.workflowOwnedWorktree.integrationTargetBranch} is still required.`
+            : "Workflow-owned linked worktree is locally ready; runtime-owned integration target is still unresolved."
           : "Linked worktree closeout does not require self-integration into mainline.",
     });
     trace.push(
@@ -1732,7 +1933,9 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
       status: "pass",
       reason:
         closeoutMode === "workflow_owned_worktree_local"
-          ? "Closeout passed: workflow-owned linked worktree is clean; shared-repo integration and sibling worktrees are outside this run."
+          ? context.workflowOwnedWorktree?.integrationTargetBranch
+            ? `Closeout passed: workflow-owned linked worktree is clean and locally ready for runtime-owned integration into ${context.workflowOwnedWorktree.integrationTargetBranch}.`
+            : "Closeout passed: workflow-owned linked worktree is clean and locally ready, but the runtime-owned integration target is unresolved."
           : "Closeout passed: linked worktree is clean; sibling worktrees and mainline integration are deferred until an explicit repoRoot closeout.",
       trace,
       context: buildAssessmentContext({
@@ -1916,7 +2119,633 @@ function buildCloseoutArtifact(assessment: CloseoutAssessment): string {
   return `${JSON.stringify(assessment, null, 2)}\n`;
 }
 
-function cleanupWorkflowOwnedWorkspace(input: NormalizedCodexControllerInput): WorkspaceCleanupResult {
+function buildWorkflowOwnedIntegrationArtifact(result: WorkflowOwnedIntegrationResult): string {
+  return `${JSON.stringify(result, null, 2)}\n`;
+}
+
+function ensureWorkflowOwnedRecoveryRef(
+  input: NormalizedCodexControllerInput,
+): WorkflowOwnedIntegrationResult {
+  if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
+    return {
+      status: "not_applicable",
+      reason: "No workflow-owned recovery ref was required.",
+      trace: [],
+      workerHead: null,
+      targetBranch: null,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: null,
+      recoveryRef: null,
+      integrationWorktreePath: null,
+    };
+  }
+  const sourceRepoRoot = path.resolve(input.workflowOwnedWorktree.sourceRepoRoot);
+  const workerHead = runGitReadOnly(input.workingDirectory, ["rev-parse", "HEAD"]);
+  const trace = [
+    `source_repo_root=${sourceRepoRoot}`,
+    `managed_branch=${input.workflowOwnedWorktree.managedBranch}`,
+    `recovery_ref=${input.workflowOwnedWorktree.recoveryRef}`,
+    `integration_target_branch=${input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved"}`,
+  ];
+  if (!workerHead) {
+    return {
+      status: "blocked",
+      reason: "Failed to capture workflow-owned worker HEAD before integration.",
+      trace: [...trace, "worker_head=missing"],
+      workerHead: null,
+      targetBranch: input.workflowOwnedWorktree.integrationTargetBranch,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath: input.workflowOwnedWorktree.integrationWorktreePath,
+    };
+  }
+  const updateResult = runGitCommand(sourceRepoRoot, [
+    "update-ref",
+    input.workflowOwnedWorktree.recoveryRef,
+    workerHead,
+  ]);
+  if (!updateResult.ok) {
+    return {
+      status: "blocked",
+      reason: `Failed to update workflow-owned recovery ref ${input.workflowOwnedWorktree.recoveryRef}: ${updateResult.message}`,
+      trace: [
+        ...trace,
+        `worker_head=${workerHead}`,
+        `recovery_ref_update_error=${updateResult.message}`,
+      ],
+      workerHead,
+      targetBranch: input.workflowOwnedWorktree.integrationTargetBranch,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath: input.workflowOwnedWorktree.integrationWorktreePath,
+    };
+  }
+  return {
+    status: "passed",
+    reason: `Workflow-owned recovery ref ${input.workflowOwnedWorktree.recoveryRef} now points at ${workerHead}.`,
+    trace: [...trace, `worker_head=${workerHead}`, "recovery_ref_updated=true"],
+    workerHead,
+    targetBranch: input.workflowOwnedWorktree.integrationTargetBranch,
+    targetHeadBefore: null,
+    integratedHead: null,
+    managedBranch: input.workflowOwnedWorktree.managedBranch,
+    recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+    integrationWorktreePath: input.workflowOwnedWorktree.integrationWorktreePath,
+  };
+}
+
+function integrateWorkflowOwnedResult(
+  input: NormalizedCodexControllerInput,
+  recovery: WorkflowOwnedIntegrationResult,
+): WorkflowOwnedIntegrationResult {
+  if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
+    return {
+      status: "not_applicable",
+      reason: "No workflow-owned integration was required.",
+      trace: [],
+      workerHead: null,
+      targetBranch: null,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: null,
+      recoveryRef: null,
+      integrationWorktreePath: null,
+    };
+  }
+  const sourceRepoRoot = path.resolve(input.workflowOwnedWorktree.sourceRepoRoot);
+  const integrationWorktreePath = path.resolve(input.workflowOwnedWorktree.integrationWorktreePath);
+  const targetBranch = input.workflowOwnedWorktree.integrationTargetBranch;
+  const workerHead =
+    recovery.workerHead ?? runGitReadOnly(input.workingDirectory, ["rev-parse", "HEAD"]);
+  const trace = [
+    `source_repo_root=${sourceRepoRoot}`,
+    `worker_head=${workerHead ?? "missing"}`,
+    `managed_branch=${input.workflowOwnedWorktree.managedBranch}`,
+    `recovery_ref=${input.workflowOwnedWorktree.recoveryRef}`,
+    `integration_target_branch=${targetBranch ?? "unresolved"}`,
+    `integration_worktree_path=${integrationWorktreePath}`,
+  ];
+  if (!workerHead) {
+    return {
+      status: "blocked",
+      reason: "Workflow-owned integration could not resolve the worker HEAD.",
+      trace,
+      workerHead: null,
+      targetBranch,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  if (!targetBranch) {
+    return {
+      status: "blocked",
+      reason: "Workflow-owned integration target is unresolved (`integration_target_missing`).",
+      trace,
+      workerHead,
+      targetBranch: null,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  const targetHeadBefore = runGitReadOnly(sourceRepoRoot, ["rev-parse", targetBranch]);
+  if (!targetHeadBefore) {
+    return {
+      status: "blocked",
+      reason: `Workflow-owned integration could not resolve target branch ${targetBranch}.`,
+      trace: [...trace, "target_head_before=missing"],
+      workerHead,
+      targetBranch,
+      targetHeadBefore: null,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  const existingWorktrees = parseGitWorktreePaths(
+    runGitReadOnly(sourceRepoRoot, ["worktree", "list", "--porcelain"]),
+  ).map((entry) => path.resolve(entry));
+  if (existingWorktrees.includes(integrationWorktreePath)) {
+    return {
+      status: "blocked",
+      reason: `Workflow-owned integration worktree already exists and was preserved for recovery: ${integrationWorktreePath}`,
+      trace: [
+        ...trace,
+        `target_head_before=${targetHeadBefore}`,
+        "integration_worktree_exists=true",
+      ],
+      workerHead,
+      targetBranch,
+      targetHeadBefore,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  mkdirSync(path.dirname(integrationWorktreePath), { recursive: true });
+  const addResult = runGitCommand(sourceRepoRoot, [
+    "worktree",
+    "add",
+    "--detach",
+    integrationWorktreePath,
+    targetBranch,
+  ]);
+  if (!addResult.ok) {
+    return {
+      status: "blocked",
+      reason: `Failed to create workflow-owned integration worktree ${integrationWorktreePath}: ${addResult.message}`,
+      trace: [
+        ...trace,
+        `target_head_before=${targetHeadBefore}`,
+        `integration_worktree_add_error=${addResult.message}`,
+      ],
+      workerHead,
+      targetBranch,
+      targetHeadBefore,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  const mergeResult = runGitCommand(integrationWorktreePath, [
+    "merge",
+    "--no-edit",
+    "--no-ff",
+    workerHead,
+  ]);
+  if (!mergeResult.ok) {
+    return {
+      status: "blocked",
+      reason: `Workflow-owned integration merge into ${targetBranch} failed: ${mergeResult.message}`,
+      trace: [
+        ...trace,
+        `target_head_before=${targetHeadBefore}`,
+        `integration_merge_error=${mergeResult.message}`,
+      ],
+      workerHead,
+      targetBranch,
+      targetHeadBefore,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  const integratedHead = runGitReadOnly(integrationWorktreePath, ["rev-parse", "HEAD"]);
+  if (!integratedHead) {
+    return {
+      status: "blocked",
+      reason:
+        "Workflow-owned integration completed a merge but could not resolve the integrated HEAD.",
+      trace: [...trace, `target_head_before=${targetHeadBefore}`, "integrated_head=missing"],
+      workerHead,
+      targetBranch,
+      targetHeadBefore,
+      integratedHead: null,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  const updateRefResult = runGitCommand(sourceRepoRoot, [
+    "update-ref",
+    `refs/heads/${targetBranch}`,
+    integratedHead,
+    targetHeadBefore,
+  ]);
+  if (!updateRefResult.ok) {
+    return {
+      status: "blocked",
+      reason: `Workflow-owned integration could not advance ${targetBranch} atomically: ${updateRefResult.message}`,
+      trace: [
+        ...trace,
+        `target_head_before=${targetHeadBefore}`,
+        `integrated_head=${integratedHead}`,
+        `target_ref_update_error=${updateRefResult.message}`,
+      ],
+      workerHead,
+      targetBranch,
+      targetHeadBefore,
+      integratedHead,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  const mergeBase = runGitReadOnly(sourceRepoRoot, ["merge-base", workerHead, targetBranch]);
+  if (mergeBase !== workerHead) {
+    return {
+      status: "blocked",
+      reason: `Workflow-owned integration updated ${targetBranch} but could not verify worker HEAD ${workerHead} as integrated.`,
+      trace: [
+        ...trace,
+        `target_head_before=${targetHeadBefore}`,
+        `integrated_head=${integratedHead}`,
+        `post_update_merge_base=${mergeBase ?? "missing"}`,
+      ],
+      workerHead,
+      targetBranch,
+      targetHeadBefore,
+      integratedHead,
+      managedBranch: input.workflowOwnedWorktree.managedBranch,
+      recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+      integrationWorktreePath,
+    };
+  }
+  return {
+    status: "passed",
+    reason: `Workflow-owned integration merged ${workerHead} into ${targetBranch} and advanced the branch atomically.`,
+    trace: [
+      ...trace,
+      `target_head_before=${targetHeadBefore}`,
+      `integrated_head=${integratedHead}`,
+      "target_ref_updated=true",
+      "worker_head_integrated=true",
+    ],
+    workerHead,
+    targetBranch,
+    targetHeadBefore,
+    integratedHead,
+    managedBranch: input.workflowOwnedWorktree.managedBranch,
+    recoveryRef: input.workflowOwnedWorktree.recoveryRef,
+    integrationWorktreePath,
+  };
+}
+
+function assessWorkflowOwnedIntegratedCloseout(params: {
+  input: NormalizedCodexControllerInput;
+  integration: WorkflowOwnedIntegrationResult;
+}): CloseoutAssessment {
+  const { input, integration } = params;
+  const requestedRepoRoot = input.repoRoot;
+  const integrationWorktreePath =
+    integration.integrationWorktreePath ??
+    input.workflowOwnedWorktree?.integrationWorktreePath ??
+    null;
+  const targetBranch =
+    integration.targetBranch ?? input.workflowOwnedWorktree?.integrationTargetBranch ?? null;
+  const workerHead = integration.workerHead;
+  const trace: string[] = [
+    `closeout_context=${input.closeoutContextSource}`,
+    `working_directory_mode=${input.workingDirectoryMode}`,
+    `workspace_ownership=${input.workspaceOwnership}`,
+    `requested_repo_root=${requestedRepoRoot}`,
+    `requested_working_directory=${input.requestedWorkingDirectory}`,
+    `working_directory=${integrationWorktreePath ?? input.workingDirectory}`,
+    `workflow_owned_worktree_root=${input.workflowOwnedWorktree?.rootPath ?? "unresolved"}`,
+    `workflow_owned_worktree_source_repo_root=${input.workflowOwnedWorktree?.sourceRepoRoot ?? "unresolved"}`,
+    `workflow_owned_integration_target=${targetBranch ?? "unresolved"}`,
+    `workflow_owned_verification_head=${workerHead ?? "missing"}`,
+    `workflow_owned_integration_worktree=${integrationWorktreePath ?? "missing"}`,
+  ];
+  const buildContext = (resolvedRepoRoot: string | null) =>
+    ({
+      workingDirectory: integrationWorktreePath ?? input.workingDirectory,
+      requestedWorkingDirectory: input.requestedWorkingDirectory,
+      requestedRepoRoot,
+      workingDirectoryMode: input.workingDirectoryMode,
+      workspaceOwnership: input.workspaceOwnership,
+      workflowOwnedWorktreeRoot: input.workflowOwnedWorktree?.rootPath ?? null,
+      closeoutContextSource: input.closeoutContextSource,
+      closeoutMode: "workflow_owned_repo_integrated",
+      resolvedRepoRoot,
+      workflowOwnedIntegrationTargetBranch: targetBranch,
+      workflowOwnedVerificationHead: workerHead,
+      workflowOwnedIntegrationWorktreePath: integrationWorktreePath,
+    }) satisfies CloseoutAssessment["context"];
+  const checks: CloseoutCheck[] = [];
+  if (!integrationWorktreePath) {
+    checks.push({
+      code: "git_repo_missing",
+      ok: false,
+      summary: "Workflow-owned integrated closeout could not find the integration worktree.",
+    });
+    return {
+      status: "blocked",
+      reason: "Closeout blocked: workflow-owned integration worktree is missing.",
+      trace,
+      context: buildContext(null),
+      git: {
+        head: null,
+        baseRef: targetBranch,
+        mergeBase: null,
+        dirtyPaths: [],
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  const resolvedRepoRoot = runGitReadOnly(integrationWorktreePath, [
+    "rev-parse",
+    "--show-toplevel",
+  ]);
+  if (!resolvedRepoRoot) {
+    checks.push({
+      code: "git_repo_missing",
+      ok: false,
+      summary:
+        "Workflow-owned integrated closeout could not resolve the integration worktree repo root.",
+    });
+    return {
+      status: "blocked",
+      reason: "Closeout blocked: workflow-owned integration worktree repo root is unreadable.",
+      trace,
+      context: buildContext(null),
+      git: {
+        head: null,
+        baseRef: targetBranch,
+        mergeBase: null,
+        dirtyPaths: [],
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  const integrationHead = runGitReadOnly(integrationWorktreePath, ["rev-parse", "HEAD"]);
+  if (!integrationHead) {
+    checks.push({
+      code: "git_head_missing",
+      ok: false,
+      summary: "Workflow-owned integrated closeout could not read the integration HEAD.",
+    });
+    return {
+      status: "blocked",
+      reason: "Closeout blocked: workflow-owned integration HEAD could not be resolved.",
+      trace,
+      context: buildContext(resolvedRepoRoot),
+      git: {
+        head: null,
+        baseRef: targetBranch,
+        mergeBase: null,
+        dirtyPaths: [],
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  trace.push(`resolved_repo_root=${resolvedRepoRoot}`);
+  trace.push(`head=${integrationHead}`);
+  const dirtyPaths = parseGitStatusPorcelain(
+    runGitReadOnly(integrationWorktreePath, ["status", "--porcelain=1"]),
+  );
+  if (dirtyPaths.length > 0) {
+    checks.push({
+      code: "dirty_repo",
+      ok: false,
+      summary: "Workflow-owned integrated closeout requires a clean integration worktree.",
+      detail: dirtyPaths.join(", "),
+    });
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: integration worktree is dirty (${dirtyPaths.join(", ")}).`,
+      trace: [...trace, `dirty_paths=${dirtyPaths.join(",")}`],
+      context: buildContext(resolvedRepoRoot),
+      git: {
+        head: integrationHead,
+        baseRef: targetBranch,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  checks.push({
+    code: "dirty_repo",
+    ok: true,
+    summary: "Integration worktree is clean.",
+  });
+  checks.push({
+    code: "open_worktree",
+    ok: true,
+    summary: "Workflow-owned integrated closeout allows sibling worktrees in the shared repo.",
+  });
+  if (!targetBranch) {
+    checks.push({
+      code: "integration_ref_missing",
+      ok: false,
+      summary: "Workflow-owned integrated closeout is missing the target branch.",
+    });
+    return {
+      status: "blocked",
+      reason: "Closeout blocked: workflow-owned integration target branch is missing.",
+      trace,
+      context: buildContext(resolvedRepoRoot),
+      git: {
+        head: integrationHead,
+        baseRef: null,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  const mergeBase = workerHead
+    ? runGitReadOnly(integrationWorktreePath, ["merge-base", workerHead, targetBranch])
+    : null;
+  if (!workerHead || !mergeBase) {
+    checks.push({
+      code: "integration_merge_base_missing",
+      ok: false,
+      summary: `Workflow-owned integrated closeout could not compute merge-base against ${targetBranch}.`,
+    });
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: workflow-owned integrated merge-base against ${targetBranch} could not be resolved.`,
+      trace: [...trace, `merge_base=${mergeBase ?? "missing"}`],
+      context: buildContext(resolvedRepoRoot),
+      git: {
+        head: integrationHead,
+        baseRef: targetBranch,
+        mergeBase: null,
+        dirtyPaths,
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  trace.push(`integration_ref=${targetBranch}`);
+  trace.push(`merge_base=${mergeBase}`);
+  if (mergeBase !== workerHead) {
+    checks.push({
+      code: "not_integrated",
+      ok: false,
+      summary: `Worker HEAD is not integrated into ${targetBranch}.`,
+      detail: `workerHead=${workerHead} mergeBase=${mergeBase}`,
+    });
+    return {
+      status: "blocked",
+      reason: `Closeout blocked: workflow-owned worker HEAD ${workerHead} is not integrated into ${targetBranch} (merge-base ${mergeBase}).`,
+      trace,
+      context: buildContext(resolvedRepoRoot),
+      git: {
+        head: integrationHead,
+        baseRef: targetBranch,
+        mergeBase,
+        dirtyPaths,
+        worktreePaths: [],
+      },
+      checks,
+    };
+  }
+  checks.push({
+    code: "not_integrated",
+    ok: true,
+    summary: `Worker HEAD is integrated into ${targetBranch}.`,
+  });
+  return {
+    status: "pass",
+    reason: `Closeout passed: workflow-owned result is integrated into ${targetBranch}, the integration worktree is clean, and runtime cleanup may proceed.`,
+    trace: [...trace, "closeout=pass"],
+    context: buildContext(resolvedRepoRoot),
+    git: {
+      head: integrationHead,
+      baseRef: targetBranch,
+      mergeBase,
+      dirtyPaths,
+      worktreePaths: [],
+    },
+    checks,
+  };
+}
+
+function removeManagedWorktree(params: {
+  sourceRepoRoot: string;
+  managedRoot: string;
+  worktreePath: string;
+  label: string;
+}): { ok: boolean; reason: string; trace: string[] } {
+  if (!pathIsInsideDirectory(params.worktreePath, params.managedRoot)) {
+    return {
+      ok: false,
+      reason: `Refusing to remove non-managed ${params.label} path: ${params.worktreePath}.`,
+      trace: [
+        `managed_root=${params.managedRoot}`,
+        `${params.label}_path=${params.worktreePath}`,
+        "managed_path_check=failed",
+      ],
+    };
+  }
+  const removeResult = runGitCommand(params.sourceRepoRoot, [
+    "worktree",
+    "remove",
+    "--force",
+    params.worktreePath,
+  ]);
+  const trace = [
+    `managed_root=${params.managedRoot}`,
+    `${params.label}_path=${params.worktreePath}`,
+    `source_repo_root=${params.sourceRepoRoot}`,
+  ];
+  if (!removeResult.ok) {
+    const remainingPaths = parseGitWorktreePaths(
+      runGitReadOnly(params.sourceRepoRoot, ["worktree", "list", "--porcelain"]),
+    ).map((entry) => path.resolve(entry));
+    if (!remainingPaths.includes(params.worktreePath)) {
+      return {
+        ok: true,
+        reason: `${params.label} was already absent from git worktree metadata: ${params.worktreePath}.`,
+        trace: [...trace, "cleanup=already_absent"],
+      };
+    }
+    return {
+      ok: false,
+      reason: `Failed to remove ${params.label} ${params.worktreePath}: ${removeResult.message}`,
+      trace: [...trace, `cleanup_error=${removeResult.message}`],
+    };
+  }
+  return {
+    ok: true,
+    reason: `${params.label} removed: ${params.worktreePath}.`,
+    trace: [...trace, "cleanup=removed"],
+  };
+}
+
+function deleteOptionalRef(
+  sourceRepoRoot: string,
+  ref: string,
+  label: string,
+): { ok: boolean; reason: string; trace: string[] } {
+  const refHead = runGitReadOnly(sourceRepoRoot, ["rev-parse", "--verify", ref]);
+  if (!refHead) {
+    return {
+      ok: true,
+      reason: `${label} was already absent: ${ref}.`,
+      trace: [`${label}=${ref}`, "ref=already_absent"],
+    };
+  }
+  const deleteResult = runGitCommand(sourceRepoRoot, ["update-ref", "-d", ref]);
+  if (!deleteResult.ok) {
+    return {
+      ok: false,
+      reason: `Failed to delete ${label} ${ref}: ${deleteResult.message}`,
+      trace: [`${label}=${ref}`, `ref_head=${refHead}`, `delete_error=${deleteResult.message}`],
+    };
+  }
+  return {
+    ok: true,
+    reason: `${label} deleted: ${ref}.`,
+    trace: [`${label}=${ref}`, `ref_head=${refHead}`, "ref_deleted=true"],
+  };
+}
+
+function cleanupWorkflowOwnedWorkspace(
+  input: NormalizedCodexControllerInput,
+): WorkspaceCleanupResult {
   if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
     return {
       status: "not_applicable",
@@ -1926,50 +2755,71 @@ function cleanupWorkflowOwnedWorkspace(input: NormalizedCodexControllerInput): W
   }
   const managedRoot = path.resolve(workflowOwnedWorktreesDir());
   const worktreeRoot = path.resolve(input.workflowOwnedWorktree.rootPath);
+  const integrationWorktreeRoot = path.resolve(input.workflowOwnedWorktree.integrationWorktreePath);
   const sourceRepoRoot = path.resolve(input.workflowOwnedWorktree.sourceRepoRoot);
-  if (!pathIsInsideDirectory(worktreeRoot, managedRoot)) {
-    return {
-      status: "blocked",
-      reason: `Refusing to remove non-managed worktree path: ${worktreeRoot}.`,
-      trace: [`managed_root=${managedRoot}`, `worktree_root=${worktreeRoot}`],
-    };
-  }
-  const removeResult = runGitCommand(sourceRepoRoot, ["worktree", "remove", "--force", worktreeRoot]);
-  const trace = [
+  const trace: string[] = [
     `managed_root=${managedRoot}`,
     `worktree_root=${worktreeRoot}`,
+    `integration_worktree_root=${integrationWorktreeRoot}`,
     `source_repo_root=${sourceRepoRoot}`,
+    `managed_branch=${input.workflowOwnedWorktree.managedBranch}`,
+    `recovery_ref=${input.workflowOwnedWorktree.recoveryRef}`,
   ];
-  if (!removeResult.ok) {
-    const remainingPaths = parseGitWorktreePaths(
-      runGitReadOnly(sourceRepoRoot, ["worktree", "list", "--porcelain"]),
-    ).map((entry) => path.resolve(entry));
-    if (!remainingPaths.includes(worktreeRoot)) {
-      runGitCommand(sourceRepoRoot, ["worktree", "prune"]);
-      return {
-        status: "passed",
-        reason: `Workflow-owned worktree was already absent from git metadata: ${worktreeRoot}.`,
-        trace: [...trace, "cleanup=already_absent"],
-      };
-    }
-    return {
-      status: "blocked",
-      reason: `Failed to remove workflow-owned worktree ${worktreeRoot}: ${removeResult.message}`,
-      trace: [...trace, `cleanup_error=${removeResult.message}`],
-    };
+  const failures: string[] = [];
+  const workerCleanup = removeManagedWorktree({
+    sourceRepoRoot,
+    managedRoot,
+    worktreePath: worktreeRoot,
+    label: "workflow_owned_worktree",
+  });
+  trace.push(...workerCleanup.trace);
+  if (!workerCleanup.ok) {
+    failures.push(workerCleanup.reason);
+  }
+  const integrationCleanup = removeManagedWorktree({
+    sourceRepoRoot,
+    managedRoot,
+    worktreePath: integrationWorktreeRoot,
+    label: "workflow_owned_integration_worktree",
+  });
+  trace.push(...integrationCleanup.trace);
+  if (!integrationCleanup.ok) {
+    failures.push(integrationCleanup.reason);
+  }
+  const managedBranchDelete = deleteOptionalRef(
+    sourceRepoRoot,
+    `refs/heads/${input.workflowOwnedWorktree.managedBranch}`,
+    "managed_branch_ref",
+  );
+  trace.push(...managedBranchDelete.trace);
+  if (!managedBranchDelete.ok) {
+    failures.push(managedBranchDelete.reason);
+  }
+  const recoveryRefDelete = deleteOptionalRef(
+    sourceRepoRoot,
+    input.workflowOwnedWorktree.recoveryRef,
+    "recovery_ref",
+  );
+  trace.push(...recoveryRefDelete.trace);
+  if (!recoveryRefDelete.ok) {
+    failures.push(recoveryRefDelete.reason);
   }
   const pruneResult = runGitCommand(sourceRepoRoot, ["worktree", "prune"]);
+  trace.push(pruneResult.ok ? "worktree_prune=ok" : `worktree_prune_error=${pruneResult.message}`);
+  if (!pruneResult.ok) {
+    failures.push(`Failed to prune workflow-owned worktrees: ${pruneResult.message}`);
+  }
+  if (failures.length > 0) {
+    return {
+      status: "blocked",
+      reason: failures.join(" "),
+      trace,
+    };
+  }
   return {
     status: "passed",
-    reason:
-      pruneResult.ok
-        ? `Workflow-owned worktree removed: ${worktreeRoot}.`
-        : `Workflow-owned worktree removed but prune reported: ${pruneResult.message}`,
-    trace: [
-      ...trace,
-      "cleanup=removed",
-      ...(pruneResult.ok ? ["prune=ok"] : [`prune_error=${pruneResult.message}`]),
-    ],
+    reason: `Workflow-owned worktree state cleaned up after successful integration: ${worktreeRoot}.`,
+    trace,
   };
 }
 
@@ -1979,6 +2829,8 @@ function buildRunSummary(params: {
   reason: string;
   workerSession: string;
   controllerSession: string | undefined;
+  localCloseout?: CloseoutAssessment;
+  integration?: WorkflowOwnedIntegrationResult;
   closeout?: CloseoutAssessment;
   workspaceCleanup?: WorkspaceCleanupResult;
 }): string {
@@ -1989,6 +2841,20 @@ function buildRunSummary(params: {
       `reason: ${params.reason}`,
       `worker-session: ${params.workerSession}`,
       `controller-session: ${params.controllerSession ?? "n/a"}`,
+      `local-closeout-mode: ${params.localCloseout?.context.closeoutMode ?? "not_run"}`,
+      `local-closeout-status: ${params.localCloseout?.status ?? "not_run"}`,
+      `local-closeout-reason: ${params.localCloseout?.reason ?? "not_run"}`,
+      `local-closeout-trace: ${(params.localCloseout?.trace ?? ["not_run"]).join(" | ")}`,
+      `integration-status: ${params.integration?.status ?? "not_run"}`,
+      `integration-reason: ${params.integration?.reason ?? "not_run"}`,
+      `integration-target-branch: ${params.integration?.targetBranch ?? "n/a"}`,
+      `integration-worker-head: ${params.integration?.workerHead ?? "n/a"}`,
+      `integration-target-head-before: ${params.integration?.targetHeadBefore ?? "n/a"}`,
+      `integration-integrated-head: ${params.integration?.integratedHead ?? "n/a"}`,
+      `integration-managed-branch: ${params.integration?.managedBranch ?? "n/a"}`,
+      `integration-recovery-ref: ${params.integration?.recoveryRef ?? "n/a"}`,
+      `integration-worktree-path: ${params.integration?.integrationWorktreePath ?? "n/a"}`,
+      `integration-trace: ${(params.integration?.trace ?? ["not_run"]).join(" | ")}`,
       `closeout-mode: ${params.closeout?.context.closeoutMode ?? "not_run"}`,
       `closeout-status: ${params.closeout?.status ?? "not_run"}`,
       `closeout-reason: ${params.closeout?.reason ?? "not_run"}`,
@@ -2472,6 +3338,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         ? {
             workflowOwnedWorktreeRoot: input.workflowOwnedWorktree.rootPath,
             workflowOwnedWorktreeSourceRepoRoot: input.workflowOwnedWorktree.sourceRepoRoot,
+            workflowOwnedManagedBranch: input.workflowOwnedWorktree.managedBranch,
+            workflowOwnedRecoveryRef: input.workflowOwnedWorktree.recoveryRef,
+            workflowOwnedIntegrationTarget:
+              input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved",
+            workflowOwnedIntegrationWorktree: input.workflowOwnedWorktree.integrationWorktreePath,
           }
         : {}),
       ...(input.agentId ? { contextAgentId: input.agentId } : {}),
@@ -2528,6 +3399,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           ? {
               workflowOwnedWorktreeRoot: input.workflowOwnedWorktree.rootPath,
               workflowOwnedWorktreeSourceRepoRoot: input.workflowOwnedWorktree.sourceRepoRoot,
+              workflowOwnedManagedBranch: input.workflowOwnedWorktree.managedBranch,
+              workflowOwnedRecoveryRef: input.workflowOwnedWorktree.recoveryRef,
+              workflowOwnedIntegrationTarget:
+                input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved",
+              workflowOwnedIntegrationWorktree: input.workflowOwnedWorktree.integrationWorktreePath,
             }
           : {}),
         ...(input.agentId ? { contextAgentId: input.agentId } : {}),
@@ -2848,7 +3724,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       ctx.throwIfAbortRequested?.();
 
       if (decision.decision === "DONE") {
-        const closeout = assessCloseout({
+        const localCloseout = assessCloseout({
           workingDirectory: input.workingDirectory,
           requestedWorkingDirectory: input.requestedWorkingDirectory,
           repoRoot: input.repoRoot,
@@ -2857,33 +3733,115 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           workflowOwnedWorktree: input.workflowOwnedWorktree,
           closeoutContextSource: input.closeoutContextSource,
         });
-        const closeoutArtifact = writeWorkflowArtifact(
+        const localCloseoutArtifact = writeWorkflowArtifact(
           ctx.runId,
-          "closeout-assessment.json",
-          buildCloseoutArtifact(closeout),
+          input.workspaceOwnership === "workflow_owned"
+            ? "closeout-local-ready-assessment.json"
+            : "closeout-assessment.json",
+          buildCloseoutArtifact(localCloseout),
         );
         emitArtifactWritten({
-          artifactPath: closeoutArtifact,
-          summary: "closeout assessment written",
+          artifactPath: localCloseoutArtifact,
+          summary:
+            input.workspaceOwnership === "workflow_owned"
+              ? "local closeout assessment written"
+              : "closeout assessment written",
           round,
           role: "controller",
         });
-        const workspaceCleanup =
-          closeout.status === "pass"
-            ? cleanupWorkflowOwnedWorkspace(input)
-            : {
-                status: "skipped",
-                reason: "Workspace cleanup skipped because closeout did not pass.",
+        let integration: WorkflowOwnedIntegrationResult = {
+          status: "not_applicable",
+          reason: "Workflow-owned integration was not required.",
+          trace: [],
+          workerHead: null,
+          targetBranch: null,
+          targetHeadBefore: null,
+          integratedHead: null,
+          managedBranch: null,
+          recoveryRef: null,
+          integrationWorktreePath: null,
+        };
+        let integrationArtifact: string | null = null;
+        let closeout: CloseoutAssessment | undefined =
+          input.workspaceOwnership === "workflow_owned" ? undefined : localCloseout;
+        let closeoutArtifact: string | null =
+          input.workspaceOwnership === "workflow_owned" ? null : localCloseoutArtifact;
+        if (localCloseout.status === "pass" && input.workspaceOwnership === "workflow_owned") {
+          const recovery = ensureWorkflowOwnedRecoveryRef(input);
+          integration =
+            recovery.status === "passed" ? integrateWorkflowOwnedResult(input, recovery) : recovery;
+          integrationArtifact = writeWorkflowArtifact(
+            ctx.runId,
+            "workflow-owned-integration.json",
+            buildWorkflowOwnedIntegrationArtifact(integration),
+          );
+          emitArtifactWritten({
+            artifactPath: integrationArtifact,
+            summary: "workflow-owned integration artifact written",
+            round,
+            role: "controller",
+          });
+          if (integration.status === "passed") {
+            closeout = assessWorkflowOwnedIntegratedCloseout({
+              input,
+              integration,
+            });
+            closeoutArtifact = writeWorkflowArtifact(
+              ctx.runId,
+              "closeout-assessment.json",
+              buildCloseoutArtifact(closeout),
+            );
+            emitArtifactWritten({
+              artifactPath: closeoutArtifact,
+              summary: "final closeout assessment written",
+              round,
+              role: "controller",
+            });
+          }
+        }
+        const workspaceCleanup: WorkspaceCleanupResult =
+          input.workspaceOwnership === "workflow_owned"
+            ? localCloseout.status !== "pass"
+              ? ({
+                  status: "skipped",
+                  reason: "Workspace cleanup skipped because local closeout did not pass.",
+                  trace: [],
+                } satisfies WorkspaceCleanupResult)
+              : integration.status !== "passed"
+                ? ({
+                    status: "skipped",
+                    reason:
+                      "Workspace cleanup skipped because workflow-owned integration did not pass.",
+                    trace: [],
+                  } satisfies WorkspaceCleanupResult)
+                : !closeout || closeout.status !== "pass"
+                  ? ({
+                      status: "skipped",
+                      reason:
+                        "Workspace cleanup skipped because final repo-integrated closeout did not pass.",
+                      trace: [],
+                    } satisfies WorkspaceCleanupResult)
+                  : cleanupWorkflowOwnedWorkspace(input)
+            : ({
+                status: "not_applicable",
+                reason: "No workflow-owned workspace cleanup was required.",
                 trace: [],
-              } satisfies WorkspaceCleanupResult;
-        const closeoutBlocked = closeout.status !== "pass";
+              } satisfies WorkspaceCleanupResult);
+        const localCloseoutBlocked = localCloseout.status !== "pass";
+        const integrationBlocked = integration.status === "blocked";
+        const closeoutBlocked = closeout ? closeout.status !== "pass" : false;
         const cleanupBlocked = workspaceCleanup.status === "blocked";
-        const finalBlocked = closeoutBlocked || cleanupBlocked;
-        const finalReason = closeoutBlocked
-          ? `Closeout mismatch after controller DONE: ${closeout.reason}`
-          : cleanupBlocked
-            ? `Workflow-owned workspace cleanup failed after closeout passed: ${workspaceCleanup.reason}`
-            : decision.reason.join(" ").trim() || "Controller approved completion.";
+        const finalBlocked =
+          localCloseoutBlocked || integrationBlocked || closeoutBlocked || cleanupBlocked;
+        const finalReason = localCloseoutBlocked
+          ? `Closeout mismatch after controller DONE: ${localCloseout.reason}`
+          : integrationBlocked
+            ? `Workflow-owned integration failed after local closeout passed: ${integration.reason}`
+            : closeoutBlocked && closeout
+              ? `Repo-integrated closeout failed after workflow-owned integration: ${closeout.reason}`
+              : cleanupBlocked
+                ? `Workflow-owned workspace cleanup failed after closeout passed: ${workspaceCleanup.reason}`
+                : decision.reason.join(" ").trim() || "Controller approved completion.";
         const summaryArtifact = writeWorkflowArtifact(
           ctx.runId,
           "run-summary.txt",
@@ -2893,7 +3851,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             reason: finalReason,
             workerSession: sessions.worker ?? buildPendingCodexWorkerSessionLabel(ctx.runId),
             controllerSession: sessions.orchestrator,
-            closeout,
+            localCloseout,
+            integration,
+            ...(closeout ? { closeout } : {}),
             workspaceCleanup,
           }),
         );
@@ -2917,6 +3877,26 @@ export const codexControllerWorkflowModule: WorkflowModule = {
             },
           });
         }
+        if (integration.status !== "not_applicable" && integration.status !== "skipped") {
+          ctx.trace.emit({
+            kind: integration.status === "blocked" ? "warning" : "custom",
+            stepId,
+            round,
+            role: "controller",
+            status: integration.status === "blocked" ? "blocked" : "done",
+            summary: integration.reason,
+            payload: {
+              integrationStatus: integration.status,
+              integrationTrace: integration.trace,
+              integrationTargetBranch: integration.targetBranch,
+              integrationWorkerHead: integration.workerHead,
+              integrationManagedBranch: integration.managedBranch,
+              integrationRecoveryRef: integration.recoveryRef,
+              integrationWorktreePath: integration.integrationWorktreePath,
+              integrationArtifact,
+            },
+          });
+        }
         ctx.trace.emit({
           kind: finalBlocked ? "run_blocked" : "run_completed",
           stepId,
@@ -2925,10 +3905,22 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           status: finalBlocked ? "blocked" : "done",
           summary: finalReason,
           payload: {
-            closeoutStatus: closeout.status,
-            closeoutReason: closeout.reason,
-            closeoutTrace: closeout.trace,
-            closeoutArtifact,
+            localCloseoutStatus: localCloseout.status,
+            localCloseoutReason: localCloseout.reason,
+            localCloseoutTrace: localCloseout.trace,
+            localCloseoutArtifact,
+            integrationStatus: integration.status,
+            integrationReason: integration.reason,
+            integrationTrace: integration.trace,
+            integrationArtifact,
+            ...(closeout
+              ? {
+                  closeoutStatus: closeout.status,
+                  closeoutReason: closeout.reason,
+                  closeoutTrace: closeout.trace,
+                  closeoutArtifact,
+                }
+              : {}),
             workspaceCleanupStatus: workspaceCleanup.status,
             workspaceCleanupReason: workspaceCleanup.reason,
             workspaceCleanupTrace: workspaceCleanup.trace,
@@ -2941,34 +3933,56 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           runId: ctx.runId,
           phase: finalBlocked ? "workflow_blocked" : "workflow_done",
           eventType: finalBlocked ? "blocked" : "completed",
-          messageText: closeoutBlocked
+          messageText: localCloseoutBlocked
             ? [
                 "Closeout mismatch after controller DONE.",
                 `Round: ${round}/${input.maxRetries}`,
                 "",
                 "Reason:",
-                `- ${closeout.reason}`,
+                `- ${localCloseout.reason}`,
                 "",
                 "Trace:",
-                ...closeout.trace.map((line) => `- ${line}`),
+                ...localCloseout.trace.map((line) => `- ${line}`),
               ].join("\n")
-            : cleanupBlocked
+            : integrationBlocked
               ? [
-                  "Workflow-owned workspace cleanup failed after closeout passed.",
+                  "Workflow-owned integration failed after local closeout passed.",
                   `Round: ${round}/${input.maxRetries}`,
                   "",
                   "Reason:",
-                  `- ${workspaceCleanup.reason}`,
+                  `- ${integration.reason}`,
                   "",
                   "Trace:",
-                  ...workspaceCleanup.trace.map((line) => `- ${line}`),
+                  ...integration.trace.map((line) => `- ${line}`),
                 ].join("\n")
-            : buildControllerCompletionMessage({
-                finalResult: codexResult.text,
-                decision,
-                round,
-                maxRounds: input.maxRetries,
-              }),
+              : closeoutBlocked && closeout
+                ? [
+                    "Repo-integrated closeout failed after workflow-owned integration.",
+                    `Round: ${round}/${input.maxRetries}`,
+                    "",
+                    "Reason:",
+                    `- ${closeout.reason}`,
+                    "",
+                    "Trace:",
+                    ...closeout.trace.map((line) => `- ${line}`),
+                  ].join("\n")
+                : cleanupBlocked
+                  ? [
+                      "Workflow-owned workspace cleanup failed after closeout passed.",
+                      `Round: ${round}/${input.maxRetries}`,
+                      "",
+                      "Reason:",
+                      `- ${workspaceCleanup.reason}`,
+                      "",
+                      "Trace:",
+                      ...workspaceCleanup.trace.map((line) => `- ${line}`),
+                    ].join("\n")
+                  : buildControllerCompletionMessage({
+                      finalResult: codexResult.text,
+                      decision,
+                      round,
+                      maxRounds: input.maxRetries,
+                    }),
           emittingAgentId: input.controllerAgentId,
           origin: request.origin,
           reporting: request.reporting,
@@ -2977,6 +3991,15 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           round,
           targetSessionKey: sessions.orchestrator,
         });
+        const finalArtifacts = [
+          ...record.artifacts,
+          localCloseoutArtifact,
+          ...(integrationArtifact ? [integrationArtifact] : []),
+          ...(closeoutArtifact && closeoutArtifact !== localCloseoutArtifact
+            ? [closeoutArtifact]
+            : []),
+          summaryArtifact,
+        ];
         return buildRecord({
           runId: record.runId,
           input,
@@ -2985,7 +4008,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
           terminalReason: finalReason,
           currentRound: round,
           maxRounds: input.maxRetries,
-          artifacts: [...record.artifacts, closeoutArtifact, summaryArtifact],
+          artifacts: finalArtifacts,
           latestWorkerOutput: codexResult.text,
           latestCriticVerdict: controllerRun.text,
           createdAt: record.createdAt,

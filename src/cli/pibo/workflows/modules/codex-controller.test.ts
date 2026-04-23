@@ -53,17 +53,26 @@ type CloseoutGitScenario = {
   refs?: string;
   absoluteGitDir?: string;
   commonGitDir?: string;
+  targetBranch?: string;
+  targetHeadBefore?: string;
+  integratedHead?: string;
+  postIntegrationMergeBase?: string;
 };
 
 function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
+  const head = scenario.head ?? "1111111111111111111111111111111111111111";
+  const mergeBase = scenario.mergeBase ?? head;
+  const targetBranch = scenario.targetBranch ?? "main";
+  let targetHead = scenario.targetHeadBefore ?? head;
+  let recoveryRefHead = head;
+  let managedBranchHead = head;
+  const integratedHead = scenario.integratedHead ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   execFileSync.mockImplementation((command: string, args: string[]) => {
     expect(command).toBe("git");
     const cwd = args[1];
     const gitArgs = args.slice(2);
     const joined = gitArgs.join(" ");
     gitCommandCalls.push(`git -C ${cwd} ${joined}`);
-    const head = scenario.head ?? "1111111111111111111111111111111111111111";
-    const mergeBase = scenario.mergeBase ?? head;
     if (joined === "rev-parse --show-toplevel") {
       return `${cwd}\n`;
     }
@@ -77,7 +86,22 @@ function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
       return `${scenario.commonGitDir ?? `${cwd}/.git`}\n`;
     }
     if (joined === "rev-parse HEAD") {
-      return `${head}\n`;
+      return `${cwd.includes(".integration") ? integratedHead : head}\n`;
+    }
+    if (
+      joined === `rev-parse ${targetBranch}` ||
+      joined === `rev-parse refs/heads/${targetBranch}`
+    ) {
+      return `${targetHead}\n`;
+    }
+    if (joined === "rev-parse origin/main") {
+      return `${targetHead}\n`;
+    }
+    if (/^rev-parse --verify refs\/heads\/pibo\/workflows\/.+$/.test(joined)) {
+      return `${managedBranchHead}\n`;
+    }
+    if (/^rev-parse --verify refs\/pibo\/workflows\/.+\/worker-head$/.test(joined)) {
+      return `${recoveryRefHead}\n`;
     }
     if (joined === "status --porcelain=1") {
       return scenario.statusPorcelain ?? "";
@@ -91,13 +115,43 @@ function mockCloseoutGitScenario(scenario: CloseoutGitScenario = {}) {
     if (joined === "merge-base HEAD origin/main") {
       return `${mergeBase}\n`;
     }
+    if (joined.startsWith("merge-base ") && joined.endsWith(` ${targetBranch}`)) {
+      const workerHead = gitArgs[1];
+      return `${scenario.postIntegrationMergeBase ?? workerHead}\n`;
+    }
+    if (joined.startsWith("worktree add -b pibo/workflows/") && joined.endsWith(" HEAD")) {
+      return `Preparing worktree (new branch 'pibo/workflows/run-1')\nHEAD is now at ${head}\n`;
+    }
     if (
       joined.startsWith("worktree add --detach /workflow-owned-worktrees/") &&
-      joined.endsWith(" HEAD")
+      joined.endsWith(` ${targetBranch}`)
     ) {
       return `HEAD is now at ${head}\n`;
     }
     if (joined.startsWith("worktree remove --force /workflow-owned-worktrees/")) {
+      return "";
+    }
+    if (joined.startsWith("merge --no-edit --no-ff ")) {
+      return "Merge made by the 'ort' strategy.\n";
+    }
+    if (joined.startsWith("update-ref refs/pibo/workflows/")) {
+      recoveryRefHead = gitArgs[2] ?? recoveryRefHead;
+      return "";
+    }
+    if (joined === `update-ref refs/heads/${targetBranch} ${integratedHead} ${targetHead}`) {
+      targetHead = integratedHead;
+      return "";
+    }
+    if (new RegExp(`^update-ref refs/heads/${targetBranch} [0-9a-f]{40}$`).test(joined)) {
+      targetHead = gitArgs[2] ?? targetHead;
+      return "";
+    }
+    if (/^update-ref -d refs\/heads\/pibo\/workflows\/.+$/.test(joined)) {
+      managedBranchHead = "";
+      return "";
+    }
+    if (/^update-ref -d refs\/pibo\/workflows\/.+\/worker-head$/.test(joined)) {
+      recoveryRefHead = "";
       return "";
     }
     if (joined === "worktree prune") {
@@ -426,6 +480,10 @@ describe("codex_controller module", () => {
           kind: "linked_worktree",
           rootPath: "/workflow-owned-worktrees/run-1",
           sourceRepoRoot: "/repo",
+          managedBranch: "pibo/workflows/run-1",
+          recoveryRef: "refs/pibo/workflows/run-1/worker-head",
+          integrationTargetBranch: "main",
+          integrationWorktreePath: "/workflow-owned-worktrees/run-1.integration",
         },
       }),
     );
@@ -439,17 +497,85 @@ describe("codex_controller module", () => {
     expect(record.sessions.extras?.workflowOwnedWorktreeRoot).toBe(
       "/workflow-owned-worktrees/run-1",
     );
+    expect(record.sessions.extras?.workflowOwnedManagedBranch).toBe("pibo/workflows/run-1");
+    expect(record.sessions.extras?.workflowOwnedRecoveryRef).toBe(
+      "refs/pibo/workflows/run-1/worker-head",
+    );
+    expect(record.sessions.extras?.workflowOwnedIntegrationTarget).toBe("main");
+    const initPrompt = runWorkflowAgentOnSession.mock.calls[0][0].message as string;
+    expect(initPrompt).toContain(
+      "For workflow-owned runs, CLOSEOUT_PREFLIGHT only proves local readiness. Runtime-owned integration and cleanup still happen after MODULE_DECISION: DONE.",
+    );
+    expect(initPrompt).toContain("workflow_owned_integration_target=main");
+    const roundPrompt = runWorkflowAgentOnSession.mock.calls[1][0].message as string;
+    expect(roundPrompt).toContain("runtime_owned_integration=required");
+    expect(roundPrompt).toContain("integration_target_branch=main");
     expect(gitCommandCalls).toContain(
-      "git -C /repo worktree add --detach /workflow-owned-worktrees/run-1 HEAD",
+      "git -C /repo worktree add -b pibo/workflows/run-1 /workflow-owned-worktrees/run-1 HEAD",
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo update-ref refs/pibo/workflows/run-1/worker-head 1111111111111111111111111111111111111111",
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo worktree add --detach /workflow-owned-worktrees/run-1.integration main",
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /workflow-owned-worktrees/run-1.integration merge --no-edit --no-ff 1111111111111111111111111111111111111111",
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo update-ref refs/heads/main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1111111111111111111111111111111111111111",
     );
     expect(gitCommandCalls).toContain(
       "git -C /repo worktree remove --force /workflow-owned-worktrees/run-1",
     );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo worktree remove --force /workflow-owned-worktrees/run-1.integration",
+    );
+    expect(gitCommandCalls).toContain("git -C /repo update-ref -d refs/heads/pibo/workflows/run-1");
+    expect(gitCommandCalls).toContain(
+      "git -C /repo update-ref -d refs/pibo/workflows/run-1/worker-head",
+    );
     expect(gitCommandCalls).toContain("git -C /repo worktree prune");
+    expect(
+      gitCommandCalls.indexOf(
+        "git -C /repo update-ref refs/heads/main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1111111111111111111111111111111111111111",
+      ),
+    ).toBeLessThan(
+      gitCommandCalls.indexOf(
+        "git -C /repo worktree remove --force /workflow-owned-worktrees/run-1",
+      ),
+    );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-1",
       "run-summary.txt",
-      expect.stringContaining("closeout-mode: workflow_owned_worktree_local"),
+      expect.stringContaining("local-closeout-mode: workflow_owned_worktree_local"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "run-summary.txt",
+      expect.stringContaining("integration-status: passed"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "workflow-owned-integration.json",
+      expect.stringContaining('"recoveryRef": "refs/pibo/workflows/run-1/worker-head"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "closeout-assessment.json",
+      expect.stringContaining('"closeoutMode": "workflow_owned_repo_integrated"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "closeout-assessment.json",
+      expect.stringContaining(
+        '"workflowOwnedVerificationHead": "1111111111111111111111111111111111111111"',
+      ),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-1",
+      "run-summary.txt",
+      expect.stringContaining("closeout-mode: workflow_owned_repo_integrated"),
     );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-1",
@@ -1389,17 +1515,19 @@ describe("codex_controller module", () => {
     expect(controllerPrompt).toContain("head_integrated_into_base=true");
   });
 
-  it("does not block a workflow-owned worktree DONE just because the shared repo has sibling worktrees or integration drift", async () => {
+  it("auto-integrates a workflow-owned worktree before cleanup even when the shared repo has sibling worktrees", async () => {
     mockCloseoutGitScenario({
       head: "2222222222222222222222222222222222222222",
       mergeBase: "1111111111111111111111111111111111111111",
+      targetHeadBefore: "1111111111111111111111111111111111111111",
+      integratedHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       worktreeList: [
         "worktree /repo",
         "HEAD 1111111111111111111111111111111111111111",
         "branch refs/heads/main",
         "worktree /workflow-owned-worktrees/run-owned-shared-noise",
         "HEAD 2222222222222222222222222222222222222222",
-        "detached",
+        "branch refs/heads/pibo/workflows/run-owned-shared-noise",
         "worktree /repo-linked",
         "HEAD 3333333333333333333333333333333333333333",
         "branch refs/heads/feature",
@@ -1422,15 +1550,20 @@ describe("codex_controller module", () => {
     expect(record.status).toBe("done");
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-owned-shared-noise",
-      "closeout-assessment.json",
+      "closeout-local-ready-assessment.json",
       expect.stringContaining('"closeoutMode": "workflow_owned_worktree_local"'),
     );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-owned-shared-noise",
       "run-summary.txt",
       expect.stringContaining(
-        "closeout-reason: Closeout passed: workflow-owned linked worktree is clean; shared-repo integration and sibling worktrees are outside this run.",
+        "closeout-reason: Closeout passed: workflow-owned result is integrated into main, the integration worktree is clean, and runtime cleanup may proceed.",
       ),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-owned-shared-noise",
+      "run-summary.txt",
+      expect.stringContaining("integration-status: passed"),
     );
   });
 
@@ -1471,6 +1604,77 @@ describe("codex_controller module", () => {
     );
   });
 
+  it("blocks workflow-owned completion and preserves recovery paths when integration cannot advance the target branch", async () => {
+    mockSingleRoundDoneLoop();
+    const previousImplementation = execFileSync.getMockImplementation();
+    execFileSync.mockImplementation((command: string, args: string[]) => {
+      const cwd = args[1];
+      const joined = args.slice(2).join(" ");
+      if (
+        cwd === "/repo" &&
+        joined ===
+          "update-ref refs/heads/main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1111111111111111111111111111111111111111"
+      ) {
+        const error = new Error("target moved") as Error & { stderr?: string };
+        error.stderr =
+          "cannot lock ref 'refs/heads/main': is at cccccccccccccccccccccccccccccccccccccccc but expected 1111111111111111111111111111111111111111";
+        throw error;
+      }
+      return previousImplementation?.(command, args);
+    });
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      createModuleContext("run-integration-moved"),
+    );
+
+    expect(record.status).toBe("blocked");
+    expect(record.terminalReason).toContain("Workflow-owned integration failed");
+    expect(record.terminalReason).toContain("could not advance main atomically");
+    expect(gitCommandCalls).toContain(
+      "git -C /repo update-ref refs/pibo/workflows/run-integration-moved/worker-head 1111111111111111111111111111111111111111",
+    );
+    expect(gitCommandCalls).not.toContain(
+      "git -C /repo worktree remove --force /workflow-owned-worktrees/run-integration-moved",
+    );
+    expect(gitCommandCalls).not.toContain(
+      "git -C /repo update-ref -d refs/pibo/workflows/run-integration-moved/worker-head",
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration-moved",
+      "workflow-owned-integration.json",
+      expect.stringContaining('"status": "blocked"'),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration-moved",
+      "workflow-owned-integration.json",
+      expect.stringContaining(
+        '"recoveryRef": "refs/pibo/workflows/run-integration-moved/worker-head"',
+      ),
+    );
+    expect(writeWorkflowArtifact).not.toHaveBeenCalledWith(
+      "run-integration-moved",
+      "closeout-assessment.json",
+      expect.any(String),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration-moved",
+      "run-summary.txt",
+      expect.stringContaining("integration-status: blocked"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-integration-moved",
+      "run-summary.txt",
+      expect.stringContaining("workspace-cleanup-status: skipped"),
+    );
+  });
+
   it("blocks terminal success when workflow-owned worktree cleanup fails", async () => {
     mockCloseoutGitScenario({
       worktreeList: [
@@ -1479,7 +1683,7 @@ describe("codex_controller module", () => {
         "branch refs/heads/main",
         "worktree /workflow-owned-worktrees/run-cleanup-failed",
         "HEAD 1111111111111111111111111111111111111111",
-        "detached",
+        "branch refs/heads/pibo/workflows/run-cleanup-failed",
       ].join("\n"),
     });
     mockSingleRoundDoneLoop();
@@ -1510,6 +1714,16 @@ describe("codex_controller module", () => {
     expect(record.status).toBe("blocked");
     expect(record.terminalReason).toContain("workspace cleanup failed");
     expect(record.terminalReason).toContain("cleanup remove failed");
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-cleanup-failed",
+      "run-summary.txt",
+      expect.stringContaining("integration-status: passed"),
+    );
+    expect(writeWorkflowArtifact).toHaveBeenCalledWith(
+      "run-cleanup-failed",
+      "closeout-assessment.json",
+      expect.stringContaining('"closeoutMode": "workflow_owned_repo_integrated"'),
+    );
     expect(writeWorkflowArtifact).toHaveBeenCalledWith(
       "run-cleanup-failed",
       "run-summary.txt",
@@ -1656,6 +1870,36 @@ describe("codex_controller module", () => {
       expect.objectContaining({
         workingDirectory: "/repo",
       }),
+    );
+  });
+
+  it("hydrates a writable local integration target for workflow-owned runs when only origin/main exists", async () => {
+    mockCloseoutGitScenario({
+      refs: "origin/main\n",
+    });
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+        },
+      },
+      createModuleContext("run-hydrate-main"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(record.input).toEqual(
+      expect.objectContaining({
+        workflowOwnedWorktree: expect.objectContaining({
+          integrationTargetBranch: "main",
+        }),
+      }),
+    );
+    expect(gitCommandCalls).toContain(
+      "git -C /repo update-ref refs/heads/main 1111111111111111111111111111111111111111",
     );
   });
 

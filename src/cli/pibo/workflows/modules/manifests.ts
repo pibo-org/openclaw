@@ -50,7 +50,7 @@ export const codexControllerWorkflowModuleManifest = {
   description:
     "Runs a persistent Codex SDK worker under a controller loop that keeps going, finishes cleanly, or escalates real blockers.",
   kind: "agent_workflow",
-  version: "0.4.0",
+  version: "0.5.0",
   requiredAgents: ["codex", "codex-controller"],
   terminalStates: ["done", "blocked", "aborted", "max_rounds_reached", "failed"],
   supportsAbort: true,
@@ -58,7 +58,7 @@ export const codexControllerWorkflowModuleManifest = {
     "task (string, required): original coding task passed directly to Codex; the worker only gets explicit workflow/task fields, not ambient Main/session chat, memory, or docs.",
     "workingDirectory (string, required in the low-level contract; run codex_controller defaults --cwd to pwd): requested project/worktree path. By default, git checkouts are provisioned into a workflow-owned clean linked worktree and Codex runs there; set workingDirectoryMode=existing to run directly in the provided path.",
     'workingDirectoryMode ("workflow_owned_worktree"|"existing", optional): defaults to workflow-owned linked-worktree isolation when the requested path is inside a git checkout; use `existing` only when the operator intentionally wants the worker to run in the provided directory.',
-    "repoRoot (string, optional): explicit shared repo context for closeout/integration assessment when the worker is intentionally running against an existing checkout. Workflow-owned linked-worktree runs still close out locally and clean themselves up.",
+    "repoRoot (string, optional): explicit shared repo context for closeout/integration assessment when the worker is intentionally running against an existing checkout. Workflow-owned linked-worktree runs now use runtime-owned integration into a writable shared target branch before final cleanup.",
     "agentId (string, optional): selects agent-workspace bootstrap for the controller (skills/system prompt) and adds that workspace as extra readable Codex context; does not change worker cwd or import full Main/session chat, memory, or docs.",
     "maxRounds|maxRetries (number, optional): controller loop budget; operator CLI prefers --max-rounds; defaults to 10.",
     "successCriteria (string[], optional): additional completion criteria.",
@@ -73,8 +73,10 @@ export const codexControllerWorkflowModuleManifest = {
     "codex-controller-run-contract.json: persisted run-scoped controller/worker contract snapshot used as stable source of truth for long runs, retries, and re-entry under the same run id.",
     "round-<n>-codex.txt: raw Codex worker output per round.",
     "round-<n>-controller.txt: raw controller output per round, including normalized decision block.",
-    "closeout-assessment.json: machine-readable read-only closeout assessment written on the DONE path.",
-    "run-summary.txt: terminal summary with final status, reason, sessions, and closeout context.",
+    "closeout-local-ready-assessment.json: workflow-owned local closeout assessment written before runtime-owned integration; existing-checkout runs still write only closeout-assessment.json.",
+    "workflow-owned-integration.json: workflow-owned integration result/recovery metadata including target branch, worker head, managed branch, recovery ref, and integration worktree path.",
+    "closeout-assessment.json: final machine-readable read-only closeout assessment written on the DONE path after repo-integrated verification when applicable.",
+    "run-summary.txt: terminal summary with final status, reason, sessions, local closeout, integration, final closeout, and cleanup context.",
   ],
 } satisfies WorkflowModuleManifest;
 

@@ -119,7 +119,7 @@ Practical reading of `agentId`:
 
 If `repoRoot` is omitted and `workingDirectory` is an active linked git worktree, closeout is scoped to that current worktree: the run must still end clean, but it does not need to self-integrate into `main` or close sibling worktrees just to report success. Provide `repoRoot` when the product needs shared-repo integration semantics instead.
 
-In the new default workflow-owned mode, the worker still receives an explicit execution cwd, but that cwd is owned by the workflow. Closeout is scoped to that owned worktree, and successful runs remove it automatically.
+In the default workflow-owned mode, the worker still receives an explicit execution cwd, but that cwd is owned by the workflow. The worker is responsible for leaving that owned worktree clean; the runtime is then responsible for integrating the result into the shared repo target branch, verifying repo-integrated closeout, and only then cleaning up workflow-owned worktrees/refs.
 
 ## Controller prompt/session model
 
@@ -155,6 +155,7 @@ Each `codex_controller` run now writes `codex-controller-run-contract.json` unde
 It snapshots the resolved stable contract for that run:
 
 - normalized workflow input after defaults/aliases are resolved, including requested-vs-effective working directory and workflow-owned worktree ownership metadata when applicable
+- for workflow-owned runs, managed integration metadata such as the owned branch, recovery ref, integration target branch, and integration worktree path
 - the controller prompt contents loaded from `controllerPromptPath`
 - the resolved optional `contextWorkspaceDir`
 - worker-scoped Codex `developer_instructions` derived from the same contract
@@ -187,27 +188,30 @@ This preserves decision-parsing reliability while avoiding stable prompt re-inje
 
 `MODULE_DECISION: DONE` is no longer sufficient on its own.
 
-The runtime now executes a read-only closeout assessment on the real DONE -> terminal path before it returns `done`:
+The runtime now executes staged closeout on the real DONE -> terminal path before it returns `done`:
 
-- workflow-owned linked worktrees close out against the owned worktree itself, not against the shared repo root
-- existing-checkout runs resolve the effective closeout repo from `repoRoot` first, with `workingDirectory` fallback
-- require a clean repo/worktree
-- if the worker is running in an operator-owned existing checkout and `repoRoot` is explicit, require no additional linked worktrees and require `HEAD` to be integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
-- if `repoRoot` is omitted and the worker is running in a linked worktree, treat closeout as worktree-local and defer sibling-worktree cleanup plus mainline integration to a later explicit repo-root closeout step
-- if the worker is running in a workflow-owned linked worktree, treat closeout as worktree-local and then remove that owned worktree on successful completion
+- existing-checkout runs still resolve the effective closeout repo from `repoRoot` first, with `workingDirectory` fallback
+- operator-owned existing-checkout success still requires a clean repo/worktree, no additional linked worktrees, and `HEAD` integrated into a known mainline ref (`origin/main`, `origin/master`, `main`, `master`)
+- if `repoRoot` is omitted and the worker is running in a linked worktree, closeout remains worktree-local and defers sibling-worktree cleanup plus mainline integration to a later explicit repo-root closeout step
+- if the worker is running in a workflow-owned linked worktree, DONE first requires a clean owned worktree (`local ready`), then the runtime creates/updates a recovery ref for the worker HEAD, auto-integrates into a writable local target branch (`main`, `master`, or a hydrated local branch from `origin/main` / `origin/master`), runs a repo-integrated closeout check, and only then cleans up workflow-owned worktrees/refs
 
-If that closeout gate fails, the workflow ends as `blocked` instead of `done`.
+Workflow-owned `done` now means `repo integrated + final closeout passed + cleanup passed`.
+
+If local closeout, integration, final closeout, or cleanup fails, the workflow ends as `blocked` instead of `done`. Failed workflow-owned integration preserves the worker worktree, managed branch/recovery ref, and integration worktree metadata for recovery instead of silently deleting them.
 
 Cleanup is ownership-aware:
 
-- only workflow-owned linked worktrees under the workflow state dir are auto-removed
+- only workflow-owned linked worktrees/refs under the workflow state dir are auto-removed
 - operator-owned or manually supplied worktrees are never auto-removed
-- if workflow-owned cleanup itself fails after closeout passed, the run ends blocked with an explicit cleanup reason instead of pretending success
+- workflow-owned cleanup happens only after integration success and final repo-integrated closeout success
+- if workflow-owned cleanup itself fails after integration succeeded, the run ends blocked with an explicit cleanup reason instead of pretending success; the integrated branch result remains reachable
 
 Artifacts now include:
 
-- `closeout-assessment.json`: machine-readable closeout result
-- `run-summary.txt`: terminal status plus closeout reason/trace/context
+- `closeout-local-ready-assessment.json`: workflow-owned local readiness assessment before integration
+- `workflow-owned-integration.json`: workflow-owned integration result and recovery metadata
+- `closeout-assessment.json`: final machine-readable closeout result
+- `run-summary.txt`: terminal status plus local closeout, integration, final closeout, and cleanup context
 
 ## Compaction behavior
 
