@@ -28,6 +28,15 @@ Historische Editor-Deep-Links mit `/?doc=...` werden in `ui-pibo` serverseitig n
 - Webapp-Deploy: `ui-pibo/deploy/deploy-pibo-webapp.sh`
 - Chat-Deploy: `apps/chat/deploy/deploy-pibo-chat.sh`
 
+## Produktive Deploy-Realitaet
+
+- produktiver Repo-Checkout auf dem Server: `/var/www/openclaw`
+- `ui-pibo` laeuft unter PM2 als `pibo-app` aus `/var/www/openclaw/ui-pibo/server-prod.mjs` auf `127.0.0.1:3000`
+- `apps/chat` laeuft unter PM2 separat als `pibo-chat` aus `/var/www/openclaw/apps/chat` auf `127.0.0.1:3010`
+- kanonischer Webapp-Entrypoint auf dem Server: `/root/bin/deploy-pibo-webapp.sh` -> `/var/www/openclaw/ui-pibo/deploy/deploy-pibo-webapp.sh`
+- kanonischer Chat-Entrypoint auf dem Server: `apps/chat/deploy/deploy-pibo-chat.sh` innerhalb desselben Checkouts
+- Zielbild fuer Aenderungen bleibt Git -> `origin/main` -> normaler Deploy; direkte Checkout-Hotfixes sind nur kurzzeitige Recovery, nicht Source of Truth
+
 ## Modul-Onboarding
 
 Neue Module folgen demselben Muster:
