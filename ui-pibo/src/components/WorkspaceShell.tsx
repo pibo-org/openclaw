@@ -225,13 +225,9 @@ export const WorkspaceShell = memo(function WorkspaceShellComponent({
 
   useEffect(() => {
     setExpandedFolders((current) =>
-      uniquePaths([
-        ...current,
-        ...collectAncestorPaths(selectedDocumentPath),
-        ...collectAncestorPaths(selectedFolderPath),
-      ]),
+      uniquePaths([...current, ...collectAncestorPaths(selectedDocumentPath)]),
     );
-  }, [selectedDocumentPath, selectedFolderPath]);
+  }, [selectedDocumentPath]);
 
   useEffect(() => {
     return () => {
@@ -363,16 +359,10 @@ export const WorkspaceShell = memo(function WorkspaceShellComponent({
     [selectedDocumentPath],
   );
 
-  const handleSelectFolder = useCallback(
-    (folderPath: string | null) => {
-      setIsTrashView(false);
-      setSelectedFolderPath(folderPath);
-      if (isMobileViewport) {
-        setIsMobileExplorerOpen(false);
-      }
-    },
-    [isMobileViewport],
-  );
+  const handleSelectFolder = useCallback((folderPath: string | null) => {
+    setIsTrashView(false);
+    setSelectedFolderPath(folderPath);
+  }, []);
 
   const openCreateDialog = useCallback((kind: "document" | "folder", parentPath: string | null) => {
     setContextMenu(null);
@@ -1829,6 +1819,7 @@ const DocumentTree = memo(function DocumentTreeComponent(props: {
                         ? "explorer-row explorer-row--folder explorer-row--dragging"
                         : "explorer-row explorer-row--folder"
                 }
+                aria-expanded={props.expandedFolders.includes(node.path)}
                 draggable={!props.isMobileViewport}
                 onClick={() => {
                   props.onSelectFolder(node.path);

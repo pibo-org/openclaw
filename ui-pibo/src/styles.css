@@ -590,13 +590,14 @@ textarea {
   --accentTextColor: var(--paper-ink);
   --accentBaseColor: var(--accent-cool);
   --basePageBg: transparent;
-  min-height: 45rem;
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: max(45rem, 100%);
 }
 
 .mdxeditor-toolbar {
   position: sticky;
-  top: 0;
+  top: 4.5rem;
   z-index: 3;
   background: color-mix(in oklab, var(--paper-strong) 92%, white 8%);
   border-bottom: 1px solid rgba(20, 56, 61, 0.08);
@@ -765,7 +766,7 @@ textarea {
   border-radius: 1.25rem;
   background: var(--paper);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
-  overflow: hidden;
+  overflow: visible;
   position: relative;
   isolation: isolate;
 }
@@ -925,6 +926,15 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.explorer-row > svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 1rem;
+  min-width: 1rem;
+  align-self: flex-start;
+  margin-top: 0.12rem;
+}
+
 .explorer-row:hover {
   background: rgba(255, 255, 255, 0.05);
   color: var(--paper-ink);
@@ -1015,7 +1025,9 @@ textarea {
   border-radius: 1rem;
   background: color-mix(in oklab, var(--paper-strong) 96%, black 4%);
   box-shadow: none;
-  overflow: hidden;
+  overflow: visible;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   min-width: 0;
   min-height: 0;
 }
@@ -1241,6 +1253,10 @@ textarea {
 .mdxeditor-toolbar {
   background: color-mix(in oklab, var(--paper) 90%, black 10%);
   border-bottom: 1px solid var(--line);
+}
+
+.editor-frame--obsidian .mdxeditor-toolbar {
+  top: 4.5rem;
 }
 
 .mdxeditor-root-contenteditable,
@@ -1817,6 +1833,10 @@ textarea {
     display: inline-flex;
   }
 
+  .editor-frame--obsidian .mdxeditor-toolbar {
+    top: 4.35rem;
+  }
+
   .mobile-explorer-toggle {
     margin-bottom: 0.35rem;
   }
@@ -1898,10 +1918,6 @@ textarea {
   .mdxeditor-root-contenteditable,
   .mdx-content {
     min-height: 30rem;
-  }
-
-  .mdxeditor-toolbar {
-    position: static;
   }
 
   .mdxeditor-toolbar>div {
@@ -2151,6 +2167,10 @@ textarea {
 
   .mdxeditor-toolbar {
     padding: 0.35rem 0.3rem;
+  }
+
+  .editor-frame--obsidian .mdxeditor-toolbar {
+    top: 4.15rem;
   }
 
   .mdxeditor-toolbar > div {
