@@ -1,16 +1,25 @@
 import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  makeRuntime,
-  mockSessionsConfig,
-  runSessionsJson,
-  writeStore,
-} from "./sessions.test-helpers.js";
+import { makeRuntime, runSessionsJson, writeStore } from "./sessions.test-helpers.js";
 
 // Disable colors for deterministic snapshots.
 process.env.FORCE_COLOR = "0";
 
-mockSessionsConfig();
+vi.mock("../config/config.js", async () => {
+  const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
+  return {
+    ...actual,
+    loadConfig: () => ({
+      agents: {
+        defaults: {
+          model: { primary: "pi:opus" },
+          models: { "pi:opus": {} },
+          contextTokens: 32000,
+        },
+      },
+    }),
+  };
+});
 
 import { sessionsCommand } from "./sessions.js";
 

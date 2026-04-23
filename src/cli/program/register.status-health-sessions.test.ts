@@ -6,6 +6,10 @@ const mocks = vi.hoisted(() => ({
   statusCommand: vi.fn(),
   healthCommand: vi.fn(),
   sessionsCommand: vi.fn(),
+  sessionsPeekCommand: vi.fn(),
+  sessionsGrepCommand: vi.fn(),
+  sessionsFindCommand: vi.fn(),
+  sessionsShowCommand: vi.fn(),
   sessionsCompactCommand: vi.fn(),
   sessionsCleanupCommand: vi.fn(),
   tasksListCommand: vi.fn(),
@@ -28,6 +32,10 @@ const mocks = vi.hoisted(() => ({
 const statusCommand = mocks.statusCommand;
 const healthCommand = mocks.healthCommand;
 const sessionsCommand = mocks.sessionsCommand;
+const sessionsPeekCommand = mocks.sessionsPeekCommand;
+const sessionsGrepCommand = mocks.sessionsGrepCommand;
+const sessionsFindCommand = mocks.sessionsFindCommand;
+const sessionsShowCommand = mocks.sessionsShowCommand;
 const sessionsCompactCommand = mocks.sessionsCompactCommand;
 const sessionsCleanupCommand = mocks.sessionsCleanupCommand;
 const tasksListCommand = mocks.tasksListCommand;
@@ -52,6 +60,13 @@ vi.mock("../../commands/health.js", () => ({
 
 vi.mock("../../commands/sessions.js", () => ({
   sessionsCommand: mocks.sessionsCommand,
+}));
+
+vi.mock("../../commands/sessions-explore.js", () => ({
+  sessionsPeekCommand: mocks.sessionsPeekCommand,
+  sessionsGrepCommand: mocks.sessionsGrepCommand,
+  sessionsFindCommand: mocks.sessionsFindCommand,
+  sessionsShowCommand: mocks.sessionsShowCommand,
 }));
 
 vi.mock("../../commands/sessions-compact.js", () => ({
@@ -98,6 +113,10 @@ describe("registerStatusHealthSessionsCommands", () => {
     statusCommand.mockResolvedValue(undefined);
     healthCommand.mockResolvedValue(undefined);
     sessionsCommand.mockResolvedValue(undefined);
+    sessionsPeekCommand.mockResolvedValue(undefined);
+    sessionsGrepCommand.mockResolvedValue(undefined);
+    sessionsFindCommand.mockResolvedValue(undefined);
+    sessionsShowCommand.mockResolvedValue(undefined);
     sessionsCompactCommand.mockResolvedValue(undefined);
     sessionsCleanupCommand.mockResolvedValue(undefined);
     tasksListCommand.mockResolvedValue(undefined);
@@ -240,6 +259,72 @@ describe("registerStatusHealthSessionsCommands", () => {
         fixMissing: true,
         activeKey: "agent:main:main",
         json: true,
+      }),
+      runtime,
+    );
+  });
+
+  it("runs sessions peek subcommand with forwarded options", async () => {
+    await runCli(["sessions", "peek", "main", "--limit", "7", "--role", "assistant", "--json"]);
+
+    expect(sessionsPeekCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "main",
+        limit: "7",
+        role: "assistant",
+        json: true,
+      }),
+      runtime,
+    );
+  });
+
+  it("runs sessions grep subcommand with forwarded options", async () => {
+    await runCli([
+      "sessions",
+      "grep",
+      "main",
+      "token",
+      "--before-chars",
+      "40",
+      "--after-chars",
+      "60",
+      "--ignore-case",
+    ]);
+
+    expect(sessionsGrepCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "main",
+        query: "token",
+        beforeChars: "40",
+        afterChars: "60",
+        ignoreCase: true,
+      }),
+      runtime,
+    );
+  });
+
+  it("runs sessions find subcommand with local scope forwarding", async () => {
+    await runCli(["sessions", "find", "discord", "--agent", "work", "--active", "90", "--json"]);
+
+    expect(sessionsFindCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "discord",
+        agent: "work",
+        active: "90",
+        json: true,
+      }),
+      runtime,
+    );
+  });
+
+  it("runs sessions show subcommand with cursor forwarding", async () => {
+    await runCli(["sessions", "show", "main", "--cursor", "before:42", "--limit", "3"]);
+
+    expect(sessionsShowCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "main",
+        cursor: "before:42",
+        limit: "3",
       }),
       runtime,
     );

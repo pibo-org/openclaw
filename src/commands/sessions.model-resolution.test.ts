@@ -1,7 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mockSessionsConfig, runSessionsJson, writeStore } from "./sessions.test-helpers.js";
+import { runSessionsJson, writeStore } from "./sessions.test-helpers.js";
 
-mockSessionsConfig();
+vi.mock("../config/config.js", async () => {
+  const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
+  return {
+    ...actual,
+    loadConfig: () => ({
+      agents: {
+        defaults: {
+          model: { primary: "pi:opus" },
+          models: { "pi:opus": {} },
+          contextTokens: 32000,
+        },
+      },
+    }),
+  };
+});
 
 import { sessionsCommand } from "./sessions.js";
 

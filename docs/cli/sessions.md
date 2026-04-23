@@ -7,7 +7,7 @@ title: "sessions"
 
 # `openclaw sessions`
 
-List stored conversation sessions.
+List stored conversation sessions and inspect them with bounded progressive-disclosure commands.
 
 ```bash
 openclaw sessions
@@ -52,6 +52,76 @@ JSON examples:
   ]
 }
 ```
+
+## Progressive Session Inspection
+
+Use the exploration subcommands to inspect long sessions without dumping the full transcript.
+Defaults stay small, sanitized, and bounded.
+
+### Peek
+
+Show a tiny recent sanitized window:
+
+```bash
+openclaw sessions peek main
+openclaw sessions peek main --limit 8
+openclaw sessions peek main --role assistant
+openclaw sessions peek agent:work:main --json
+```
+
+- default: last 5 sanitized messages
+- tool messages are hidden unless you pass `--include-tools`
+- `--role user|assistant|tool`: narrow the window before output
+- `--json`: includes `sessionKey`, `limit`, `messages`, `truncated`, `contentTruncated`, `contentRedacted`, and `bytes`
+
+### Grep
+
+Search one session and return snippets instead of message dumps:
+
+```bash
+openclaw sessions grep main compaction
+openclaw sessions grep main token --ignore-case
+openclaw sessions grep main error --role assistant
+openclaw sessions grep agent:work:main build --json
+```
+
+- searches sanitized message text fields
+- returns bounded snippets, not full transcript bodies
+- `--before-chars` / `--after-chars`: control snippet context
+- `--role user|assistant|tool`: narrow the search surface first
+- `--json`: includes `sessionKey`, `query`, `hits`, `truncated`, and `bytes`
+
+### Find
+
+Search session metadata across stores to identify likely candidates first:
+
+```bash
+openclaw sessions find discord
+openclaw sessions find launch --agent work
+openclaw sessions find prod --active 120
+openclaw sessions find compaction --json
+```
+
+- default scope: configured agent stores
+- metadata only: this does not load transcript bodies
+- `--active <minutes>`: only recent candidates
+- `--limit <n>`: bound candidate output
+
+### Show
+
+Browse one session in bounded chunks with explicit cursor paging:
+
+```bash
+openclaw sessions show main
+openclaw sessions show main --cursor before:42
+openclaw sessions show main --after 42
+openclaw sessions show agent:work:main --json
+```
+
+- default: last 20 sanitized messages
+- output includes `older` / `newer` cursor tokens so you can page without dumping the full transcript
+- supports `--cursor`, `--before`, `--after`, and `--limit`
+- tool messages are hidden unless you pass `--include-tools`
 
 ## Manual compaction
 

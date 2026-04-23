@@ -2,27 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { vi } from "vitest";
 import type { RuntimeEnv } from "../runtime.js";
-
-export function mockSessionsConfig() {
-  vi.mock("../config/config.js", async () => {
-    const actual =
-      await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
-    return {
-      ...actual,
-      loadConfig: () => ({
-        agents: {
-          defaults: {
-            model: { primary: "pi:opus" },
-            models: { "pi:opus": {} },
-            contextTokens: 32000,
-          },
-        },
-      }),
-    };
-  });
-}
 
 export function makeRuntime(params?: { throwOnError?: boolean }): {
   runtime: RuntimeEnv;

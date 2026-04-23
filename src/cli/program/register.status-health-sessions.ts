@@ -3,6 +3,12 @@ import { flowsCancelCommand, flowsListCommand, flowsShowCommand } from "../../co
 import { healthCommand } from "../../commands/health.js";
 import { sessionsCleanupCommand } from "../../commands/sessions-cleanup.js";
 import { sessionsCompactCommand } from "../../commands/sessions-compact.js";
+import {
+  sessionsFindCommand,
+  sessionsGrepCommand,
+  sessionsPeekCommand,
+  sessionsShowCommand,
+} from "../../commands/sessions-explore.js";
 import { sessionsCommand } from "../../commands/sessions.js";
 import { statusCommand } from "../../commands/status.js";
 import {
@@ -164,6 +170,209 @@ export function registerStatusHealthSessionsCommands(program: Command) {
       );
     });
   sessionsCmd.enablePositionalOptions();
+
+  sessionsCmd
+    .command("peek")
+    .description("Show a tiny sanitized recent window for one session")
+    .argument("<key>", "Session key")
+    .option("--store <path>", "Path to session store")
+    .option("--agent <id>", "Agent id to inspect")
+    .option("--all-agents", "Search across all configured agent stores", false)
+    .option("--limit <n>", "Number of messages to show (default: 5)")
+    .option("--role <role>", "Filter to user, assistant, or tool messages")
+    .option("--include-tools", "Include tool/toolResult messages", false)
+    .option("--json", "Output JSON", false)
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.heading("Examples:")}\n${formatHelpExamples([
+          ["openclaw sessions peek main", "Show the latest bounded sanitized window."],
+          ["openclaw sessions peek main --limit 8", "Show a slightly larger recent window."],
+          ["openclaw sessions peek main --role user", "Only recent user messages."],
+          ["openclaw sessions peek agent:work:main --json", "Machine-readable output."],
+        ])}`,
+    )
+    .action(async (key, opts, command) => {
+      const parentOpts = command.parent?.opts() as
+        | {
+            store?: string;
+            agent?: string;
+            allAgents?: boolean;
+            json?: boolean;
+          }
+        | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await sessionsPeekCommand(
+          {
+            key: String(key),
+            store: (opts.store as string | undefined) ?? parentOpts?.store,
+            agent: (opts.agent as string | undefined) ?? parentOpts?.agent,
+            allAgents: Boolean(opts.allAgents || parentOpts?.allAgents),
+            limit: opts.limit,
+            role: opts.role,
+            includeTools: Boolean(opts.includeTools),
+            json: Boolean(opts.json || parentOpts?.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  sessionsCmd
+    .command("grep")
+    .description("Search a session and return sanitized snippets instead of transcript dumps")
+    .argument("<key>", "Session key")
+    .argument("<query>", "Substring to search for")
+    .option("--store <path>", "Path to session store")
+    .option("--agent <id>", "Agent id to inspect")
+    .option("--all-agents", "Search across all configured agent stores", false)
+    .option("--limit <n>", "Maximum snippet hits to show")
+    .option("--role <role>", "Filter to user, assistant, or tool messages")
+    .option("--include-tools", "Include tool/toolResult messages", false)
+    .option("--before-chars <n>", "Snippet context characters before the hit")
+    .option("--after-chars <n>", "Snippet context characters after the hit")
+    .option("--ignore-case", "Case-insensitive search", false)
+    .option("--json", "Output JSON", false)
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.heading("Examples:")}\n${formatHelpExamples([
+          ["openclaw sessions grep main compaction", "Search one session for a phrase."],
+          ["openclaw sessions grep main token --ignore-case", "Case-insensitive snippet search."],
+          ["openclaw sessions grep main error --role assistant", "Only assistant messages."],
+          ["openclaw sessions grep agent:work:main build --json", "Machine-readable output."],
+        ])}`,
+    )
+    .action(async (key, query, opts, command) => {
+      const parentOpts = command.parent?.opts() as
+        | {
+            store?: string;
+            agent?: string;
+            allAgents?: boolean;
+            json?: boolean;
+          }
+        | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await sessionsGrepCommand(
+          {
+            key: String(key),
+            query: String(query),
+            store: (opts.store as string | undefined) ?? parentOpts?.store,
+            agent: (opts.agent as string | undefined) ?? parentOpts?.agent,
+            allAgents: Boolean(opts.allAgents || parentOpts?.allAgents),
+            limit: opts.limit,
+            role: opts.role,
+            includeTools: Boolean(opts.includeTools),
+            beforeChars: opts.beforeChars,
+            afterChars: opts.afterChars,
+            ignoreCase: Boolean(opts.ignoreCase),
+            json: Boolean(opts.json || parentOpts?.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  sessionsCmd
+    .command("find")
+    .description("Search session metadata across stores to identify likely candidates")
+    .argument("<query>", "Substring to search for")
+    .option("--store <path>", "Path to session store")
+    .option("--agent <id>", "Agent id to inspect")
+    .option("--all-agents", "Search across all configured agent stores", false)
+    .option("--limit <n>", "Maximum candidate sessions to show")
+    .option("--active <minutes>", "Only include sessions updated within the past N minutes")
+    .option("--json", "Output JSON", false)
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.heading("Examples:")}\n${formatHelpExamples([
+          ["openclaw sessions find discord", "Search metadata across configured stores."],
+          ["openclaw sessions find launch --agent work", "Narrow search to one agent store."],
+          ["openclaw sessions find prod --active 120", "Only recent candidate sessions."],
+          ["openclaw sessions find compaction --json", "Machine-readable output."],
+        ])}\n\n${theme.muted(
+          "By default this searches configured agent stores without loading transcript bodies.",
+        )}`,
+    )
+    .action(async (query, opts, command) => {
+      const parentOpts = command.parent?.opts() as
+        | {
+            store?: string;
+            agent?: string;
+            allAgents?: boolean;
+            active?: string;
+            json?: boolean;
+          }
+        | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await sessionsFindCommand(
+          {
+            query: String(query),
+            store: (opts.store as string | undefined) ?? parentOpts?.store,
+            agent: (opts.agent as string | undefined) ?? parentOpts?.agent,
+            allAgents: Boolean(opts.allAgents || parentOpts?.allAgents),
+            limit: opts.limit,
+            active: (opts.active as string | undefined) ?? parentOpts?.active,
+            json: Boolean(opts.json || parentOpts?.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  sessionsCmd
+    .command("show")
+    .description("Browse a session in bounded paged chunks with cursor tokens")
+    .argument("<key>", "Session key")
+    .option("--store <path>", "Path to session store")
+    .option("--agent <id>", "Agent id to inspect")
+    .option("--all-agents", "Search across all configured agent stores", false)
+    .option("--limit <n>", "Number of messages to show per page")
+    .option("--role <role>", "Filter to user, assistant, or tool messages")
+    .option("--include-tools", "Include tool/toolResult messages", false)
+    .option("--cursor <cursor>", "Paging cursor like before:<seq> or after:<seq>")
+    .option("--before <seq>", "Show the window immediately before this message sequence")
+    .option("--after <seq>", "Show the window immediately after this message sequence")
+    .option("--json", "Output JSON", false)
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.heading("Examples:")}\n${formatHelpExamples([
+          ["openclaw sessions show main", "Show the latest bounded page."],
+          ["openclaw sessions show main --cursor before:42", "Page older messages."],
+          ["openclaw sessions show main --after 42", "Page newer messages."],
+          ["openclaw sessions show agent:work:main --json", "Machine-readable output."],
+        ])}`,
+    )
+    .action(async (key, opts, command) => {
+      const parentOpts = command.parent?.opts() as
+        | {
+            store?: string;
+            agent?: string;
+            allAgents?: boolean;
+            json?: boolean;
+          }
+        | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await sessionsShowCommand(
+          {
+            key: String(key),
+            store: (opts.store as string | undefined) ?? parentOpts?.store,
+            agent: (opts.agent as string | undefined) ?? parentOpts?.agent,
+            allAgents: Boolean(opts.allAgents || parentOpts?.allAgents),
+            limit: opts.limit,
+            role: opts.role,
+            includeTools: Boolean(opts.includeTools),
+            cursor: opts.cursor,
+            before: opts.before,
+            after: opts.after,
+            json: Boolean(opts.json || parentOpts?.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
 
   sessionsCmd
     .command("compact")
