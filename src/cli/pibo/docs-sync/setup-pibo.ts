@@ -6,10 +6,18 @@ import { fileURLToPath } from "url";
 import { readConfig, writeConfig, defaultConfig, DocsSyncConfig } from "./config.js";
 import { bold, ok, fail, warn, info, run, commandExists, nodeBin, generateToken } from "./utils.js";
 
-// ESM path resolution
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const ASSETS_DIR = fileURLToPath(new URL("../../../../docs/pibo-cli/assets/", import.meta.url));
+function resolveAssetsDir(): string {
+  const candidates = [
+    fileURLToPath(new URL("../../../../docs/pibo-cli/assets/", import.meta.url)),
+    fileURLToPath(new URL("../docs/pibo-cli/assets/", import.meta.url)),
+    join(process.cwd(), "docs", "pibo-cli", "assets"),
+  ];
+  return (
+    candidates.find((dir) => existsSync(join(dir, "scripts", "pibo-watcher.js"))) || candidates[0]
+  );
+}
+
+const ASSETS_DIR = resolveAssetsDir();
 
 function readExecErrorStderr(error: unknown): string {
   if (!error || typeof error !== "object" || !("stderr" in error)) {
