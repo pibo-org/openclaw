@@ -478,6 +478,10 @@ export function registerPiboCli(program: Command) {
     const { workflowsStartAsync } = await loadWorkflowModule();
     await workflowsStartAsync(moduleId, opts);
   });
+  workflows.command("_run-pending <runId>", { hidden: true }).action(async (runId: string) => {
+    const { workflowsRunPending } = await loadWorkflowModule();
+    await workflowsRunPending(runId);
+  });
   workflows
     .command("wait <runId>")
     .description("Auf terminalen Workflow-Status warten")

@@ -4,12 +4,21 @@ import * as os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ensureWorkflowSessions, runWorkflowAgentOnSession, emitTracedWorkflowReportEvent } =
+const { spawn, ensureWorkflowSessions, runWorkflowAgentOnSession, emitTracedWorkflowReportEvent } =
   vi.hoisted(() => ({
+    spawn: vi.fn(() => ({ unref: vi.fn() })),
     ensureWorkflowSessions: vi.fn(),
     runWorkflowAgentOnSession: vi.fn(),
     emitTracedWorkflowReportEvent: vi.fn(async () => ({ attempted: true, delivered: true })),
   }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn,
+  };
+});
 
 vi.mock("./workflow-session-helper.js", () => ({
   ensureWorkflowSessions,
@@ -29,6 +38,7 @@ import {
   listWorkflowArtifacts,
   listWorkflowModuleManifests,
   readWorkflowArtifact,
+  runPendingWorkflowRun,
   startWorkflowRun,
   startWorkflowRunAsync,
   waitForWorkflowRun,
@@ -371,6 +381,8 @@ describe("self_ralph runtime integration", () => {
         workingDirectory: invalidPath,
       },
     });
+
+    await runPendingWorkflowRun(initial.runId);
 
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
     expect(wait.status).toBe("ok");

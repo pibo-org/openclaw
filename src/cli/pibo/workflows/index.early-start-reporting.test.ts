@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  spawn,
   emitTracedWorkflowReportEvent,
   ensureWorkflowSessions,
   runWorkflowAgentOnSession,
@@ -28,6 +29,7 @@ const {
   existsSync,
   readFileSync,
 } = vi.hoisted(() => ({
+  spawn: vi.fn(() => ({ unref: vi.fn() })),
   emitTracedWorkflowReportEvent: vi.fn(
     async (params: {
       trace?: { emit: (event: unknown) => void };
@@ -105,6 +107,14 @@ const {
   readFileSync: vi.fn(),
 }));
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn,
+  };
+});
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
@@ -172,6 +182,7 @@ vi.mock("../../../acp/control-plane/manager.js", () => ({
 import {
   getWorkflowTraceEvents,
   getWorkflowRunStatus,
+  runPendingWorkflowRun,
   startWorkflowRun,
   startWorkflowRunAsync,
   waitForWorkflowRun,
@@ -377,6 +388,8 @@ describe("workflow early-start reporting", () => {
       },
     });
 
+    await runPendingWorkflowRun(initial.runId);
+
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
     expect(wait.status).toBe("ok");
     expect(wait.run?.status).toBe("failed");
@@ -443,6 +456,8 @@ describe("workflow early-start reporting", () => {
         events: ["started", "completed"],
       },
     });
+
+    await runPendingWorkflowRun(initial.runId);
 
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
     expect(wait.status).toBe("ok");

@@ -5,6 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWorkflowAbortError } from "./abort.js";
 import type { WorkflowModule, WorkflowRunRecord } from "./types.js";
 
+const { spawn } = vi.hoisted(() => ({
+  spawn: vi.fn(() => ({ unref: vi.fn() })),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn,
+  };
+});
+
 const abortableWorkflowModule: WorkflowModule = {
   manifest: {
     moduleId: "abortable",
@@ -60,6 +72,7 @@ vi.mock("./modules/index.js", () => ({
 import {
   abortWorkflowRun,
   getWorkflowRunStatus,
+  runPendingWorkflowRun,
   startWorkflowRunAsync,
   waitForWorkflowRun,
   workflowsAbort,
@@ -98,6 +111,8 @@ describe("workflow abort lifecycle", () => {
     expect(requested.abortRequested).toBe(true);
     expect(requested.abortRequestedAt).toBeTruthy();
 
+    await runPendingWorkflowRun(initial.runId);
+
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
     expect(wait.status).toBe("ok");
     expect(wait.run?.status).toBe("aborted");
@@ -111,6 +126,7 @@ describe("workflow abort lifecycle", () => {
 
   it("keeps running abort idempotent until the workflow reaches terminal aborted", async () => {
     const initial = await startWorkflowRunAsync("abortable", { input: { task: "demo" } });
+    const backgroundRun = runPendingWorkflowRun(initial.runId);
     await vi.waitFor(() => {
       expect(getWorkflowRunStatus(initial.runId).status).toBe("running");
     });
@@ -124,6 +140,7 @@ describe("workflow abort lifecycle", () => {
     expect(second.abortRequested).toBe(true);
     expect(second.abortRequestedAt).toBe(first.abortRequestedAt);
 
+    await backgroundRun;
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
     expect(wait.status).toBe("ok");
     expect(wait.run?.status).toBe("aborted");
@@ -136,6 +153,7 @@ describe("workflow abort lifecycle", () => {
 
   it("reports requested-versus-terminal abort feedback truthfully", async () => {
     const initial = await startWorkflowRunAsync("abortable", { input: { task: "demo" } });
+    const backgroundRun = runPendingWorkflowRun(initial.runId);
     await vi.waitFor(() => {
       expect(getWorkflowRunStatus(initial.runId).status).toBe("running");
     });
@@ -153,6 +171,7 @@ describe("workflow abort lifecycle", () => {
       "Abort requested; wait for the active workflow step to stop before the run becomes terminal.",
     );
 
+    await backgroundRun;
     await waitForWorkflowRun(initial.runId, 5_000);
     consoleSpy.mockClear();
 

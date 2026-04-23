@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs, { readFileSync } from "node:fs";
 import path from "node:path";
+import { resolveOpenClawPackageRootSync } from "../../../infra/openclaw-root.js";
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import {
   createWorkflowAbortError,
@@ -43,12 +45,7 @@ import type {
 } from "./types.js";
 import { emitTracedWorkflowReportEvent } from "./workflow-reporting.js";
 
-type ActiveWorkflowRunHandle = {
-  promise: Promise<WorkflowRunRecord>;
-  abortController: AbortController;
-};
-
-const activeWorkflowRuns = new Map<string, ActiveWorkflowRunHandle>();
+const WORKFLOW_ABORT_POLL_MS = 250;
 const WORKFLOW_WAIT_POLL_MS = 250;
 const DEFAULT_WORKFLOW_WAIT_TIMEOUT_MS = 120_000;
 
@@ -525,6 +522,67 @@ function buildInitialRunRecord(params: {
   };
 }
 
+function buildStartRequestFromRunRecord(record: WorkflowRunRecord): WorkflowStartRequest {
+  return {
+    input: record.input,
+    maxRounds: record.maxRounds,
+    ...(record.origin ? { origin: record.origin } : {}),
+    ...(record.reporting ? { reporting: record.reporting } : {}),
+  };
+}
+
+function buildRunningRunRecord(record: WorkflowRunRecord): WorkflowRunRecord {
+  return {
+    ...record,
+    status: "running",
+    updatedAt: nowIso(),
+  };
+}
+
+function resolveWorkflowHostCliInvocation(): { command: string; args: string[] } {
+  const packageRoot = resolveOpenClawPackageRootSync({
+    argv1: process.argv[1],
+    cwd: process.cwd(),
+    moduleUrl: import.meta.url,
+  });
+  if (packageRoot) {
+    const openClawEntrypoint = path.join(packageRoot, "openclaw.mjs");
+    const distEntrypointExists =
+      fs.existsSync(path.join(packageRoot, "dist", "entry.js")) ||
+      fs.existsSync(path.join(packageRoot, "dist", "entry.mjs"));
+    if (distEntrypointExists && fs.existsSync(openClawEntrypoint)) {
+      return { command: process.execPath, args: [openClawEntrypoint] };
+    }
+
+    const runNodeEntrypoint = path.join(packageRoot, "scripts", "run-node.mjs");
+    if (fs.existsSync(runNodeEntrypoint)) {
+      return { command: process.execPath, args: [runNodeEntrypoint] };
+    }
+  }
+
+  const argv1 = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
+  if (argv1 && fs.existsSync(argv1)) {
+    return { command: process.execPath, args: [path.resolve(argv1)] };
+  }
+
+  return { command: "openclaw", args: [] };
+}
+
+function launchDetachedWorkflowRunHost(runId: string) {
+  const invocation = resolveWorkflowHostCliInvocation();
+  const child = spawn(
+    invocation.command,
+    [...invocation.args, "pibo", "workflows", "_run-pending", runId],
+    {
+      detached: true,
+      env: process.env,
+      stdio: "ignore",
+      windowsHide: true,
+    },
+  );
+  child.unref();
+}
+
 async function startWorkflowRunWithRunId(
   moduleId: string,
   request: WorkflowStartRequest,
@@ -546,6 +604,31 @@ async function startWorkflowRunWithRunId(
     nowIso,
   });
   let persistedRecord: WorkflowRunRecord | null = opts?.initialPersistedRecord ?? null;
+  const abortController = new AbortController();
+  const upstreamAbortSignal = opts?.abortSignal;
+  const forwardAbortFromUpstream = () => {
+    abortController.abort(
+      createWorkflowAbortError(upstreamAbortSignal?.reason ?? "Abort requested by operator."),
+    );
+  };
+  if (upstreamAbortSignal?.aborted) {
+    forwardAbortFromUpstream();
+  } else {
+    upstreamAbortSignal?.addEventListener("abort", forwardAbortFromUpstream, { once: true });
+  }
+  if ((persistedRecord ?? readRunRecord(runId))?.abortRequested) {
+    abortController.abort(createWorkflowAbortError("Abort requested by operator."));
+  }
+  const abortPoll = setInterval(() => {
+    if (abortController.signal.aborted) {
+      return;
+    }
+    const latestRecord = readRunRecord(runId);
+    if (latestRecord?.abortRequested) {
+      abortController.abort(createWorkflowAbortError("Abort requested by operator."));
+    }
+  }, WORKFLOW_ABORT_POLL_MS);
+  abortPoll.unref();
   const persist = (record: WorkflowRunRecord) => {
     const effectiveRecord =
       persistedRecord?.abortRequestedAt &&
@@ -572,7 +655,7 @@ async function startWorkflowRunWithRunId(
     runId,
     nowIso,
     persist,
-    abortSignal: opts?.abortSignal ?? new AbortController().signal,
+    abortSignal: abortController.signal,
     throwIfAbortRequested() {
       throwIfWorkflowAbortRequested(this.abortSignal);
     },
@@ -634,7 +717,35 @@ async function startWorkflowRunWithRunId(
       // Preserve the original workflow failure if the best-effort fallback announcement path breaks.
     }
     return failed;
+  } finally {
+    clearInterval(abortPoll);
+    upstreamAbortSignal?.removeEventListener("abort", forwardAbortFromUpstream);
   }
+}
+
+export async function runPendingWorkflowRun(runId: string): Promise<WorkflowRunRecord> {
+  const persistedRecord = readRunRecord(runId);
+  if (!persistedRecord) {
+    throw new Error(`Workflow-Run nicht gefunden: ${runId}`);
+  }
+  if (persistedRecord.status === "running" || isTerminalStatus(persistedRecord.status)) {
+    return persistedRecord;
+  }
+  if (persistedRecord.status !== "pending") {
+    throw new Error(`Workflow-Run ${runId} kann nicht gestartet werden.`);
+  }
+
+  const request = buildStartRequestFromRunRecord(persistedRecord);
+  const initialPersistedRecord = persistedRecord.abortRequested
+    ? persistedRecord
+    : buildRunningRunRecord(persistedRecord);
+  if (!persistedRecord.abortRequested) {
+    writeRunRecord(initialPersistedRecord);
+  }
+
+  return await startWorkflowRunWithRunId(persistedRecord.moduleId, request, runId, {
+    initialPersistedRecord,
+  });
 }
 
 export async function startWorkflowRunAsync(
@@ -654,49 +765,7 @@ export async function startWorkflowRunAsync(
     status: "pending",
   });
   writeRunRecord(initialRecord);
-  const abortController = new AbortController();
-
-  const backgroundRun = new Promise<WorkflowRunRecord>((resolve, reject) => {
-    setTimeout(() => {
-      void (async () => {
-        try {
-          const latestRecord = readRunRecord(runId) ?? initialRecord;
-          if (latestRecord.abortRequested) {
-            abortController.abort(createWorkflowAbortError("Abort requested by operator."));
-          }
-          const runningRecord: WorkflowRunRecord = abortController.signal.aborted
-            ? latestRecord
-            : {
-                ...latestRecord,
-                status: "running",
-                updatedAt: nowIso(),
-              };
-          if (!abortController.signal.aborted) {
-            writeRunRecord(runningRecord);
-          }
-          resolve(
-            await startWorkflowRunWithRunId(moduleId, request, runId, {
-              initialPersistedRecord: runningRecord,
-              abortSignal: abortController.signal,
-            }),
-          );
-        } catch (error) {
-          reject(error);
-        }
-      })();
-    }, 0);
-  });
-
-  activeWorkflowRuns.set(runId, {
-    promise: backgroundRun,
-    abortController,
-  });
-  void backgroundRun.finally(() => {
-    const active = activeWorkflowRuns.get(runId);
-    if (active?.promise === backgroundRun) {
-      activeWorkflowRuns.delete(runId);
-    }
-  });
+  launchDetachedWorkflowRunHost(runId);
 
   return initialRecord;
 }
@@ -734,26 +803,6 @@ export async function waitForWorkflowRun(
       status: "ok",
       run: initialRecord,
     };
-  }
-
-  const active = activeWorkflowRuns.get(runId);
-  if (active) {
-    const timeoutPromise = sleep(normalizedTimeout).then(() => ({ status: "timeout" as const }));
-    try {
-      const result = await Promise.race([
-        active.promise.then((run) => ({ status: "ok" as const, run })),
-        timeoutPromise,
-      ]);
-      if (result.status === "timeout") {
-        return { status: "timeout" };
-      }
-      return result;
-    } catch (error) {
-      return {
-        status: "error",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
   }
 
   const deadline = Date.now() + normalizedTimeout;
@@ -800,9 +849,6 @@ export function abortWorkflowRun(runId: string): WorkflowRunRecord {
   ) {
     writeRunRecord(abortRequestedRecord);
   }
-  activeWorkflowRuns
-    .get(runId)
-    ?.abortController.abort(createWorkflowAbortError("Abort requested by operator."));
   return readRunRecord(runId) ?? abortRequestedRecord;
 }
 
@@ -1066,6 +1112,14 @@ export async function workflowsStartAsync(
     console.log(`Run asynchron gestartet: ${record.runId}`);
     console.log(`Module: ${record.moduleId}`);
     console.log(`Status: ${record.status}`);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function workflowsRunPending(runId: string) {
+  try {
+    await runPendingWorkflowRun(runId);
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }

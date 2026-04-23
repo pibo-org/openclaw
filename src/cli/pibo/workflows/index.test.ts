@@ -2,6 +2,19 @@ import fs from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { spawn } = vi.hoisted(() => ({
+  spawn: vi.fn(() => ({ unref: vi.fn() })),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn,
+  };
+});
+
 import {
   getWorkflowProgress,
   getWorkflowRunStatus,
@@ -11,6 +24,7 @@ import {
   listWorkflowModuleManifests,
   listWorkflowRuns,
   readWorkflowArtifact,
+  runPendingWorkflowRun,
   startWorkflowRun,
   startWorkflowRunAsync,
   waitForWorkflowRun,
@@ -134,6 +148,19 @@ describe("pibo workflows runtime", () => {
       level: 0,
       eventCount: 0,
     });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(["pibo", "workflows", "_run-pending", initial.runId]),
+      expect.objectContaining({
+        detached: true,
+        env: process.env,
+        stdio: "ignore",
+        windowsHide: true,
+      }),
+    );
+
+    await runPendingWorkflowRun(initial.runId);
 
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
     expect(wait.status).toBe("ok");
@@ -210,6 +237,8 @@ describe("pibo workflows runtime", () => {
       headerMode: "runtime_header",
       events: ["started", "blocked", "completed"],
     });
+
+    await runPendingWorkflowRun(initialRecord.runId);
 
     const wait = await waitForWorkflowRun(initialRecord.runId, 5_000);
     expect(wait.status).toBe("ok");

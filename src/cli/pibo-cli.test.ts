@@ -68,10 +68,12 @@ describe("pibo cli", () => {
     const workflows = pibo?.commands.find((command) => command.name() === "workflows");
     const start = workflows?.commands.find((command) => command.name() === "start");
     const startAsync = workflows?.commands.find((command) => command.name() === "start-async");
+    const workflowsHelp = workflows?.helpInformation() ?? "";
 
     const startHelp = start?.helpInformation() ?? "";
     const startAsyncHelp = startAsync?.helpInformation() ?? "";
 
+    expect(workflowsHelp).not.toContain("_run-pending");
     expect(startHelp).toContain("--owner-session-key <key>");
     expect(startHelp).toContain("--channel <name>");
     expect(startHelp).toContain("--to <target>");
