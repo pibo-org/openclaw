@@ -270,7 +270,7 @@ describe("codex_controller module", () => {
     expect(manifest.description).toContain("Codex");
     expect(manifest.requiredAgents).toEqual(["codex", "codex-controller"]);
     expect(manifest.inputSchemaSummary).toContain(
-      "agentId (string, optional): agent workspace used for controller bootstrap plus Codex additional-directory context; does not change workingDirectory or worker cwd.",
+      "agentId (string, optional): selects agent-workspace bootstrap for the controller (skills/system prompt) and adds that workspace as extra readable Codex context; does not change worker cwd or import full Main/session chat, memory, or docs.",
     );
   });
 
@@ -373,6 +373,26 @@ describe("codex_controller module", () => {
         workingDirectory: "/repo",
       }),
     );
+  });
+
+  it("accepts maxRounds as the preferred input budget alias", async () => {
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          maxRounds: 1,
+        },
+      },
+      createModuleContext("run-max-rounds"),
+    );
+
+    expect(record.status).toBe("done");
+    expect(record.maxRounds).toBe(1);
+    expect((record.input as { maxRetries?: number }).maxRetries).toBe(1);
   });
 
   it("uses the selected agent workspace as workflow context when agentId is provided", async () => {

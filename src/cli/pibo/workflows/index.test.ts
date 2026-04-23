@@ -28,6 +28,7 @@ import {
   startWorkflowRun,
   startWorkflowRunAsync,
   waitForWorkflowRun,
+  workflowsRun,
   workflowsStart,
   workflowsStartAsync,
 } from "./index.js";
@@ -36,9 +37,23 @@ import { writeWorkflowArtifact } from "./store.js";
 describe("pibo workflows runtime", () => {
   let tempHome = "";
   let originalHome: string | undefined;
+  let originalWorkflowEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalWorkflowEnv = {
+      OPENCLAW_WORKFLOW_OWNER_SESSION_KEY: process.env.OPENCLAW_WORKFLOW_OWNER_SESSION_KEY,
+      OPENCLAW_MCP_SESSION_KEY: process.env.OPENCLAW_MCP_SESSION_KEY,
+      OPENCLAW_MCP_ACCOUNT_ID: process.env.OPENCLAW_MCP_ACCOUNT_ID,
+      OPENCLAW_MCP_MESSAGE_CHANNEL: process.env.OPENCLAW_MCP_MESSAGE_CHANNEL,
+      OPENCLAW_WORKFLOW_CHANNEL: process.env.OPENCLAW_WORKFLOW_CHANNEL,
+      OPENCLAW_WORKFLOW_TO: process.env.OPENCLAW_WORKFLOW_TO,
+      OPENCLAW_WORKFLOW_ACCOUNT_ID: process.env.OPENCLAW_WORKFLOW_ACCOUNT_ID,
+      OPENCLAW_WORKFLOW_THREAD_ID: process.env.OPENCLAW_WORKFLOW_THREAD_ID,
+    };
+    for (const key of Object.keys(originalWorkflowEnv)) {
+      delete process.env[key];
+    }
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-pibo-workflows-"));
     process.env.HOME = tempHome;
   });
@@ -49,6 +64,13 @@ describe("pibo workflows runtime", () => {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    for (const [key, value] of Object.entries(originalWorkflowEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
     if (tempHome) {
       fs.rmSync(tempHome, { recursive: true, force: true });
@@ -160,6 +182,10 @@ describe("pibo workflows runtime", () => {
       }),
     );
 
+    const pendingProgress = getWorkflowProgress(initial.runId);
+    expect(pendingProgress.statusPhase).toBe("bootstrapping");
+    expect(pendingProgress.humanSummary).toContain("bootstrapping");
+
     await runPendingWorkflowRun(initial.runId);
 
     const wait = await waitForWorkflowRun(initial.runId, 5_000);
@@ -244,6 +270,158 @@ describe("pibo workflows runtime", () => {
     expect(wait.status).toBe("ok");
     expect(wait.run?.origin).toEqual(initialRecord.origin);
     expect(wait.run?.reporting).toEqual(initialRecord.reporting);
+  });
+
+  it("runs codex_controller with task-first flags and defaults cwd to pwd", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process, "cwd").mockReturnValue(tempHome);
+    process.env.OPENCLAW_WORKFLOW_OWNER_SESSION_KEY = "agent:main:telegram:group:-100123:topic:555";
+    process.env.OPENCLAW_WORKFLOW_CHANNEL = "telegram";
+    process.env.OPENCLAW_WORKFLOW_TO = "group:-100123";
+    process.env.OPENCLAW_WORKFLOW_ACCOUNT_ID = "telegram-default";
+    process.env.OPENCLAW_WORKFLOW_THREAD_ID = "555";
+
+    await workflowsRun("codex_controller", {
+      replyHere: true,
+      task: "Ship the fix",
+      success: ["Tests pass", "Docs updated"],
+      constraint: ["Do not touch unrelated changes"],
+      agentId: "writer",
+      maxRounds: "4",
+      workerModel: "gpt-5.4",
+      workerReasoningEffort: "high",
+      outputJson: true,
+    });
+
+    const payload = JSON.parse(String(consoleLog.mock.calls[0]?.[0])) as {
+      record: {
+        status: string;
+        maxRounds: number;
+        origin: Record<string, unknown>;
+        input: Record<string, unknown>;
+      };
+      resolvedDefaults: Record<string, unknown>;
+      resolvedOrigin: Record<string, unknown>;
+    };
+    expect(payload.record.status).toBe("pending");
+    expect(payload.record.maxRounds).toBe(4);
+    expect(payload.record.input).toMatchObject({
+      task: "Ship the fix",
+      workingDirectory: tempHome,
+      successCriteria: ["Tests pass", "Docs updated"],
+      constraints: ["Do not touch unrelated changes"],
+      agentId: "writer",
+      maxRounds: 4,
+      workerModel: "gpt-5.4",
+      workerReasoningEffort: "high",
+    });
+    expect(payload.record.origin).toEqual({
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:555",
+      channel: "telegram",
+      to: "group:-100123",
+      accountId: "telegram-default",
+      threadId: "555",
+    });
+    expect(payload.resolvedDefaults).toEqual({
+      cwd: tempHome,
+      replyTarget: "current context",
+    });
+    expect(payload.resolvedOrigin).toEqual(payload.record.origin);
+  });
+
+  it("resolves --reply-here from bundled MCP session context", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process, "cwd").mockReturnValue(tempHome);
+    process.env.OPENCLAW_MCP_SESSION_KEY = "agent:main:telegram:group:-100123:topic:555";
+    process.env.OPENCLAW_MCP_ACCOUNT_ID = "telegram-default";
+    process.env.OPENCLAW_MCP_MESSAGE_CHANNEL = "telegram";
+
+    await workflowsRun("codex_controller", {
+      replyHere: true,
+      task: "Ship the fix",
+      outputJson: true,
+    });
+
+    const payload = JSON.parse(String(consoleLog.mock.calls[0]?.[0])) as {
+      record: {
+        origin: Record<string, unknown>;
+      };
+      resolvedDefaults: Record<string, unknown>;
+    };
+    expect(payload.record.origin).toEqual({
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:555",
+      channel: "telegram",
+      to: "group:-100123",
+      accountId: "telegram-default",
+      threadId: "555",
+    });
+    expect(payload.resolvedDefaults).toMatchObject({
+      cwd: tempHome,
+      replyTarget: "current context",
+    });
+  });
+
+  it("prints resolved operator start context for run codex_controller", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process, "cwd").mockReturnValue(tempHome);
+
+    await workflowsRun("codex_controller", {
+      task: "Inspect the repo",
+      ownerSessionKey: "agent:main:telegram:group:-100123:topic:333",
+      channel: "telegram",
+      to: "group:-100123",
+      threadId: "333",
+    });
+
+    const lines = consoleLog.mock.calls.map((call) => String(call[0]));
+    expect(lines[0]).toMatch(/^Started workflow run /);
+    expect(lines).toContain("Module: codex_controller");
+    expect(lines).toContain("Status: pending");
+    expect(lines).toContain("Reporting to: telegram group:-100123 topic 333");
+    expect(lines).toContain(`Working directory: ${tempHome}`);
+    expect(lines.some((line) => line.startsWith("Next: openclaw pibo workflows progress "))).toBe(
+      true,
+    );
+    expect(lines).toContain("Defaults applied:");
+    expect(lines).toContain(`- cwd -> ${tempHome}`);
+  });
+
+  it("fails --reply-here clearly without a safe current origin", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit:${String(code)}`);
+    }) as typeof process.exit);
+    delete process.env.OPENCLAW_WORKFLOW_OWNER_SESSION_KEY;
+    delete process.env.OPENCLAW_MCP_SESSION_KEY;
+    delete process.env.OPENCLAW_WORKFLOW_CHANNEL;
+    delete process.env.OPENCLAW_WORKFLOW_TO;
+
+    await expect(
+      workflowsRun("codex_controller", {
+        replyHere: true,
+        task: "Ship the fix",
+      }),
+    ).rejects.toThrow("process.exit:1");
+    expect(consoleError.mock.calls[0]?.[0]).toContain("`--reply-here` is not available");
+    expect(consoleError.mock.calls[0]?.[0]).toContain("Missing: ownerSessionKey, channel, to");
+    exitSpy.mockRestore();
+  });
+
+  it("rejects conflicting --json and direct operator flags", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit:${String(code)}`);
+    }) as typeof process.exit);
+
+    await expect(
+      workflowsRun("codex_controller", {
+        json: '{"task":"from json","workingDirectory":"/tmp"}',
+        task: "from flag",
+      }),
+    ).rejects.toThrow("process.exit:1");
+    expect(consoleError.mock.calls[0]?.[0]).toContain("Conflicting --json and direct flag inputs");
+    expect(consoleError.mock.calls[0]?.[0]).toContain("--task conflicts with JSON field `task`");
+    exitSpy.mockRestore();
   });
 
   it("derives compact progress snapshots and filtered trace events", async () => {

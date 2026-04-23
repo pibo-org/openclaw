@@ -12,6 +12,12 @@ export type WorkflowTerminalState =
 
 export type WorkflowRunStatus = "pending" | "running" | WorkflowTerminalState;
 export type WorkflowTraceLevel = 0 | 1 | 2 | 3;
+export type WorkflowStatusPhase =
+  | "bootstrapping"
+  | "starting_controller"
+  | "starting_worker"
+  | "running_round"
+  | "assessing_closeout";
 
 export interface WorkflowTraceRef {
   version: "v1";
@@ -26,6 +32,7 @@ export interface WorkflowProgressSnapshot {
   runId: string;
   moduleId: string;
   status: WorkflowRunStatus;
+  statusPhase: WorkflowStatusPhase | null;
   isTerminal: boolean;
   abortRequested: boolean;
   abortRequestedAt: string | null;

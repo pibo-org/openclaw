@@ -49,11 +49,22 @@ type TrustedWorkflowMutationCliOptions = {
   stdin?: boolean;
   maxRounds?: string;
   outputJson?: boolean;
+  wait?: boolean;
+  waitTimeoutMs?: string;
+  replyHere?: boolean;
   ownerSessionKey?: string;
   channel?: string;
   to?: string;
   accountId?: string;
   threadId?: string;
+  task?: string;
+  cwd?: string;
+  repoRoot?: string;
+  agentId?: string;
+  success?: string[];
+  constraint?: string[];
+  workerModel?: string;
+  workerReasoningEffort?: string;
 };
 
 function addTrustedWorkflowMutationOptions(command: Command) {
@@ -66,6 +77,20 @@ function addTrustedWorkflowMutationOptions(command: Command) {
     .requiredOption("--to <target>", "Trusted origin destination for workflow reporting")
     .option("--account-id <id>", "Optional trusted origin account id")
     .option("--thread-id <id>", "Optional trusted origin thread/topic id");
+}
+
+function addWorkflowRunRoutingOptions(command: Command) {
+  return command
+    .option("--reply-here", "Resolve reporting target from the current trusted CLI context")
+    .option("--owner-session-key <key>", "Explicit owner session key for workflow reporting")
+    .option("--channel <name>", "Explicit origin channel for workflow reporting")
+    .option("--to <target>", "Explicit origin destination for workflow reporting")
+    .option("--account-id <id>", "Optional explicit origin account id")
+    .option("--thread-id <id>", "Optional explicit origin thread/topic id");
+}
+
+function collectRepeatedOption(value: string, previous: string[] = []) {
+  return [...previous, value];
 }
 
 export function registerPiboCli(program: Command) {
@@ -477,6 +502,43 @@ export function registerPiboCli(program: Command) {
   ).action(async (moduleId: string, opts: TrustedWorkflowMutationCliOptions) => {
     const { workflowsStartAsync } = await loadWorkflowModule();
     await workflowsStartAsync(moduleId, opts);
+  });
+  addWorkflowRunRoutingOptions(
+    workflows
+      .command("run <moduleId>")
+      .description("Task-first Workflow-Run starten (async by default)")
+      .option("--json <json>", "Advanced JSON input inline oder als @datei.json")
+      .option("--stdin", "Advanced JSON input von stdin lesen")
+      .option("--wait", "Blockieren, bis der Run terminal ist")
+      .option("--wait-timeout-ms <n>", "Wartezeit fuer --wait in Millisekunden")
+      .option("--task <text>", "codex_controller task text")
+      .option("--cwd <path>", "codex_controller workingDirectory; defaults to pwd")
+      .option("--repo-root <path>", "codex_controller explicit strict closeout repo root")
+      .option("--agent-id <id>", "codex_controller optional agent workspace context")
+      .option("--success <text>", "codex_controller success criterion", collectRepeatedOption, [])
+      .option("--constraint <text>", "codex_controller constraint", collectRepeatedOption, [])
+      .option("--max-rounds <n>", "codex_controller controller round budget")
+      .option("--worker-model <id>", "codex_controller Codex worker model override")
+      .option(
+        "--worker-reasoning-effort <level>",
+        "codex_controller Codex worker reasoning effort override",
+      )
+      .option("--output-json", "Resolved start result as JSON ausgeben")
+      .addHelpText(
+        "after",
+        [
+          "",
+          "Example:",
+          "  openclaw pibo workflows run codex_controller \\",
+          "    --reply-here \\",
+          '    --task "Inspect the repo and fix the issue" \\',
+          '    --success "Verify in browser" \\',
+          '    --constraint "Do not touch unrelated dirty changes"',
+        ].join("\n"),
+      ),
+  ).action(async (moduleId: string, opts: TrustedWorkflowMutationCliOptions) => {
+    const { workflowsRun } = await loadWorkflowModule();
+    await workflowsRun(moduleId, opts);
   });
   workflows.command("_run-pending <runId>", { hidden: true }).action(async (runId: string) => {
     const { workflowsRunPending } = await loadWorkflowModule();

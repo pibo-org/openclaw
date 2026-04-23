@@ -258,6 +258,7 @@ function normalizeInput(request: WorkflowStartRequest): NormalizedCodexControlle
   const repoRoot = path.resolve(rawRepoRoot || workingDirectory);
   const maxRetries =
     normalizePositiveInteger(record.maxRetries) ??
+    normalizePositiveInteger(record.maxRounds) ??
     normalizePositiveInteger(request.maxRounds) ??
     DEFAULT_MAX_ROUNDS;
   const workerDefaults = resolveCodexWorkerDefaultOptions({

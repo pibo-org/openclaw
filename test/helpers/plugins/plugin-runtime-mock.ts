@@ -506,6 +506,7 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         runId,
         moduleId: "test-workflow",
         status: "running" as const,
+        statusPhase: "starting_worker" as const,
         isTerminal: false,
         abortRequested: false,
         abortRequestedAt: null,

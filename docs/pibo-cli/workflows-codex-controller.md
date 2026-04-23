@@ -22,7 +22,8 @@ It is intended for tasks where:
 
 - the coding worker should keep its own persistent Codex thread
 - the worker must stay anchored to an explicit `workingDirectory`
-- an optional `agentId` should be able to switch bootstrap/context resolution to a different agent workspace without moving the worker cwd
+- the worker should only receive explicit workflow/task context, not ambient Main/session chat, memory, or docs
+- an optional `agentId` should be able to switch agent-workspace bootstrap context and add extra readable workspace context without moving the worker cwd or inheriting the full Main/session context
 - a controller should decide whether to continue, stop as done, or escalate a real blocker
 
 ## Runtime shape
@@ -32,6 +33,44 @@ It is intended for tasks where:
 - native CLI: `openclaw pibo workflows ...`
 - plugin/runtime bridge: `runtime.piboWorkflows`
 - global PIBO agent tools now keep only delegate surfaces; workflow mutation starts go through the CLI contract
+
+## Operator start path
+
+The task-first path for normal operator use is:
+
+```bash
+openclaw pibo workflows run codex_controller \
+  --reply-here \
+  --task "Inspect the repo and fix the issue" \
+  --success "Verify in browser" \
+  --constraint "Do not touch unrelated dirty changes"
+```
+
+`run` starts asynchronously by default and prints the run id, reporting target, effective working directory, and next `progress` command. Use `--wait` when the CLI should block until the workflow reaches a terminal state.
+
+For `codex_controller`, `run` accepts direct operator flags:
+
+- `--task <text>`
+- `--cwd <path>`; defaults to the current `pwd` when omitted
+- `--repo-root <path>`
+- `--agent-id <id>`
+- repeated `--success <text>`
+- repeated `--constraint <text>`
+- `--max-rounds <n>`
+- `--worker-model <id>`
+- `--worker-reasoning-effort <level>`
+
+`--reply-here` resolves the reporting target only when a trusted current origin is available. For plain local CLI use, pass `--owner-session-key`, `--channel`, `--to`, and optionally `--thread-id` explicitly, or provide `OPENCLAW_WORKFLOW_OWNER_SESSION_KEY`, `OPENCLAW_WORKFLOW_CHANNEL`, `OPENCLAW_WORKFLOW_TO`, and optionally `OPENCLAW_WORKFLOW_ACCOUNT_ID` / `OPENCLAW_WORKFLOW_THREAD_ID`.
+
+The low-level JSON contract remains available:
+
+```bash
+openclaw pibo workflows start-async codex_controller \
+  --owner-session-key <key> \
+  --channel <channel> \
+  --to <target> \
+  --json @input.json
+```
 
 ## Why the worker uses Codex SDK directly
 
@@ -46,17 +85,37 @@ This replaces the former ACP/ACPX worker path because the SDK/App-Server combina
 
 This keeps the controller loop and workflow tracing intact while removing the extra ACP timeout/resume layer.
 
-## Workspace semantics
+## Context boundaries
 
-The module keeps two paths distinct when `agentId` is provided:
+The workflow has three separate context layers. They should not be conflated.
 
-- `workingDirectory`: the project repo/worktree used as the Codex SDK worker `cwd`
-- `repoRoot`: explicit strict closeout target for the final read-only git/worktree/integration gate
-- `agentId`: selects the controller workspace and is also exposed to the worker as an additional readable directory; it does not move the worker `cwd`
+1. Execution workspace: `workingDirectory`
+
+- `workingDirectory` is the Codex SDK worker `cwd`.
+- This is where the worker runs commands, reads the repo by default, edits files, and executes verification.
+- Setting `agentId` does **not** move the worker to another cwd. The worker still runs in `workingDirectory`.
+
+2. Explicit run contract: workflow input and controller follow-up
+
+- The worker receives the explicit run contract built from this workflow invocation: `task`, `successCriteria`, `constraints`, finish-quality requirements, and later controller follow-up instructions.
+- The persisted `codex-controller-run-contract.json` is the stable source of truth for that worker run across retries, resumes, and compaction.
+- The worker does **not** automatically inherit ambient Main/session transcript state, prior chat turns, memory search results, or repo docs just because they existed in some other OpenClaw session.
+
+3. Optional agent-workspace context: `agentId`
+
+- When `agentId` is provided, the runtime resolves that agent's workspace directory.
+- Controller turns run with that workspace as `workspaceDir`, so agent-workspace bootstrap files can affect the controller's local skills/system-prompt/workspace bootstrap behavior.
+- The Codex worker gets the same directory as `additionalDirectories`, which means extra readable workspace context alongside the real `workingDirectory`.
+- This is still bounded context. `agentId` does **not** transplant the full Main chat, full session memory, or all Main/workspace docs into the worker.
+
+Practical reading of `agentId`:
+
+- yes: switch which agent workspace is used for controller bootstrap and extra readable workspace context
+- yes: expose that agent workspace directory in addition to `workingDirectory`
+- no: change the worker cwd away from `workingDirectory`
+- no: implicitly inherit ambient Main/session chat, memory, or docs
 
 If `repoRoot` is omitted and `workingDirectory` is an active linked git worktree, closeout is scoped to that current worktree: the run must still end clean, but it does not need to self-integrate into `main` or close sibling worktrees just to report success. Provide `repoRoot` when the product needs shared-repo integration semantics instead.
-
-If `agentId` is omitted, the prior behavior stays unchanged.
 
 ## Controller prompt/session model
 
@@ -198,6 +257,7 @@ node scripts/run-vitest.mjs run --config vitest.cli.config.ts \
   src/cli/pibo/workflows/modules/codex-controller.test.ts
 pnpm openclaw -- pibo workflows list
 pnpm openclaw -- pibo workflows describe codex_controller
+pnpm openclaw -- pibo workflows run codex_controller --help
 pnpm openclaw -- pibo workflows start noop \
   --owner-session-key 'agent:main:telegram:group:-100123:topic:333' \
   --channel telegram \
@@ -210,18 +270,15 @@ pnpm openclaw -- pibo workflows start noop \
 Optional module smoke shape:
 
 ```bash
-pnpm openclaw -- pibo workflows start codex_controller \
+pnpm openclaw -- pibo workflows run codex_controller \
   --owner-session-key 'agent:main:telegram:group:-100123:topic:333' \
   --channel telegram \
   --to 'group:-100123' \
   --thread-id 333 \
-  --json '{
-    "task": "Inspect the repo and summarize one safe improvement.",
-    "workingDirectory": "/absolute/path/to/repo",
-    "agentId": "writer",
-    "maxRetries": 1,
-    "workerCompactionMode": "off"
-  }' \
+  --task "Inspect the repo and summarize one safe improvement." \
+  --cwd /absolute/path/to/repo \
+  --agent-id writer \
+  --max-rounds 1 \
   --output-json
 ```
 

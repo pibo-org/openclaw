@@ -4,6 +4,7 @@ import fs, { readFileSync } from "node:fs";
 import path from "node:path";
 import { resolveOpenClawPackageRootSync } from "../../../infra/openclaw-root.js";
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
+import { parseRawSessionConversationRef } from "../../../sessions/session-key-utils.js";
 import {
   createWorkflowAbortError,
   isWorkflowAbortError,
@@ -40,6 +41,7 @@ import type {
   WorkflowReportingConfig,
   WorkflowRunRecord,
   WorkflowStartRequest,
+  WorkflowStatusPhase,
   WorkflowTerminalState,
   WorkflowWaitResult,
 } from "./types.js";
@@ -113,6 +115,34 @@ type TrustedWorkflowMutationCliOptions = {
   threadId?: string;
 };
 
+type WorkflowRunOperatorCliOptions = TrustedWorkflowMutationCliOptions & {
+  json?: string;
+  stdin?: boolean;
+  maxRounds?: string;
+  outputJson?: boolean;
+  wait?: boolean;
+  waitTimeoutMs?: string;
+  replyHere?: boolean;
+  task?: string;
+  cwd?: string;
+  repoRoot?: string;
+  agentId?: string;
+  success?: string[];
+  constraint?: string[];
+  workerModel?: string;
+  workerReasoningEffort?: string;
+};
+
+type ResolvedWorkflowRunDefaults = {
+  cwd?: string;
+  replyTarget?: string;
+};
+
+type WorkflowRunStartResolution = {
+  request: WorkflowStartRequest;
+  resolvedDefaults: ResolvedWorkflowRunDefaults;
+};
+
 function requireNonEmptyCliOption(value: string | undefined, flag: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) {
@@ -143,6 +173,317 @@ function buildWorkflowStartRequestFromCli(
     maxRounds: readPositiveNumberOption(params.maxRounds),
     origin: trustedContext.origin,
     reporting: trustedContext.reporting,
+  };
+}
+
+function normalizeNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeRepeatedTextOption(values?: string[]): string[] {
+  return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+function objectHasOwnKey(value: Record<string, unknown>, keys: string[]) {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function hasCodexControllerDirectInput(opts: WorkflowRunOperatorCliOptions) {
+  return Boolean(
+    normalizeNonEmptyString(opts.task) ||
+    normalizeNonEmptyString(opts.cwd) ||
+    normalizeNonEmptyString(opts.repoRoot) ||
+    normalizeNonEmptyString(opts.agentId) ||
+    normalizeNonEmptyString(opts.workerModel) ||
+    normalizeNonEmptyString(opts.workerReasoningEffort) ||
+    normalizeRepeatedTextOption(opts.success).length > 0 ||
+    normalizeRepeatedTextOption(opts.constraint).length > 0,
+  );
+}
+
+function assertNoJsonDirectInputConflict(
+  jsonInput: Record<string, unknown>,
+  opts: WorkflowRunOperatorCliOptions,
+) {
+  const conflicts: string[] = [];
+  if (normalizeNonEmptyString(opts.task) && objectHasOwnKey(jsonInput, ["task"])) {
+    conflicts.push("--task conflicts with JSON field `task`");
+  }
+  if (
+    normalizeNonEmptyString(opts.cwd) &&
+    objectHasOwnKey(jsonInput, ["workingDirectory", "cwd"])
+  ) {
+    conflicts.push("--cwd conflicts with JSON field `workingDirectory`");
+  }
+  if (normalizeNonEmptyString(opts.repoRoot) && objectHasOwnKey(jsonInput, ["repoRoot"])) {
+    conflicts.push("--repo-root conflicts with JSON field `repoRoot`");
+  }
+  if (normalizeNonEmptyString(opts.agentId) && objectHasOwnKey(jsonInput, ["agentId"])) {
+    conflicts.push("--agent-id conflicts with JSON field `agentId`");
+  }
+  if (
+    normalizeRepeatedTextOption(opts.success).length > 0 &&
+    objectHasOwnKey(jsonInput, ["successCriteria"])
+  ) {
+    conflicts.push("--success conflicts with JSON field `successCriteria`");
+  }
+  if (
+    normalizeRepeatedTextOption(opts.constraint).length > 0 &&
+    objectHasOwnKey(jsonInput, ["constraints"])
+  ) {
+    conflicts.push("--constraint conflicts with JSON field `constraints`");
+  }
+  if (normalizeNonEmptyString(opts.workerModel) && objectHasOwnKey(jsonInput, ["workerModel"])) {
+    conflicts.push("--worker-model conflicts with JSON field `workerModel`");
+  }
+  if (
+    normalizeNonEmptyString(opts.workerReasoningEffort) &&
+    objectHasOwnKey(jsonInput, ["workerReasoningEffort"])
+  ) {
+    conflicts.push("--worker-reasoning-effort conflicts with JSON field `workerReasoningEffort`");
+  }
+  if (
+    normalizeNonEmptyString(opts.maxRounds) &&
+    objectHasOwnKey(jsonInput, ["maxRounds", "maxRetries"])
+  ) {
+    conflicts.push("--max-rounds conflicts with JSON field `maxRounds` or `maxRetries`");
+  }
+  if (conflicts.length > 0) {
+    throw new Error(`Conflicting --json and direct flag inputs:\n- ${conflicts.join("\n- ")}`);
+  }
+}
+
+function resolveExistingDirectory(rawPath: string, flag: string): string {
+  const resolved = path.resolve(rawPath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`${flag} path does not exist: ${resolved}`);
+  }
+  if (!fs.statSync(resolved).isDirectory()) {
+    throw new Error(`${flag} path is not a directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+function splitRawConversationThread(params: { rawId: string; channel?: string }): {
+  rawId: string;
+  threadId?: string;
+} {
+  const lowerRawId = params.rawId.toLowerCase();
+  const threadIndex = lowerRawId.lastIndexOf(":thread:");
+  if (threadIndex !== -1) {
+    const rawId = params.rawId.slice(0, threadIndex);
+    const threadId = params.rawId.slice(threadIndex + ":thread:".length);
+    return {
+      rawId,
+      ...(threadId.trim() ? { threadId: threadId.trim() } : {}),
+    };
+  }
+  if (params.channel === "telegram") {
+    const topicIndex = lowerRawId.lastIndexOf(":topic:");
+    if (topicIndex !== -1) {
+      const rawId = params.rawId.slice(0, topicIndex);
+      const threadId = params.rawId.slice(topicIndex + ":topic:".length);
+      return {
+        rawId,
+        ...(threadId.trim() ? { threadId: threadId.trim() } : {}),
+      };
+    }
+  }
+  return { rawId: params.rawId };
+}
+
+function deriveWorkflowOriginFromSessionKey(ownerSessionKey?: string): {
+  channel?: string;
+  to?: string;
+  threadId?: string;
+} {
+  const parsed = parseRawSessionConversationRef(ownerSessionKey);
+  if (!parsed) {
+    return {};
+  }
+  const channel = parsed.channel;
+  const conversation = splitRawConversationThread({ rawId: parsed.rawId, channel });
+  return {
+    channel,
+    to: `${parsed.kind}:${conversation.rawId}`,
+    ...(conversation.threadId ? { threadId: conversation.threadId } : {}),
+  };
+}
+
+function resolveCurrentWorkflowOriginFromEnv(): {
+  origin: WorkflowRunStartResolution["request"]["origin"];
+  reporting: WorkflowRunStartResolution["request"]["reporting"];
+} {
+  const ownerSessionKey =
+    normalizeNonEmptyString(process.env.OPENCLAW_WORKFLOW_OWNER_SESSION_KEY) ??
+    normalizeNonEmptyString(process.env.OPENCLAW_MCP_SESSION_KEY);
+  const sessionOrigin = deriveWorkflowOriginFromSessionKey(ownerSessionKey);
+  const channel =
+    normalizeNonEmptyString(process.env.OPENCLAW_WORKFLOW_CHANNEL) ??
+    normalizeNonEmptyString(process.env.OPENCLAW_MCP_MESSAGE_CHANNEL) ??
+    sessionOrigin.channel;
+  const to = normalizeNonEmptyString(process.env.OPENCLAW_WORKFLOW_TO) ?? sessionOrigin.to;
+  const accountId =
+    normalizeNonEmptyString(process.env.OPENCLAW_WORKFLOW_ACCOUNT_ID) ??
+    normalizeNonEmptyString(process.env.OPENCLAW_MCP_ACCOUNT_ID);
+  const threadId =
+    normalizeNonEmptyString(process.env.OPENCLAW_WORKFLOW_THREAD_ID) ?? sessionOrigin.threadId;
+  const missing = [
+    ...(ownerSessionKey ? [] : ["ownerSessionKey"]),
+    ...(channel ? [] : ["channel"]),
+    ...(to ? [] : ["to"]),
+  ];
+  if (missing.length > 0) {
+    throw new Error(
+      [
+        "`--reply-here` is not available because no safe current workflow origin is present.",
+        `Missing: ${missing.join(", ")}.`,
+        "Set OPENCLAW_WORKFLOW_OWNER_SESSION_KEY, OPENCLAW_WORKFLOW_CHANNEL, OPENCLAW_WORKFLOW_TO, and optionally OPENCLAW_WORKFLOW_THREAD_ID; or pass --owner-session-key, --channel, --to, and optionally --thread-id explicitly.",
+      ].join(" "),
+    );
+  }
+  if (!ownerSessionKey || !channel || !to) {
+    throw new Error("Internal error resolving current workflow origin.");
+  }
+  return buildTrustedWorkflowContext({
+    ownerSessionKey,
+    channel,
+    to,
+    ...(accountId ? { accountId } : {}),
+    ...(threadId ? { threadId } : {}),
+  });
+}
+
+function resolveWorkflowRunTrustedContext(opts: WorkflowRunOperatorCliOptions): {
+  origin?: WorkflowRunStartResolution["request"]["origin"];
+  reporting?: WorkflowRunStartResolution["request"]["reporting"];
+  replyHereDefaultApplied: boolean;
+} {
+  const hasExplicitRouting = Boolean(
+    normalizeNonEmptyString(opts.ownerSessionKey) ||
+    normalizeNonEmptyString(opts.channel) ||
+    normalizeNonEmptyString(opts.to) ||
+    normalizeNonEmptyString(opts.accountId) ||
+    normalizeNonEmptyString(opts.threadId),
+  );
+  if (opts.replyHere && hasExplicitRouting) {
+    throw new Error("Use either --reply-here or explicit routing flags, not both.");
+  }
+  if (opts.replyHere) {
+    return {
+      ...resolveCurrentWorkflowOriginFromEnv(),
+      replyHereDefaultApplied: true,
+    };
+  }
+  if (hasExplicitRouting) {
+    const trustedContext = buildTrustedWorkflowContext({
+      ownerSessionKey: requireNonEmptyCliOption(opts.ownerSessionKey, "--owner-session-key"),
+      channel: requireNonEmptyCliOption(opts.channel, "--channel"),
+      to: requireNonEmptyCliOption(opts.to, "--to"),
+      ...(normalizeNonEmptyString(opts.accountId) ? { accountId: opts.accountId!.trim() } : {}),
+      ...(normalizeNonEmptyString(opts.threadId) ? { threadId: opts.threadId!.trim() } : {}),
+    });
+    return { ...trustedContext, replyHereDefaultApplied: false };
+  }
+  return { replyHereDefaultApplied: false };
+}
+
+function buildCodexControllerInputForRun(params: {
+  jsonInput: unknown;
+  opts: WorkflowRunOperatorCliOptions;
+}): { input: Record<string, unknown>; cwdDefaultApplied?: string } {
+  const { jsonInput, opts } = params;
+  if (jsonInput !== null && (typeof jsonInput !== "object" || Array.isArray(jsonInput))) {
+    if (hasCodexControllerDirectInput(opts)) {
+      throw new Error("Direct codex_controller flags require a JSON object input.");
+    }
+    throw new Error("run codex_controller requires a JSON object input.");
+  }
+  const baseInput = { ...(jsonInput as Record<string, unknown>) };
+  assertNoJsonDirectInputConflict(baseInput, opts);
+
+  const task = normalizeNonEmptyString(opts.task);
+  const cwd = normalizeNonEmptyString(opts.cwd);
+  const repoRoot = normalizeNonEmptyString(opts.repoRoot);
+  const agentId = normalizeNonEmptyString(opts.agentId);
+  const successCriteria = normalizeRepeatedTextOption(opts.success);
+  const constraints = normalizeRepeatedTextOption(opts.constraint);
+  const workerModel = normalizeNonEmptyString(opts.workerModel);
+  const workerReasoningEffort = normalizeNonEmptyString(opts.workerReasoningEffort);
+  const maxRounds = readPositiveNumberOption(opts.maxRounds);
+
+  if (task) {
+    baseInput.task = task;
+  }
+  let cwdDefaultApplied: string | undefined;
+  if (cwd) {
+    baseInput.workingDirectory = resolveExistingDirectory(cwd, "--cwd");
+  } else if (!normalizeNonEmptyString(baseInput.workingDirectory)) {
+    const resolvedCwd = resolveExistingDirectory(process.cwd(), "cwd default");
+    baseInput.workingDirectory = resolvedCwd;
+    cwdDefaultApplied = resolvedCwd;
+  } else {
+    baseInput.workingDirectory = resolveExistingDirectory(
+      String(baseInput.workingDirectory),
+      "workingDirectory",
+    );
+  }
+  if (repoRoot) {
+    baseInput.repoRoot = resolveExistingDirectory(repoRoot, "--repo-root");
+  }
+  if (agentId) {
+    baseInput.agentId = agentId;
+  }
+  if (successCriteria.length > 0) {
+    baseInput.successCriteria = successCriteria;
+  }
+  if (constraints.length > 0) {
+    baseInput.constraints = constraints;
+  }
+  if (maxRounds !== undefined) {
+    baseInput.maxRounds = maxRounds;
+  }
+  if (workerModel) {
+    baseInput.workerModel = workerModel;
+  }
+  if (workerReasoningEffort) {
+    baseInput.workerReasoningEffort = workerReasoningEffort;
+  }
+  if (!normalizeNonEmptyString(baseInput.task)) {
+    throw new Error("run codex_controller requires --task or JSON field `task`.");
+  }
+  return { input: baseInput, cwdDefaultApplied };
+}
+
+function buildWorkflowRunStartRequestFromCli(params: {
+  moduleId: string;
+  input: unknown;
+  opts: WorkflowRunOperatorCliOptions;
+}): WorkflowRunStartResolution {
+  const { moduleId, opts } = params;
+  const trustedContext = resolveWorkflowRunTrustedContext(opts);
+  const resolvedDefaults: ResolvedWorkflowRunDefaults = {};
+  let input = params.input;
+  if (moduleId === "codex_controller") {
+    const codexInput = buildCodexControllerInputForRun({ jsonInput: input, opts });
+    input = codexInput.input;
+    if (codexInput.cwdDefaultApplied) {
+      resolvedDefaults.cwd = codexInput.cwdDefaultApplied;
+    }
+  } else if (hasCodexControllerDirectInput(opts)) {
+    throw new Error("Direct workflow run flags are currently supported only for codex_controller.");
+  }
+  if (trustedContext.replyHereDefaultApplied) {
+    resolvedDefaults.replyTarget = "current context";
+  }
+  return {
+    request: {
+      input,
+      maxRounds: readPositiveNumberOption(opts.maxRounds),
+      ...(trustedContext.origin ? { origin: trustedContext.origin } : {}),
+      ...(trustedContext.reporting ? { reporting: trustedContext.reporting } : {}),
+    },
+    resolvedDefaults,
   };
 }
 
@@ -373,6 +714,7 @@ function printProgressText(progress: WorkflowProgressSnapshot) {
   console.log(`Run: ${progress.runId}`);
   console.log(`Module: ${progress.moduleId}`);
   console.log(`Status: ${progress.status}`);
+  console.log(`Phase: ${progress.statusPhase ?? "n/a"}`);
   console.log(`Terminal: ${progress.isTerminal ? "yes" : "no"}`);
   console.log(`Abort requested: ${progress.abortRequested ? "yes" : "no"}`);
   console.log(`Abort requested at: ${progress.abortRequestedAt ?? "n/a"}`);
@@ -393,6 +735,57 @@ function printProgressText(progress: WorkflowProgressSnapshot) {
     console.log(`Terminal reason: ${progress.terminalReason}`);
   }
   console.log(`Summary: ${progress.humanSummary}`);
+}
+
+function formatWorkflowReportingTarget(origin?: WorkflowRunRecord["origin"]): string {
+  if (!origin) {
+    return "none";
+  }
+  const target = [origin.channel, origin.to].filter(Boolean).join(" ");
+  const thread = origin.threadId ? ` topic ${origin.threadId}` : "";
+  const account = origin.accountId ? ` account ${origin.accountId}` : "";
+  return `${target || origin.ownerSessionKey}${thread}${account}`.trim();
+}
+
+function readWorkflowInputWorkingDirectory(input: unknown): string | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return null;
+  }
+  const value = (input as { workingDirectory?: unknown }).workingDirectory;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function printWorkflowRunStartText(params: {
+  record: WorkflowRunRecord;
+  resolvedDefaults: ResolvedWorkflowRunDefaults;
+  waited?: boolean;
+}) {
+  console.log(`Started workflow run ${params.record.runId}`);
+  console.log(`Module: ${params.record.moduleId}`);
+  console.log(`Status: ${params.record.status}`);
+  console.log(`Reporting to: ${formatWorkflowReportingTarget(params.record.origin)}`);
+  console.log(
+    `Working directory: ${readWorkflowInputWorkingDirectory(params.record.input) ?? "n/a"}`,
+  );
+  console.log(`Next: openclaw pibo workflows progress ${params.record.runId}`);
+  const defaultLines = [
+    ...(params.resolvedDefaults.cwd ? [`- cwd -> ${params.resolvedDefaults.cwd}`] : []),
+    ...(params.resolvedDefaults.replyTarget
+      ? [`- reply target -> ${params.resolvedDefaults.replyTarget}`]
+      : []),
+  ];
+  if (defaultLines.length > 0) {
+    console.log("Defaults applied:");
+    for (const line of defaultLines) {
+      console.log(line);
+    }
+  }
+  if (params.record.terminalReason) {
+    console.log(`Reason: ${params.record.terminalReason}`);
+  }
+  if (params.waited) {
+    console.log("Wait: completed");
+  }
 }
 
 function printArtifactListText(artifacts: WorkflowArtifactInfo[]) {
@@ -426,7 +819,7 @@ function buildProgressHumanSummary(progress: Omit<WorkflowProgressSnapshot, "hum
     if (progress.abortRequested) {
       return "Abort wurde angefordert, bevor der Run gestartet hat.";
     }
-    return "Run ist angelegt und wartet auf die eigentliche Ausfuehrung.";
+    return "Run is bootstrapping; the detached workflow host has not started active execution yet.";
   }
   if (progress.status === "running") {
     if (progress.abortRequested) {
@@ -435,11 +828,25 @@ function buildProgressHumanSummary(progress: Omit<WorkflowProgressSnapshot, "hum
       }
       return "Abort wurde angefordert; der laufende Schritt wird beendet und es starten keine weiteren Runden.";
     }
+    if (progress.statusPhase === "starting_controller") {
+      return "Run is starting the controller before the first worker round.";
+    }
+    if (progress.statusPhase === "starting_worker") {
+      const roundText = progress.currentRound > 0 ? ` round ${progress.currentRound}` : "";
+      return `Worker is starting${roundText}; waiting for the first Codex result.`;
+    }
+    if (progress.statusPhase === "assessing_closeout") {
+      const roundText = progress.currentRound > 0 ? ` round ${progress.currentRound}` : "";
+      return `Controller is assessing closeout or next steps for${roundText}.`;
+    }
     if (progress.activeRole) {
       const roundText = progress.currentRound > 0 ? ` Runde ${progress.currentRound}` : "";
       return `Run laeuft${roundText}; aktive Rolle: ${progress.activeRole}.`;
     }
-    return "Run laeuft; aktuell keine aktive Rolle aus dem Trace ableitbar.";
+    if (progress.statusPhase === "running_round") {
+      return `Run is executing round ${progress.currentRound}.`;
+    }
+    return "Run is starting; no active role is visible in the trace yet.";
   }
   if (progress.status === "done") {
     return `Run erfolgreich abgeschlossen${progress.currentRound > 0 ? ` nach Runde ${progress.currentRound}` : ""}.`;
@@ -454,6 +861,27 @@ function buildProgressHumanSummary(progress: Omit<WorkflowProgressSnapshot, "hum
     return `Run wurde abgebrochen: ${progress.terminalReason ?? "kein Abbruchgrund im Run-Record"}.`;
   }
   return `Run hat die Rundengrenze erreicht${progress.maxRounds ? ` (${progress.maxRounds})` : ""}.`;
+}
+
+function deriveWorkflowStatusPhase(
+  progress: Omit<WorkflowProgressSnapshot, "humanSummary" | "statusPhase">,
+): WorkflowStatusPhase | null {
+  if (progress.status === "pending") {
+    return "bootstrapping";
+  }
+  if (progress.status !== "running") {
+    return null;
+  }
+  if (progress.activeRole === "worker") {
+    return "starting_worker";
+  }
+  if (progress.activeRole === "controller") {
+    return "assessing_closeout";
+  }
+  if (progress.currentRound > 0) {
+    return "running_round";
+  }
+  return "starting_controller";
 }
 
 function isNoisyProgressEvent(event: WorkflowTraceEvent) {
@@ -898,7 +1326,7 @@ export function getWorkflowProgress(runId: string): WorkflowProgressSnapshot {
 
   const lastEvent =
     [...events].toReversed().find((event) => !isNoisyProgressEvent(event)) ?? events.at(-1) ?? null;
-  const progressWithoutSummary: Omit<WorkflowProgressSnapshot, "humanSummary"> = {
+  const progressWithoutPhase: Omit<WorkflowProgressSnapshot, "humanSummary" | "statusPhase"> = {
     runId: record.runId,
     moduleId: record.moduleId,
     status: record.status,
@@ -923,6 +1351,10 @@ export function getWorkflowProgress(runId: string): WorkflowProgressSnapshot {
     lastEventAt: lastEvent?.ts ?? null,
     lastEventSummary: lastEvent?.summary ?? null,
     sessions: record.sessions,
+  };
+  const progressWithoutSummary: Omit<WorkflowProgressSnapshot, "humanSummary"> = {
+    ...progressWithoutPhase,
+    statusPhase: deriveWorkflowStatusPhase(progressWithoutPhase),
   };
 
   return {
@@ -1112,6 +1544,72 @@ export async function workflowsStartAsync(
     console.log(`Run asynchron gestartet: ${record.runId}`);
     console.log(`Module: ${record.moduleId}`);
     console.log(`Status: ${record.status}`);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function workflowsRun(moduleId: string, opts: WorkflowRunOperatorCliOptions) {
+  try {
+    const stdinInput = await readMaybeStdin(opts.stdin);
+    const argInput = opts.json ? readJsonArg(opts.json) : undefined;
+    const input = stdinInput ?? argInput ?? {};
+    const { request, resolvedDefaults } = buildWorkflowRunStartRequestFromCli({
+      moduleId,
+      input,
+      opts,
+    });
+    const record = opts.wait
+      ? await startWorkflowRun(moduleId, request)
+      : await startWorkflowRunAsync(moduleId, request);
+
+    if (opts.wait) {
+      const timeoutValue =
+        opts.waitTimeoutMs === undefined ? undefined : Number(opts.waitTimeoutMs);
+      const wait = await waitForWorkflowRun(
+        record.runId,
+        Number.isFinite(timeoutValue) ? timeoutValue : undefined,
+      );
+      if (wait.status === "ok" && wait.run) {
+        if (opts.outputJson) {
+          printJson({
+            record: wait.run,
+            resolvedDefaults,
+            resolvedOrigin: wait.run.origin ?? null,
+          });
+          return;
+        }
+        printWorkflowRunStartText({ record: wait.run, resolvedDefaults, waited: true });
+        return;
+      }
+      if (opts.outputJson) {
+        printJson({
+          record,
+          wait,
+          resolvedDefaults,
+          resolvedOrigin: record.origin ?? null,
+        });
+        return;
+      }
+      printWorkflowRunStartText({ record, resolvedDefaults });
+      console.log(
+        wait.status === "timeout"
+          ? "Wait: timed out before a terminal state was reached."
+          : `Wait: failed: ${wait.error ?? "unknown error"}`,
+      );
+      return;
+    }
+
+    if (opts.outputJson) {
+      printJson({
+        record,
+        resolvedDefaults,
+        resolvedOrigin: record.origin ?? null,
+      });
+      return;
+    }
+
+    printWorkflowRunStartText({ record, resolvedDefaults });
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }

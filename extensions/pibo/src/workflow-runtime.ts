@@ -103,6 +103,7 @@ function formatProgressText(progress: WorkflowProgressSnapshot) {
     `Run: ${progress.runId}`,
     `Module: ${progress.moduleId}`,
     `Status: ${progress.status}`,
+    `Phase: ${progress.statusPhase ?? "n/a"}`,
     `Terminal: ${progress.isTerminal ? "yes" : "no"}`,
     `Current round: ${progress.currentRound}`,
     `Max rounds: ${progress.maxRounds ?? "n/a"}`,

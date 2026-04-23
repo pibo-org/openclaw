@@ -35,6 +35,21 @@ describe("pibo workflows read-only", () => {
     expect(payload.moduleId).toBe("codex_controller");
   });
 
+  it("prints codex_controller context-boundary guidance in text describe output", () => {
+    workflowsDescribe("codex_controller", { json: false });
+
+    const lines = stdoutSpy.mock.calls.map(([line]: [string, ...unknown[]]) => String(line));
+    expect(lines).toContain(
+      "- task (string, required): original coding task passed directly to Codex; the worker only gets explicit workflow/task fields, not ambient Main/session chat, memory, or docs.",
+    );
+    expect(lines).toContain(
+      "- workingDirectory (string, required in the low-level contract; run codex_controller defaults --cwd to pwd): absolute project/worktree path used as the persistent Codex SDK worker cwd; the worker runs here.",
+    );
+    expect(lines).toContain(
+      "- agentId (string, optional): selects agent-workspace bootstrap for the controller (skills/system prompt) and adds that workspace as extra readable Codex context; does not change worker cwd or import full Main/session chat, memory, or docs.",
+    );
+  });
+
   it("exits on unknown workflow modules", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit:${String(code)}`);
