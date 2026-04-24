@@ -1,1 +1,3 @@
 docs/.generated/
+ui-pibo/src/routeTree.gen.ts
+apps/chat/src/routeTree.gen.ts

@@ -23,6 +23,7 @@
     "unicorn/require-post-message-target-origin": "off"
   },
   "ignorePatterns": [
+    "apps/chat/src/routeTree.gen.ts",
     "assets/",
     "dist/",
     "dist-runtime/",
@@ -34,6 +35,7 @@
     "src/auto-reply/reply/export-html/template.js",
     "src/canvas-host/a2ui/a2ui.bundle.js",
     "Swabble/",
+    "ui-pibo/src/routeTree.gen.ts",
     "vendor/",
     "**/.cache/**",
     "**/build/**",

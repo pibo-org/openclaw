@@ -21,6 +21,20 @@ in `ui-pibo` hineinkopiert.
 Historische Editor-Deep-Links mit `/?doc=...` werden in `ui-pibo` serverseitig nach
 `/editor?doc=...` weitergeleitet, damit bestehende Bookmarks weiter funktionieren.
 
+## TanStack-RouteTree-Codegen
+
+`ui-pibo` und `apps/chat` verwenden TanStack Start mit file-based routing. Dabei erzeugt der
+TanStack/Vite-Pluginpfad die generierten Router-Dateien:
+
+- `ui-pibo/src/routeTree.gen.ts`
+- `apps/chat/src/routeTree.gen.ts`
+
+Diese Dateien werden von den jeweiligen `src/router.tsx`-Dateien importiert und sind funktional
+notwendig. Sie bleiben tracked, werden aber bewusst aus Formatter-/Linter-Autofixes ausgeschlossen,
+damit Codegen und Formatierung nicht permanent irrelevanten Git-Drift erzeugen. Wenn weitere
+TanStack-Start-Apps dazukommen, muessen die Ignore-/Pre-commit-Regeln fuer deren generierte
+RouteTree-Dateien mit erweitert werden.
+
 ## Deploy-Dateien
 
 - Hauptdomain-vHost: `deploy/nginx.pibo.schottech.de.conf.example`
