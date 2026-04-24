@@ -225,7 +225,9 @@ The target `openai-codex/<model>` must be present with `available: true` and
 `missing: false`.
 
 If it is not present, update the OpenAI Codex provider plugin before changing
-the default. The usual implementation points are:
+the default. If `codex_controller` fails while the global Codex CLI already works,
+also check this repo's pinned `@openai/codex-sdk` version, because the workflow
+worker uses the SDK package directly. The usual implementation points are:
 
 - `extensions/openai/openai-codex-provider.ts`
 - `resolveDynamicModel`
@@ -233,6 +235,7 @@ the default. The usual implementation points are:
 - `supportsXHighThinking`
 - `isModernModelRef`
 - `preferRuntimeResolvedModel`, when runtime metadata should win
+- `package.json` / `pnpm-lock.yaml` for `@openai/codex-sdk` when SDK workers lag behind the CLI
 - `extensions/openai/openai-codex-provider.test.ts`
 
 After the provider knows the model, use:
