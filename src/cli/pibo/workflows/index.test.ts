@@ -31,8 +31,9 @@ import {
   workflowsRun,
   workflowsStart,
   workflowsStartAsync,
+  workflowsWorktreesOwner,
 } from "./index.js";
-import { writeWorkflowArtifact } from "./store.js";
+import { writeWorkflowArtifact, writeWorkflowWorktreeBinding, writeRunRecord } from "./store.js";
 
 describe("pibo workflows runtime", () => {
   let tempHome = "";
@@ -228,6 +229,17 @@ describe("pibo workflows runtime", () => {
       headerMode: "runtime_header",
       events: ["started", "blocked", "completed"],
     });
+    expect(record.provenance).toMatchObject({
+      trigger: "session",
+      source: "explicit-flags",
+      session: {
+        sessionKey: "agent:main:telegram:group:-100123:topic:333",
+        channel: "telegram",
+        to: "group:-100123",
+        accountId: "telegram-default",
+        threadId: "333",
+      },
+    });
     expect(getWorkflowTraceEvents(record.runId).map((event) => event.kind)).toContain(
       "report_delivery_attempted",
     );
@@ -263,6 +275,13 @@ describe("pibo workflows runtime", () => {
       headerMode: "runtime_header",
       events: ["started", "blocked", "completed"],
     });
+    expect(initialRecord.provenance).toMatchObject({
+      trigger: "session",
+      source: "explicit-flags",
+      session: {
+        sessionKey: "agent:main:telegram:group:-100123:topic:444",
+      },
+    });
 
     await runPendingWorkflowRun(initialRecord.runId);
 
@@ -270,6 +289,7 @@ describe("pibo workflows runtime", () => {
     expect(wait.status).toBe("ok");
     expect(wait.run?.origin).toEqual(initialRecord.origin);
     expect(wait.run?.reporting).toEqual(initialRecord.reporting);
+    expect(wait.run?.provenance).toEqual(initialRecord.provenance);
   });
 
   it("runs codex_controller with task-first flags and defaults cwd to pwd", async () => {
@@ -321,6 +341,15 @@ describe("pibo workflows runtime", () => {
       to: "group:-100123",
       accountId: "telegram-default",
       threadId: "555",
+    });
+    expect(payload.record).toMatchObject({
+      provenance: {
+        trigger: "session",
+        source: "reply-here",
+        session: {
+          sessionKey: "agent:main:telegram:group:-100123:topic:555",
+        },
+      },
     });
     expect(payload.resolvedDefaults).toEqual({
       cwd: tempHome,
@@ -448,6 +477,50 @@ describe("pibo workflows runtime", () => {
     expect(consoleError.mock.calls[0]?.[0]).toContain("Conflicting --json and direct flag inputs");
     expect(consoleError.mock.calls[0]?.[0]).toContain("--task conflicts with JSON field `task`");
     exitSpy.mockRestore();
+  });
+
+  it("prints worktree owner classifications for agents", () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const worktreePath = path.join(tempHome, "foreign-worktree");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    writeRunRecord({
+      runId: "foreign-run",
+      moduleId: "codex_controller",
+      status: "running",
+      terminalReason: null,
+      abortRequested: false,
+      abortRequestedAt: null,
+      currentRound: 0,
+      maxRounds: null,
+      input: {},
+      artifacts: [],
+      sessions: {},
+      latestWorkerOutput: null,
+      latestCriticVerdict: null,
+      originalTask: null,
+      currentTask: null,
+      createdAt: "2026-04-24T00:00:00.000Z",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+    });
+    writeWorkflowWorktreeBinding({
+      version: 1,
+      runId: "foreign-run",
+      moduleId: "codex_controller",
+      status: "active",
+      sourceRepoRoot: tempHome,
+      requestedWorkingDirectory: tempHome,
+      worktreePath,
+      managedBranch: "pibo/workflows/codex_controller/foreign-run",
+      recoveryRef: "refs/pibo/workflows/codex_controller/foreign-run/worker-head",
+      cleanupPolicy: "remove_after_success",
+      createdAt: "2026-04-24T00:00:00.000Z",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+    });
+
+    workflowsWorktreesOwner(path.join(worktreePath, "src"), { runId: "current-run" });
+
+    expect(consoleLog.mock.calls[0]?.[0]).toBe("owned-by-other-active-run");
+    expect(consoleLog.mock.calls[1]?.[0]).toContain("foreign-run");
   });
 
   it("derives compact progress snapshots and filtered trace events", async () => {

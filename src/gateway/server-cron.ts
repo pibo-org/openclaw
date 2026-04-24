@@ -383,6 +383,17 @@ export function buildGatewayCronService(params: {
           : {}),
         origin: trustedContext.origin,
         reporting: trustedContext.reporting,
+        provenance: {
+          trigger: "cron",
+          cron: {
+            jobId: job.id,
+            ...(typeof job.state.nextRunAtMs === "number"
+              ? { scheduledAt: new Date(job.state.nextRunAtMs).toISOString() }
+              : {}),
+            firedAt: new Date(Date.now()).toISOString(),
+          },
+          source: "cron",
+        },
       });
 
       return {

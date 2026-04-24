@@ -93,6 +93,88 @@ export interface WorkflowReportingConfig {
   events?: Array<"started" | "milestone" | "blocked" | "completed">;
 }
 
+export type WorkflowRunTrigger = "session" | "cron" | "manual" | "api" | "workflow" | "unknown";
+
+export interface WorkflowRunProvenance {
+  trigger: WorkflowRunTrigger;
+  createdBy?: {
+    agentId?: string;
+    runtime?: string;
+    host?: string;
+    pid?: number;
+  };
+  session?: {
+    sessionKey?: string;
+    sessionId?: string;
+    channel?: string;
+    accountId?: string;
+    to?: string;
+    threadId?: string;
+    messageId?: string;
+  };
+  cron?: {
+    jobId?: string;
+    scheduleId?: string;
+    fireId?: string;
+    scheduledAt?: string;
+    firedAt?: string;
+  };
+  parentWorkflow?: {
+    runId: string;
+    moduleId?: string;
+  };
+  source?: "reply-here" | "explicit-flags" | "cron" | "api" | "internal" | "unknown";
+}
+
+export type WorkflowWorktreeBindingStatus =
+  | "active"
+  | "integrating"
+  | "integrated"
+  | "cleanup_pending"
+  | "cleaned"
+  | "cleanup_failed"
+  | "orphaned";
+
+export interface WorkflowWorktreeBinding {
+  version: 1;
+  runId: string;
+  moduleId: string;
+  status: WorkflowWorktreeBindingStatus;
+  sourceRepoRoot: string;
+  requestedWorkingDirectory?: string;
+  worktreePath: string;
+  integrationWorktreePath?: string;
+  managedBranch?: string;
+  recoveryRef?: string;
+  integrationTargetBranch?: string | null;
+  workerHead?: string | null;
+  integratedHead?: string | null;
+  cleanupPolicy: "remove_after_success" | "retain_on_failure" | "manual";
+  provenance?: WorkflowRunProvenance;
+  createdAt: string;
+  updatedAt: string;
+  cleanedAt?: string;
+  error?: string;
+}
+
+export interface WorkflowWorktreeSentinel {
+  version: 1;
+  kind: "openclaw.workflow-worktree";
+  runId: string;
+  moduleId: string;
+  bindingPath: string;
+  sourceRepoRoot: string;
+  managedBranch?: string;
+  createdAt: string;
+}
+
+export type WorkflowWorktreeOwnerClassification =
+  | "owned-by-current-run"
+  | "owned-by-other-active-run"
+  | "owned-by-terminal-run"
+  | "unknown-worktree"
+  | "not-a-workflow-worktree";
+
 export interface WorkflowModuleManifest {
   moduleId: string;
   displayName: string;
@@ -124,6 +206,7 @@ export interface WorkflowRunRecord {
   currentTask: string | null;
   origin?: WorkflowOriginContext;
   reporting?: WorkflowReportingConfig;
+  provenance?: WorkflowRunProvenance;
   trace?: WorkflowTraceRef;
   createdAt: string;
   updatedAt: string;
@@ -134,6 +217,7 @@ export interface WorkflowStartRequest {
   maxRounds?: number | null;
   origin?: WorkflowOriginContext;
   reporting?: WorkflowReportingConfig;
+  provenance?: WorkflowRunProvenance;
 }
 
 export interface WorkflowWaitResult {
