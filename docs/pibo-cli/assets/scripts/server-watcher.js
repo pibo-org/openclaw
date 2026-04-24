@@ -122,6 +122,7 @@ function scheduleCommit() {
 }
 
 function debounceChange(changedFile) {
+  void watchTree(DOCS_DIR);
   if (syncing) {
     pending = true;
     changedFiles.add(changedFile);
@@ -136,44 +137,57 @@ function debounceChange(changedFile) {
 async function watchTree(dir) {
   const relDir = normalizePath(path.relative(DOCS_DIR, dir));
   if (relDir && isIgnoredPath(relDir)) return;
-  if (watchedDirs.has(dir)) return;
 
-  let watcher;
-  try {
-    watcher = watch(dir, { recursive: false }, (eventType, filename) => {
-      if (!filename) return;
-      const fullPath = path.join(dir, String(filename));
-      const relPath = normalizePath(path.relative(DOCS_DIR, fullPath));
-      if (!relPath || isIgnoredPath(relPath)) return;
+  if (!watchedDirs.has(dir)) {
+    let watcher;
+    try {
+      watcher = watch(dir, { recursive: false }, (eventType, filename) => {
+        if (!filename) return;
+        const fullPath = path.join(dir, String(filename));
+        const relPath = normalizePath(path.relative(DOCS_DIR, fullPath));
+        if (!relPath || isIgnoredPath(relPath)) return;
 
-      if (eventType === 'rename' && isDirectory(fullPath)) {
-        void watchTree(fullPath);
-      }
-
-      if (!shouldProcessFile(relPath)) return;
-
-      try {
-        const stat = fs.statSync(fullPath);
-        const age = Date.now() - stat.mtimeMs;
-        if (age < SETTLE_MS) {
-          setTimeout(() => debounceChange(relPath), SETTLE_MS - age);
+        if (eventType === 'rename' && isDirectory(fullPath)) {
+          const existingWatcher = watchedDirs.get(fullPath);
+          if (existingWatcher) {
+            existingWatcher.close();
+            watchedDirs.delete(fullPath);
+          }
+          void watchTree(fullPath);
+          debounceChange(`${relPath}/`);
           return;
         }
-      } catch {
-        // File might have been deleted; still commit the deletion.
-      }
 
-      debounceChange(relPath);
+        if (!shouldProcessFile(relPath)) {
+          if (eventType === 'rename') {
+            debounceChange(relPath);
+          }
+          return;
+        }
+
+        try {
+          const stat = fs.statSync(fullPath);
+          const age = Date.now() - stat.mtimeMs;
+          if (age < SETTLE_MS) {
+            setTimeout(() => debounceChange(relPath), SETTLE_MS - age);
+            return;
+          }
+        } catch {
+          // File might have been deleted; still commit the deletion.
+        }
+
+        debounceChange(relPath);
+      });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
+      return;
+    }
+
+    watcher.on('error', (err) => {
+      console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
     });
-  } catch (err) {
-    console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
-    return;
+    watchedDirs.set(dir, watcher);
   }
-
-  watcher.on('error', (err) => {
-    console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
-  });
-  watchedDirs.set(dir, watcher);
 
   try {
     const entries = await readdir(dir, { withFileTypes: true });

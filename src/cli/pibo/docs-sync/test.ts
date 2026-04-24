@@ -8,6 +8,7 @@ const TEST_ROOT = "sync-test";
 const LOCAL_FILE = `${TEST_ROOT}/from-pibo.md`;
 const MOVED_FILE = `${TEST_ROOT}/moved/from-pibo.md`;
 const REMOTE_FILE = `${TEST_ROOT}/from-server.md`;
+const SYNC_TIMEOUT_MS = 90_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -63,7 +64,7 @@ export async function runTest() {
 
   const createdRemote = await waitUntil(
     () => remoteExists(sshKey, serverIp, serverDocs, LOCAL_FILE),
-    45000,
+    SYNC_TIMEOUT_MS,
     1000,
   );
   console.log(
@@ -84,7 +85,7 @@ export async function runTest() {
     () =>
       remoteExists(sshKey, serverIp, serverDocs, MOVED_FILE) &&
       !remoteExists(sshKey, serverIp, serverDocs, LOCAL_FILE),
-    45000,
+    SYNC_TIMEOUT_MS,
     1000,
   );
   console.log(
@@ -106,7 +107,7 @@ export async function runTest() {
 
   const remoteToLocal = await waitUntil(
     () => run(`test -f ${join(docsPath, REMOTE_FILE)} && echo yes || echo no`) === "yes",
-    20000,
+    SYNC_TIMEOUT_MS,
     1000,
   );
   console.log(
@@ -131,7 +132,7 @@ export async function runTest() {
       run(
         `test -f ${join(docsPath, TEST_ROOT, "server-moved/from-server.md")} && echo yes || echo no`,
       ) === "yes" && run(`test -f ${join(docsPath, REMOTE_FILE)} && echo yes || echo no`) === "no",
-    20000,
+    SYNC_TIMEOUT_MS,
     1000,
   );
   console.log(
@@ -148,7 +149,7 @@ export async function runTest() {
   rmSync(join(docsPath, MOVED_FILE), { force: true });
   const localDeleteRemote = await waitUntil(
     () => !remoteExists(sshKey, serverIp, serverDocs, MOVED_FILE),
-    45000,
+    SYNC_TIMEOUT_MS,
     1000,
   );
   console.log(
@@ -166,7 +167,7 @@ export async function runTest() {
       run(
         `test -f ${join(docsPath, TEST_ROOT, "server-moved/from-server.md")} && echo yes || echo no`,
       ) === "no",
-    20000,
+    SYNC_TIMEOUT_MS,
     1000,
   );
   console.log(

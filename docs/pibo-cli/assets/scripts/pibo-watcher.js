@@ -59,6 +59,7 @@ function debouncePush(changedFile) {
   if (debounceTimer) clearTimeout(debounceTimer);
 
   console.log(`[${new Date().toISOString()}] Change: ${changedFile} (batch: ${changeCount})`);
+  void watchTree(DOCS_DIR);
 
   debounceTimer = setTimeout(async () => {
     console.log(`[${new Date().toISOString()}] Debounce done - pushing ${changeCount} change(s)`);
@@ -80,33 +81,43 @@ function debouncePush(changedFile) {
 async function watchTree(dir) {
   const relDir = normalizePath(path.relative(DOCS_DIR, dir));
   if (relDir && isIgnoredPath(relDir)) return;
-  if (watchedDirs.has(dir)) return;
 
-  let watcher;
-  try {
-    watcher = watch(dir, { recursive: false }, (eventType, filename) => {
-      if (!filename) return;
-      const fullPath = path.join(dir, String(filename));
-      const relPath = normalizePath(path.relative(DOCS_DIR, fullPath));
-      if (!relPath || isIgnoredPath(relPath)) return;
+  if (!watchedDirs.has(dir)) {
+    let watcher;
+    try {
+      watcher = watch(dir, { recursive: false }, (eventType, filename) => {
+        if (!filename) return;
+        const fullPath = path.join(dir, String(filename));
+        const relPath = normalizePath(path.relative(DOCS_DIR, fullPath));
+        if (!relPath || isIgnoredPath(relPath)) return;
 
-      if (eventType === 'rename' && isDirectory(fullPath)) {
-        void watchTree(fullPath);
-      }
+        if (eventType === 'rename' && isDirectory(fullPath)) {
+          const existingWatcher = watchedDirs.get(fullPath);
+          if (existingWatcher) {
+            existingWatcher.close();
+            watchedDirs.delete(fullPath);
+          }
+          void watchTree(fullPath);
+          debouncePush(`${eventType} ${relPath}/`);
+          return;
+        }
 
-      if (shouldProcessFile(relPath)) {
-        debouncePush(`${eventType} ${relPath}`);
-      }
+        if (shouldProcessFile(relPath)) {
+          debouncePush(`${eventType} ${relPath}`);
+        } else if (eventType === 'rename') {
+          debouncePush(`${eventType} ${relPath}`);
+        }
+      });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
+      return;
+    }
+
+    watcher.on('error', (err) => {
+      console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
     });
-  } catch (err) {
-    console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
-    return;
+    watchedDirs.set(dir, watcher);
   }
-
-  watcher.on('error', (err) => {
-    console.error(`[${new Date().toISOString()}] Watcher error for ${dir}: ${err.message}`);
-  });
-  watchedDirs.set(dir, watcher);
 
   try {
     const entries = await readdir(dir, { withFileTypes: true });

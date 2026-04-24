@@ -5,7 +5,7 @@ import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { DocsSyncConfig, readConfig, writeConfig, defaultConfig } from "./config.js";
-import { bold, ok, fail, warn, info, commandExists, generateToken, nodeBin } from "./utils.js";
+import { bold, ok, fail, warn, info, commandExists, generateToken } from "./utils.js";
 
 function resolveAssetsDir(): string {
   const candidates = [
@@ -71,6 +71,25 @@ async function sshExec(
     console.log(fail(`${label} fehlgeschlagen`));
     console.log(warn(`Error: ${stderr}`));
     return false;
+  }
+}
+
+function sshOutput(
+  keyPath: string,
+  user: string,
+  host: string,
+  remoteCmd: string,
+  label: string,
+): string | null {
+  const cmd = `ssh -i ${keyPath} -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes ${user}@${host} ${JSON.stringify(remoteCmd)}`;
+  try {
+    return execSync(cmd, { stdio: ["pipe", "pipe", "pipe"] })
+      .toString("utf8")
+      .trim();
+  } catch (error) {
+    const stderr = readExecErrorStderr(error);
+    console.log(warn(`${label} fehlgeschlagen: ${stderr}`));
+    return null;
   }
 }
 
@@ -279,13 +298,21 @@ export async function setupServer(interactive: boolean) {
   const serviceTemplateFile = join(ASSETS_DIR, "services", "server-watcher.service");
   if (existsSync(serviceTemplateFile)) {
     const serviceTemplate = readFileSync(serviceTemplateFile, "utf8");
-    const nodePath = nodeBin();
+    const nodePath =
+      sshOutput(
+        sshKey,
+        serverUser,
+        serverIp,
+        "command -v node || command -v nodejs",
+        "Node-Pfad auf Server ermitteln",
+      ) || "/usr/bin/node";
+    const serverPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     const serviceContent = serviceTemplate
       .replace(/{{NODE_BIN}}/g, nodePath)
       .replace(/{{SCRIPTS_DIR}}/g, "/root/bin")
       .replace(/{{STORAGE_DOCS}}/g, cfg.server.remoteDocsPath)
       .replace(/{{NODE_BIN_DIR}}/g, dirname(nodePath))
-      .replace(/{{PATH}}/g, process.env.PATH || "/usr/local/bin:/usr/bin:/bin")
+      .replace(/{{PATH}}/g, serverPath)
       .replace(/{{CONFIG_DIR}}/g, "/root");
 
     const tmpService = join(home, ".config", "tmp-server-watcher.service");

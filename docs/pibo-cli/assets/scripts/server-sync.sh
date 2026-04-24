@@ -94,15 +94,13 @@ while IFS= read -r rel; do
       DEST="$S"
     fi
   elif [ "$S_EXISTS" = true ] && [ "$P_EXISTS" = false ] && [ "$B_EXISTS" = true ]; then
-    if cmp -s "$S" "$B"; then
-      DELETE=true
-    else
-      DEST="$S"
-    fi
+    # A tracked file deleted on PIBo is a tombstone. Do not resurrect it from
+    # the server copy, even if the server copy drifted from base.
+    DELETE=true
   elif [ "$S_EXISTS" = false ] && [ "$P_EXISTS" = true ] && [ "$B_EXISTS" = true ]; then
-    if ! cmp -s "$P" "$B"; then
-      DEST="$P"
-    fi
+    # Same rule in the opposite direction: WebApp/server deletion wins over
+    # the PIBo copy to avoid deleted pages reappearing as stale copies.
+    DELETE=true
   elif [ "$S_EXISTS" = true ] && [ "$B_EXISTS" = false ] && [ "$P_EXISTS" = false ]; then
     DEST="$S"
   elif [ "$S_EXISTS" = false ] && [ "$P_EXISTS" = true ] && [ "$B_EXISTS" = false ]; then
