@@ -66,6 +66,7 @@ export const codexControllerWorkflowModuleManifest = {
     `controllerPromptPath (string, optional): defaults to ${DEFAULT_CONTROLLER_PROMPT_PATH}.`,
     "workerModel (string, optional): explicit Codex model override; otherwise uses the codex-cli-wrapper default when configured.",
     "workerReasoningEffort (string, optional): explicit Codex reasoning effort override; otherwise uses the codex-cli-wrapper default when configured.",
+    "workerFastMode (boolean|string, optional): explicit Codex fast-mode override; otherwise uses codex-cli-wrapper fastMode when configured.",
     'workerCompactionMode ("off"|"app_server"|"acp_control_command", optional): semantic Codex thread compaction strategy; defaults to off. `acp_control_command` is kept as a legacy alias for the new app_server path.',
     `workerCompactionAfterRound (number, optional): first round that may trigger manual Codex thread compaction when workerCompactionMode is enabled; defaults to ${DEFAULT_WORKER_COMPACTION_AFTER_ROUND}.`,
   ],

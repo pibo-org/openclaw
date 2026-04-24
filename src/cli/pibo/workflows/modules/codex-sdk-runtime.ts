@@ -30,12 +30,14 @@ const SUPPORTED_REASONING_EFFORTS = new Set<ModelReasoningEffort>([
 ]);
 
 export type CodexWorkerReasoningEffort = ModelReasoningEffort;
+export type CodexWorkerFastMode = boolean;
 
 export type CodexWorkerRuntimeOptions = {
   workingDirectory: string;
   contextWorkspaceDir?: string;
   model?: string;
   reasoningEffort?: CodexWorkerReasoningEffort;
+  fastMode?: CodexWorkerFastMode;
   developerInstructions?: string;
 };
 
@@ -72,6 +74,7 @@ export interface CodexWorkerRuntime {
 type WrapperConfig = {
   model?: string;
   effort?: string;
+  fastMode?: CodexWorkerFastMode;
 };
 
 type JsonPrimitive = string | number | boolean | null;
@@ -144,6 +147,7 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
     skipGitRepoCheck: boolean;
     model?: string;
     modelReasoningEffort?: CodexWorkerReasoningEffort;
+    fastMode?: CodexWorkerFastMode;
     additionalDirectories?: string[];
   };
   private thread: Thread | null = null;
@@ -159,12 +163,18 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
         ? [contextWorkspaceDir]
         : undefined;
     this.developerInstructions = options.developerInstructions?.trim() || undefined;
+    const codexConfig: Record<string, string> = {};
+    if (this.developerInstructions) {
+      codexConfig.developer_instructions = this.developerInstructions;
+    }
+    const serviceTier = codexServiceTierForFastMode(options.fastMode);
+    if (serviceTier) {
+      codexConfig.service_tier = serviceTier;
+    }
     this.codex = new Codex(
-      this.developerInstructions
+      Object.keys(codexConfig).length > 0
         ? {
-            config: {
-              developer_instructions: this.developerInstructions,
-            },
+            config: codexConfig,
           }
         : undefined,
     );
@@ -173,6 +183,7 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
       skipGitRepoCheck: true,
       ...(options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { modelReasoningEffort: options.reasoningEffort } : {}),
+      ...(options.fastMode !== undefined ? { fastMode: options.fastMode } : {}),
       ...(additionalDirectories ? { additionalDirectories } : {}),
     };
   }
@@ -312,6 +323,7 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
     const client = new CodexAppServerClient({
       cwd: this.threadOptions.workingDirectory,
       developerInstructions: this.developerInstructions,
+      fastMode: this.threadOptions.fastMode,
     });
     try {
       await client.start();
@@ -319,10 +331,15 @@ class CodexSdkWorkerRuntimeImpl implements CodexWorkerRuntime {
       await client.request("thread/resume", {
         threadId,
         ...(this.threadOptions.model ? { model: this.threadOptions.model } : {}),
-        ...(this.threadOptions.modelReasoningEffort
+        ...(this.threadOptions.modelReasoningEffort || this.threadOptions.fastMode !== undefined
           ? {
               config: {
-                model_reasoning_effort: this.threadOptions.modelReasoningEffort,
+                ...(this.threadOptions.modelReasoningEffort
+                  ? { model_reasoning_effort: this.threadOptions.modelReasoningEffort }
+                  : {}),
+                ...(this.threadOptions.fastMode !== undefined
+                  ? { service_tier: codexServiceTierForFastMode(this.threadOptions.fastMode) }
+                  : {}),
               },
             }
           : {}),
@@ -367,10 +384,16 @@ class CodexAppServerClient {
   private stderrLines: string[] = [];
   private readonly cwd: string;
   private readonly developerInstructions?: string;
+  private readonly fastMode?: CodexWorkerFastMode;
 
-  constructor(options: { cwd: string; developerInstructions?: string }) {
+  constructor(options: {
+    cwd: string;
+    developerInstructions?: string;
+    fastMode?: CodexWorkerFastMode;
+  }) {
     this.cwd = options.cwd;
     this.developerInstructions = options.developerInstructions?.trim() || undefined;
+    this.fastMode = options.fastMode;
   }
 
   async start(): Promise<void> {
@@ -383,6 +406,10 @@ class CodexAppServerClient {
         "--config",
         `developer_instructions=${serializeTomlString(this.developerInstructions)}`,
       );
+    }
+    const serviceTier = codexServiceTierForFastMode(this.fastMode);
+    if (serviceTier) {
+      args.push("--config", `service_tier=${serializeTomlString(serviceTier)}`);
     }
     const child = spawn(process.execPath, args, {
       cwd: this.cwd,
@@ -537,15 +564,19 @@ export function createCodexSdkWorkerRuntime(
 export function resolveCodexWorkerDefaultOptions(params?: {
   model?: string;
   reasoningEffort?: unknown;
+  fastMode?: unknown;
 }): {
   model?: string;
   reasoningEffort?: CodexWorkerReasoningEffort;
+  fastMode?: CodexWorkerFastMode;
 } {
   const configured = loadWrapperConfig();
   const explicitReasoningEffort = normalizeReasoningEffort(params?.reasoningEffort);
+  const explicitFastMode = normalizeFastMode(params?.fastMode);
   return {
     model: params?.model?.trim() || configured.model,
     reasoningEffort: explicitReasoningEffort ?? normalizeReasoningEffort(configured.effort),
+    fastMode: explicitFastMode ?? configured.fastMode,
   };
 }
 
@@ -558,7 +589,7 @@ function loadWrapperConfig(): WrapperConfig {
     if (!raw || typeof raw !== "object") {
       return {};
     }
-    const config = raw as { model?: unknown; effort?: unknown };
+    const config = raw as { model?: unknown; effort?: unknown; fastMode?: unknown };
     return {
       model:
         typeof config.model === "string" && config.model.trim() ? config.model.trim() : undefined,
@@ -566,6 +597,7 @@ function loadWrapperConfig(): WrapperConfig {
         typeof config.effort === "string" && config.effort.trim()
           ? config.effort.trim()
           : undefined,
+      fastMode: normalizeFastMode(config.fastMode),
     };
   } catch {
     return {};
@@ -578,6 +610,32 @@ function normalizeReasoningEffort(value: unknown): CodexWorkerReasoningEffort | 
   }
   const effort = value.trim() as CodexWorkerReasoningEffort;
   return SUPPORTED_REASONING_EFFORTS.has(effort) ? effort : undefined;
+}
+
+function normalizeFastMode(value: unknown): CodexWorkerFastMode | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "on", "yes", "fast"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "off", "no", "default"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+}
+
+function codexServiceTierForFastMode(
+  fastMode: CodexWorkerFastMode | undefined,
+): string | undefined {
+  if (fastMode === undefined) {
+    return undefined;
+  }
+  return fastMode ? "fast" : "flex";
 }
 
 function serializeTomlString(value: string): string {

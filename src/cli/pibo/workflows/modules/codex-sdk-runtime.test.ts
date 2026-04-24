@@ -189,11 +189,76 @@ describe("codex-sdk-runtime", () => {
     );
   });
 
+  it("passes fast mode through the SDK config override", async () => {
+    const { createCodexSdkWorkerRuntime } = await import("./codex-sdk-runtime.js");
+    const runtime = createCodexSdkWorkerRuntime({
+      workingDirectory: "/repo",
+      fastMode: true,
+    });
+
+    await runtime.runTurn({
+      text: "Continue",
+      hardTimeoutSeconds: 1,
+      idleTimeoutSeconds: 1,
+    });
+
+    expect(codexConstructorArgs[0]).toEqual({
+      config: {
+        service_tier: "fast",
+      },
+    });
+  });
+
+  it("maps disabled fast mode to Codex flex service tier", async () => {
+    const { createCodexSdkWorkerRuntime } = await import("./codex-sdk-runtime.js");
+    const runtime = createCodexSdkWorkerRuntime({
+      workingDirectory: "/repo",
+      fastMode: false,
+    });
+
+    await runtime.runTurn({
+      text: "Continue",
+      hardTimeoutSeconds: 1,
+      idleTimeoutSeconds: 1,
+    });
+
+    expect(codexConstructorArgs[0]).toEqual({
+      config: {
+        service_tier: "flex",
+      },
+    });
+  });
+
+  it("loads fast mode from the codex-cli-wrapper default config", async () => {
+    existsSync.mockReturnValue(true);
+    readFileSync.mockReturnValue(
+      JSON.stringify({
+        model: "gpt-5.5",
+        effort: "high",
+        fastMode: true,
+      }),
+    );
+
+    const { resolveCodexWorkerDefaultOptions } = await import("./codex-sdk-runtime.js");
+
+    expect(resolveCodexWorkerDefaultOptions()).toEqual({
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      fastMode: true,
+    });
+    expect(resolveCodexWorkerDefaultOptions({ fastMode: "off" })).toEqual({
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      fastMode: false,
+    });
+  });
+
   it("reuses the same worker-local developer instructions on the app-server compaction path", async () => {
     const { createCodexSdkWorkerRuntime } = await import("./codex-sdk-runtime.js");
     const runtime = createCodexSdkWorkerRuntime({
       workingDirectory: "/repo",
       developerInstructions: "RUN CONTRACT\n\nORIGINAL_TASK:\nShip the fix",
+      fastMode: true,
     });
 
     await runtime.runTurn({
@@ -216,6 +281,8 @@ describe("codex-sdk-runtime", () => {
         expect.stringContaining(
           'developer_instructions="RUN CONTRACT\\n\\nORIGINAL_TASK:\\nShip the fix"',
         ),
+        "--config",
+        'service_tier="fast"',
       ]),
       expect.objectContaining({
         cwd: "/repo",

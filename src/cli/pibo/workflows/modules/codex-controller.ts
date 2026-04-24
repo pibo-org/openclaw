@@ -35,6 +35,7 @@ import {
   createCodexSdkWorkerRuntime,
   resolveCodexWorkerDefaultOptions,
   type CodexWorkerCompactionResult,
+  type CodexWorkerFastMode,
   type CodexWorkerReasoningEffort,
   type CodexWorkerRuntime,
   type CodexWorkerTurnResult,
@@ -69,6 +70,7 @@ type CodexControllerInput = {
   controllerPromptPath: string;
   workerModel?: string;
   workerReasoningEffort?: CodexWorkerReasoningEffort;
+  workerFastMode?: CodexWorkerFastMode;
   workerCompactionMode?: WorkerCompactionMode;
   workerCompactionAfterRound?: number;
 };
@@ -80,6 +82,7 @@ type RequestedCodexControllerInput = Omit<
   | "agentId"
   | "workerModel"
   | "workerReasoningEffort"
+  | "workerFastMode"
   | "workingDirectoryMode"
 > & {
   requestedWorkingDirectory: string;
@@ -88,16 +91,18 @@ type RequestedCodexControllerInput = Omit<
   agentId?: string;
   workerModel?: string;
   workerReasoningEffort?: CodexWorkerReasoningEffort;
+  workerFastMode?: CodexWorkerFastMode;
   closeoutContextSource: "repoRoot" | "workingDirectory";
 };
 
 type NormalizedCodexControllerInput = Omit<
   Required<CodexControllerInput>,
-  "agentId" | "workerModel" | "workerReasoningEffort"
+  "agentId" | "workerModel" | "workerReasoningEffort" | "workerFastMode"
 > & {
   agentId?: string;
   workerModel?: string;
   workerReasoningEffort?: CodexWorkerReasoningEffort;
+  workerFastMode?: CodexWorkerFastMode;
   requestedWorkingDirectory: string;
   workspaceOwnership: WorkspaceOwnership;
   workflowOwnedWorktree?: WorkflowOwnedWorktree;
@@ -391,6 +396,7 @@ function normalizeRequestedInput(request: WorkflowStartRequest): RequestedCodexC
         ? record.workerModel.trim()
         : undefined,
     reasoningEffort: record.workerReasoningEffort,
+    fastMode: record.workerFastMode,
   });
   return {
     task,
@@ -419,6 +425,7 @@ function normalizeRequestedInput(request: WorkflowStartRequest): RequestedCodexC
         : DEFAULT_CONTROLLER_PROMPT_PATH,
     workerModel: workerDefaults.model,
     workerReasoningEffort: workerDefaults.reasoningEffort,
+    workerFastMode: workerDefaults.fastMode,
     workerCompactionMode: normalizeCompactionMode(record.workerCompactionMode),
     workerCompactionAfterRound:
       normalizePositiveInteger(record.workerCompactionAfterRound) ??
@@ -511,6 +518,7 @@ function normalizePersistedInput(
     controllerPromptPath: requested.controllerPromptPath,
     workerModel: requested.workerModel,
     workerReasoningEffort: requested.workerReasoningEffort,
+    workerFastMode: requested.workerFastMode,
     workerCompactionMode: requested.workerCompactionMode,
     workerCompactionAfterRound: requested.workerCompactionAfterRound,
     closeoutContextSource: requested.closeoutContextSource,
@@ -736,6 +744,7 @@ function resolveExecutionWorkspace(params: {
       controllerPromptPath: params.requestedInput.controllerPromptPath,
       workerModel: params.requestedInput.workerModel,
       workerReasoningEffort: params.requestedInput.workerReasoningEffort,
+      workerFastMode: params.requestedInput.workerFastMode,
       workerCompactionMode: params.requestedInput.workerCompactionMode,
       workerCompactionAfterRound: params.requestedInput.workerCompactionAfterRound,
       closeoutContextSource: params.requestedInput.closeoutContextSource,
@@ -796,6 +805,7 @@ function resolveExecutionWorkspace(params: {
     controllerPromptPath: params.requestedInput.controllerPromptPath,
     workerModel: params.requestedInput.workerModel,
     workerReasoningEffort: params.requestedInput.workerReasoningEffort,
+    workerFastMode: params.requestedInput.workerFastMode,
     workerCompactionMode: params.requestedInput.workerCompactionMode,
     workerCompactionAfterRound: params.requestedInput.workerCompactionAfterRound,
     closeoutContextSource: params.requestedInput.closeoutContextSource,
@@ -1716,6 +1726,9 @@ function buildWorkflowStartedMessage(input: NormalizedCodexControllerInput): str
     ...(input.workerModel ? [`Worker model: ${input.workerModel}`] : []),
     ...(input.workerReasoningEffort
       ? [`Worker reasoning effort: ${input.workerReasoningEffort}`]
+      : []),
+    ...(input.workerFastMode !== undefined
+      ? [`Worker fast mode: ${input.workerFastMode ? "on" : "off"}`]
       : []),
     ...(input.agentId ? [`Context workspace agent: ${input.agentId}`] : []),
     ...(input.successCriteria.length
@@ -3607,6 +3620,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       contextWorkspaceDir,
       model: input.workerModel,
       reasoningEffort: input.workerReasoningEffort,
+      fastMode: input.workerFastMode,
       developerInstructions: runContract.workerDeveloperInstructions,
     });
     sessions.worker = buildPendingCodexWorkerSessionLabel(ctx.runId);
@@ -3640,6 +3654,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
       ...(input.workerModel ? { workerModel: input.workerModel } : {}),
       ...(input.workerReasoningEffort
         ? { workerReasoningEffort: input.workerReasoningEffort }
+        : {}),
+      ...(input.workerFastMode !== undefined
+        ? { workerFastMode: String(input.workerFastMode) }
         : {}),
       workerCompactionMode: input.workerCompactionMode,
       workerCompactionAfterRound: String(input.workerCompactionAfterRound),
@@ -3700,6 +3717,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         ...(input.workerReasoningEffort
           ? { workerReasoningEffort: input.workerReasoningEffort }
           : {}),
+        ...(input.workerFastMode !== undefined ? { workerFastMode: input.workerFastMode } : {}),
       },
     });
     ctx.trace.emit(

@@ -60,8 +60,9 @@ For `codex_controller`, `run` accepts direct operator flags:
 - `--max-rounds <n>`
 - `--worker-model <id>`
 - `--worker-reasoning-effort <level>`
+- `--worker-fast-mode <on|off>`
 
-### Worker model and reasoning defaults
+### Worker model, reasoning, and fast-mode defaults
 
 `codex_controller` has two model layers:
 
@@ -78,20 +79,37 @@ Use explicit worker overrides when a run must pin Codex behavior:
 openclaw pibo workflows run codex_controller \
   --worker-model gpt-5.5 \
   --worker-reasoning-effort high \
+  --worker-fast-mode on \
   --task "..."
 ```
 
-When worker overrides are omitted, the Codex worker uses its configured Codex
-defaults. Keep `~/.codex/config.toml` aligned when changing system defaults:
+When worker overrides are omitted, the Codex worker default is resolved in this order:
 
-```toml
-model = "gpt-5.5"
-model_reasoning_effort = "high"
+1. `--worker-model` / `--worker-reasoning-effort` / `--worker-fast-mode` or the JSON `workerModel` / `workerReasoningEffort` / `workerFastMode` fields for this run.
+2. The wrapper default in `~/.config/codex-cli-wrapper/config.json`.
+3. If the wrapper default is unset, the Codex SDK / Codex defaults.
+
+For the normal `codex_controller` worker default, set:
+
+```json
+{
+  "model": "gpt-5.5",
+  "effort": "high",
+  "fastMode": true
+}
 ```
 
-OpenClaw `thinkingDefault` and Codex `model_reasoning_effort` are separate
-settings. A model can support `xhigh` while the operating default remains
-`high`.
+Check it with:
+
+```bash
+python3 -m json.tool ~/.config/codex-cli-wrapper/config.json
+```
+
+Codex worker fast mode uses Codex CLI `service_tier`: `on` maps to `fast`, `off` maps to `flex` for that run.
+
+The normal Codex CLI config in `~/.codex/config.toml` is separate. It may matter as a Codex fallback, but it is not the explicit workflow-worker default. The worker also runs through this repo's pinned `@openai/codex-sdk`, so newly released Codex models may require bumping that package even if the global `codex` CLI already supports them.
+
+OpenClaw `thinkingDefault`, Codex `model_reasoning_effort`, wrapper `effort`, and wrapper `fastMode` are separate settings. A model can support `xhigh` while the operating default remains `high`.
 
 `--reply-here` resolves the reporting target only when a trusted current origin is available. For plain local CLI use, pass `--owner-session-key`, `--channel`, `--to`, and optionally `--thread-id` explicitly, or provide `OPENCLAW_WORKFLOW_OWNER_SESSION_KEY`, `OPENCLAW_WORKFLOW_CHANNEL`, `OPENCLAW_WORKFLOW_TO`, and optionally `OPENCLAW_WORKFLOW_ACCOUNT_ID` / `OPENCLAW_WORKFLOW_THREAD_ID`.
 

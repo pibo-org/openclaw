@@ -66,6 +66,7 @@ type TrustedWorkflowMutationCliOptions = {
   constraint?: string[];
   workerModel?: string;
   workerReasoningEffort?: string;
+  workerFastMode?: string;
 };
 
 function addTrustedWorkflowMutationOptions(command: Command) {
@@ -528,6 +529,7 @@ export function registerPiboCli(program: Command) {
         "--worker-reasoning-effort <level>",
         "codex_controller Codex worker reasoning effort override",
       )
+      .option("--worker-fast-mode <on|off>", "codex_controller Codex worker fast mode override")
       .option("--output-json", "Resolved start result as JSON ausgeben")
       .addHelpText(
         "after",

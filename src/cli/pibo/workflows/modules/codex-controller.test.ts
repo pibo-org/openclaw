@@ -221,8 +221,8 @@ function createTraceMock(runId: string): WorkflowTraceRuntime {
   };
 }
 
-function recordInput(record: WorkflowRunRecord): { agentId?: string } {
-  return record.input as { agentId?: string };
+function recordInput(record: WorkflowRunRecord): { agentId?: string; workerFastMode?: boolean } {
+  return record.input as { agentId?: string; workerFastMode?: boolean };
 }
 
 function createModuleContext(runId: string, controller?: AbortController) {
@@ -317,9 +317,10 @@ describe("codex_controller module", () => {
     });
     loadConfig.mockReturnValue({});
     resolveCodexWorkerDefaultOptions.mockImplementation(
-      (params?: { model?: string; reasoningEffort?: string }) => ({
+      (params?: { model?: string; reasoningEffort?: string; fastMode?: boolean }) => ({
         ...(params?.model ? { model: params.model } : {}),
         ...(params?.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
+        ...(params?.fastMode !== undefined ? { fastMode: params.fastMode } : {}),
       }),
     );
     mockCloseoutGitScenario();
@@ -912,6 +913,35 @@ describe("codex_controller module", () => {
         contextWorkspaceDir: "/workspace/writer",
         developerInstructions: expect.stringContaining("ORIGINAL_TASK:\nShip the fix"),
       }),
+    );
+  });
+
+  it("passes worker fast mode through input normalization, runtime, and run metadata", async () => {
+    mockSingleRoundDoneLoop();
+
+    const { codexControllerWorkflowModule } = await import("./codex-controller.js");
+    const record = await codexControllerWorkflowModule.start(
+      {
+        input: {
+          task: "Ship the fix",
+          workingDirectory: "/repo",
+          workingDirectoryMode: "existing",
+          workerFastMode: true,
+        },
+      },
+      createModuleContext("run-1"),
+    );
+
+    expect(recordInput(record).workerFastMode).toBe(true);
+    expect(record.sessions.extras?.workerFastMode).toBe("true");
+    expect(createCodexSdkWorkerRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/repo",
+        fastMode: true,
+      }),
+    );
+    expect(artifactContents.get("run-1/codex-controller-run-contract.json")).toContain(
+      '"workerFastMode": true',
     );
   });
 

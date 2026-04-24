@@ -137,6 +137,7 @@ type WorkflowRunOperatorCliOptions = TrustedWorkflowMutationCliOptions & {
   constraint?: string[];
   workerModel?: string;
   workerReasoningEffort?: string;
+  workerFastMode?: string;
 };
 
 type ResolvedWorkflowRunDefaults = {
@@ -205,6 +206,20 @@ function normalizeRepeatedTextOption(values?: string[]): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }
 
+function normalizeFastModeOption(value: unknown): boolean | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "on", "yes", "fast"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "off", "no", "default"].includes(normalized)) {
+    return false;
+  }
+  throw new Error("--worker-fast-mode must be one of: on, off, true, false, fast, default");
+}
+
 function objectHasOwnKey(value: Record<string, unknown>, keys: string[]) {
   return keys.some((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
@@ -218,6 +233,7 @@ function hasCodexControllerDirectInput(opts: WorkflowRunOperatorCliOptions) {
     normalizeNonEmptyString(opts.agentId) ||
     normalizeNonEmptyString(opts.workerModel) ||
     normalizeNonEmptyString(opts.workerReasoningEffort) ||
+    normalizeNonEmptyString(opts.workerFastMode) ||
     normalizeRepeatedTextOption(opts.success).length > 0 ||
     normalizeRepeatedTextOption(opts.constraint).length > 0,
   );
@@ -266,6 +282,12 @@ function assertNoJsonDirectInputConflict(
     objectHasOwnKey(jsonInput, ["workerReasoningEffort"])
   ) {
     conflicts.push("--worker-reasoning-effort conflicts with JSON field `workerReasoningEffort`");
+  }
+  if (
+    normalizeNonEmptyString(opts.workerFastMode) &&
+    objectHasOwnKey(jsonInput, ["workerFastMode"])
+  ) {
+    conflicts.push("--worker-fast-mode conflicts with JSON field `workerFastMode`");
   }
   if (
     normalizeNonEmptyString(opts.maxRounds) &&
@@ -435,6 +457,7 @@ function buildCodexControllerInputForRun(params: {
   const constraints = normalizeRepeatedTextOption(opts.constraint);
   const workerModel = normalizeNonEmptyString(opts.workerModel);
   const workerReasoningEffort = normalizeNonEmptyString(opts.workerReasoningEffort);
+  const workerFastMode = normalizeFastModeOption(opts.workerFastMode);
   const maxRounds = readPositiveNumberOption(opts.maxRounds);
 
   if (task) {
@@ -476,6 +499,9 @@ function buildCodexControllerInputForRun(params: {
   }
   if (workerReasoningEffort) {
     baseInput.workerReasoningEffort = workerReasoningEffort;
+  }
+  if (workerFastMode !== undefined) {
+    baseInput.workerFastMode = workerFastMode;
   }
   if (!normalizeNonEmptyString(baseInput.task)) {
     throw new Error("run codex_controller requires --task or JSON field `task`.");
