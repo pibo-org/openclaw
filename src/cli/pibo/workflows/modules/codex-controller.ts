@@ -12,18 +12,25 @@ import {
 } from "../abort.js";
 import { runWorkflowAgentOnSession } from "../agent-runtime.js";
 import {
+  readWorkflowWorktreeBinding,
   workflowArtifactPath,
   workflowOwnedWorktreesDir,
+  workflowWorktreeBindingPath,
+  writeWorkflowWorktreeBinding,
   writeWorkflowArtifact,
+  writeWorkflowWorktreeSentinelFile,
 } from "../store.js";
 import type {
   WorkflowModule,
   WorkflowModuleContext,
   WorkflowRunRecord,
   WorkflowStartRequest,
+  WorkflowWorktreeBinding,
+  WorkflowWorktreeBindingStatus,
 } from "../types.js";
 import { emitTracedWorkflowReportEvent } from "../workflow-reporting.js";
 import { ensureWorkflowSessions } from "../workflow-session-helper.js";
+import { inspectWorkflowWorktreeOwner } from "../worktree-owner.js";
 import {
   createCodexSdkWorkerRuntime,
   resolveCodexWorkerDefaultOptions,
@@ -94,6 +101,7 @@ type NormalizedCodexControllerInput = Omit<
   requestedWorkingDirectory: string;
   workspaceOwnership: WorkspaceOwnership;
   workflowOwnedWorktree?: WorkflowOwnedWorktree;
+  provenance?: WorkflowStartRequest["provenance"];
   closeoutContextSource: "repoRoot" | "workingDirectory";
 };
 
@@ -515,18 +523,97 @@ function buildWorkflowOwnedWorktreeRoot(runId: string): string {
   return path.join(worktreeDir, safeRunId);
 }
 
+function sanitizeWorkflowPathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
+}
+
+function buildWorkflowOwnedWorktreeRootForRepo(runId: string, sourceRepoRoot: string): string {
+  const worktreeDir = path.resolve(workflowOwnedWorktreesDir());
+  const safeRunId = sanitizeWorkflowPathSegment(runId);
+  const repoSlug = sanitizeWorkflowPathSegment(path.basename(path.resolve(sourceRepoRoot)));
+  return path.join(worktreeDir, repoSlug, "codex_controller", safeRunId, "worktree");
+}
+
 function buildWorkflowOwnedManagedBranch(runId: string): string {
   const safeRunId = runId.replace(/[^a-zA-Z0-9._-]+/g, "-");
-  return `pibo/workflows/${safeRunId}`;
+  return `pibo/workflows/codex_controller/${safeRunId}`;
 }
 
 function buildWorkflowOwnedRecoveryRef(runId: string): string {
   const safeRunId = runId.replace(/[^a-zA-Z0-9._-]+/g, "-");
-  return `refs/pibo/workflows/${safeRunId}/worker-head`;
+  return `refs/pibo/workflows/codex_controller/${safeRunId}/worker-head`;
 }
 
-function buildWorkflowOwnedIntegrationWorktreeRoot(runId: string): string {
-  return `${buildWorkflowOwnedWorktreeRoot(runId)}.integration`;
+function buildWorkflowOwnedIntegrationWorktreeRoot(runId: string, sourceRepoRoot?: string): string {
+  if (!sourceRepoRoot) {
+    return `${buildWorkflowOwnedWorktreeRoot(runId)}.integration`;
+  }
+  return path.join(
+    path.dirname(buildWorkflowOwnedWorktreeRootForRepo(runId, sourceRepoRoot)),
+    "integration",
+  );
+}
+
+function writeWorkflowOwnedWorktreeBinding(params: {
+  runId: string;
+  input: NormalizedCodexControllerInput;
+  status: WorkflowWorktreeBindingStatus;
+  nowIso: string;
+  workerHead?: string | null;
+  integratedHead?: string | null;
+  cleanedAt?: string;
+  error?: string;
+}) {
+  if (params.input.workspaceOwnership !== "workflow_owned" || !params.input.workflowOwnedWorktree) {
+    return;
+  }
+  const existing = readWorkflowWorktreeBinding(params.runId);
+  const binding: WorkflowWorktreeBinding = {
+    version: 1,
+    runId: params.runId,
+    moduleId: "codex_controller",
+    status: params.status,
+    sourceRepoRoot: params.input.workflowOwnedWorktree.sourceRepoRoot,
+    requestedWorkingDirectory: params.input.requestedWorkingDirectory,
+    worktreePath: params.input.workflowOwnedWorktree.rootPath,
+    integrationWorktreePath: params.input.workflowOwnedWorktree.integrationWorktreePath,
+    managedBranch: params.input.workflowOwnedWorktree.managedBranch,
+    recoveryRef: params.input.workflowOwnedWorktree.recoveryRef,
+    integrationTargetBranch: params.input.workflowOwnedWorktree.integrationTargetBranch,
+    workerHead: params.workerHead ?? existing?.workerHead ?? null,
+    integratedHead: params.integratedHead ?? existing?.integratedHead ?? null,
+    cleanupPolicy: "remove_after_success",
+    ...(params.input.provenance ? { provenance: params.input.provenance } : {}),
+    createdAt: existing?.createdAt ?? params.nowIso,
+    updatedAt: params.nowIso,
+    ...(params.cleanedAt
+      ? { cleanedAt: params.cleanedAt }
+      : existing?.cleanedAt
+        ? { cleanedAt: existing.cleanedAt }
+        : {}),
+    ...(params.error ? { error: params.error } : {}),
+  };
+  writeWorkflowWorktreeBinding(binding);
+}
+
+function writeWorkflowOwnedWorktreeSentinel(params: {
+  runId: string;
+  input: NormalizedCodexControllerInput;
+  createdAt: string;
+}) {
+  if (params.input.workspaceOwnership !== "workflow_owned" || !params.input.workflowOwnedWorktree) {
+    return;
+  }
+  writeWorkflowWorktreeSentinelFile(params.input.workflowOwnedWorktree.rootPath, {
+    version: 1,
+    kind: "openclaw.workflow-worktree",
+    runId: params.runId,
+    moduleId: "codex_controller",
+    bindingPath: workflowWorktreeBindingPath(params.runId),
+    sourceRepoRoot: params.input.workflowOwnedWorktree.sourceRepoRoot,
+    managedBranch: params.input.workflowOwnedWorktree.managedBranch,
+    createdAt: params.createdAt,
+  });
 }
 
 function resolveWorkflowOwnedIntegrationTarget(sourceRepoRoot: string): {
@@ -658,10 +745,13 @@ function resolveExecutionWorkspace(params: {
     sourceRepoRoot,
     params.requestedInput.requestedWorkingDirectory,
   );
-  const worktreeRootPath = buildWorkflowOwnedWorktreeRoot(params.runId);
+  const worktreeRootPath = buildWorkflowOwnedWorktreeRootForRepo(params.runId, sourceRepoRoot);
   const managedBranch = buildWorkflowOwnedManagedBranch(params.runId);
   const recoveryRef = buildWorkflowOwnedRecoveryRef(params.runId);
-  const integrationWorktreePath = buildWorkflowOwnedIntegrationWorktreeRoot(params.runId);
+  const integrationWorktreePath = buildWorkflowOwnedIntegrationWorktreeRoot(
+    params.runId,
+    sourceRepoRoot,
+  );
   const integrationTarget = resolveWorkflowOwnedIntegrationTarget(sourceRepoRoot);
   mkdirSync(path.dirname(worktreeRootPath), { recursive: true });
   const addResult = runGitCommand(sourceRepoRoot, [
@@ -1955,17 +2045,56 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
     };
   }
 
-  if (worktreePaths.length > 1) {
+  const additionalWorktreePaths = worktreePaths.filter(
+    (entry) => path.resolve(entry) !== path.resolve(resolvedRepoRoot),
+  );
+  const classifiedAdditionalWorktrees = additionalWorktreePaths.map((entry) =>
+    inspectWorkflowWorktreeOwner(entry),
+  );
+  const unknownAdditionalWorktrees = classifiedAdditionalWorktrees.filter(
+    (entry) =>
+      entry.classification === "not-a-workflow-worktree" ||
+      entry.classification === "unknown-worktree",
+  );
+  const knownWorkflowAdditionalWorktrees = classifiedAdditionalWorktrees.filter(
+    (entry) =>
+      entry.classification !== "not-a-workflow-worktree" &&
+      entry.classification !== "unknown-worktree",
+  );
+  if (knownWorkflowAdditionalWorktrees.length > 0) {
+    trace.push(
+      `workflow_owned_sibling_worktrees=${knownWorkflowAdditionalWorktrees
+        .map(
+          (entry) =>
+            `${entry.classification}:${entry.binding?.runId ?? entry.sentinel?.runId ?? entry.query}`,
+        )
+        .join(",")}`,
+    );
+    for (const entry of knownWorkflowAdditionalWorktrees) {
+      const traceKey =
+        entry.classification === "owned-by-other-active-run"
+          ? "foreign_active_worktree"
+          : entry.classification === "owned-by-terminal-run"
+            ? "foreign_terminal_worktree"
+            : "current_run_worktree";
+      trace.push(`${traceKey}=${entry.binding?.runId ?? entry.sentinel?.runId ?? entry.query}`);
+    }
+  }
+  if (unknownAdditionalWorktrees.length > 0) {
     checks.push({
       code: "open_worktree",
       ok: false,
-      summary: "Closeout requires no additional linked worktrees.",
-      detail: worktreePaths.join(", "),
+      summary: "Closeout requires no unknown additional linked worktrees.",
+      detail: unknownAdditionalWorktrees.map((entry) => entry.query).join(", "),
     });
-    trace.push(`open_worktrees=${worktreePaths.join(",")}`);
+    trace.push(
+      `unknown_owner_worktrees=${unknownAdditionalWorktrees
+        .map((entry) => `${entry.classification}:${entry.query}`)
+        .join(",")}`,
+    );
     return {
       status: "blocked",
-      reason: `Closeout blocked: open linked worktrees detected (${worktreePaths.join(", ")}).`,
+      reason: `Closeout blocked: unknown-owner linked worktrees detected (${unknownAdditionalWorktrees.map((entry) => entry.query).join(", ")}).`,
       trace,
       context: buildAssessmentContext({
         context,
@@ -1986,7 +2115,13 @@ function assessCloseout(context: CloseoutContext): CloseoutAssessment {
   checks.push({
     code: "open_worktree",
     ok: true,
-    summary: "No additional linked worktrees detected.",
+    summary:
+      knownWorkflowAdditionalWorktrees.length > 0
+        ? "Only classified workflow-owned sibling worktrees were detected."
+        : "No additional linked worktrees detected.",
+    ...(knownWorkflowAdditionalWorktrees.length > 0
+      ? { detail: knownWorkflowAdditionalWorktrees.map((entry) => entry.reason).join(" | ") }
+      : {}),
   });
 
   const baseRef = chooseIntegrationBaseRef(
@@ -2125,6 +2260,8 @@ function buildWorkflowOwnedIntegrationArtifact(result: WorkflowOwnedIntegrationR
 
 function ensureWorkflowOwnedRecoveryRef(
   input: NormalizedCodexControllerInput,
+  runId: string,
+  nowIso: string,
 ): WorkflowOwnedIntegrationResult {
   if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
     return {
@@ -2149,6 +2286,13 @@ function ensureWorkflowOwnedRecoveryRef(
     `integration_target_branch=${input.workflowOwnedWorktree.integrationTargetBranch ?? "unresolved"}`,
   ];
   if (!workerHead) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      error: "Failed to capture workflow-owned worker HEAD before integration.",
+    });
     return {
       status: "blocked",
       reason: "Failed to capture workflow-owned worker HEAD before integration.",
@@ -2168,6 +2312,14 @@ function ensureWorkflowOwnedRecoveryRef(
     workerHead,
   ]);
   if (!updateResult.ok) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: updateResult.message,
+    });
     return {
       status: "blocked",
       reason: `Failed to update workflow-owned recovery ref ${input.workflowOwnedWorktree.recoveryRef}: ${updateResult.message}`,
@@ -2185,6 +2337,13 @@ function ensureWorkflowOwnedRecoveryRef(
       integrationWorktreePath: input.workflowOwnedWorktree.integrationWorktreePath,
     };
   }
+  writeWorkflowOwnedWorktreeBinding({
+    runId,
+    input,
+    status: "active",
+    nowIso,
+    workerHead,
+  });
   return {
     status: "passed",
     reason: `Workflow-owned recovery ref ${input.workflowOwnedWorktree.recoveryRef} now points at ${workerHead}.`,
@@ -2202,6 +2361,8 @@ function ensureWorkflowOwnedRecoveryRef(
 function integrateWorkflowOwnedResult(
   input: NormalizedCodexControllerInput,
   recovery: WorkflowOwnedIntegrationResult,
+  runId: string,
+  nowIso: string,
 ): WorkflowOwnedIntegrationResult {
   if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
     return {
@@ -2230,7 +2391,21 @@ function integrateWorkflowOwnedResult(
     `integration_target_branch=${targetBranch ?? "unresolved"}`,
     `integration_worktree_path=${integrationWorktreePath}`,
   ];
+  writeWorkflowOwnedWorktreeBinding({
+    runId,
+    input,
+    status: "integrating",
+    nowIso,
+    workerHead,
+  });
   if (!workerHead) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      error: "Workflow-owned integration could not resolve the worker HEAD.",
+    });
     return {
       status: "blocked",
       reason: "Workflow-owned integration could not resolve the worker HEAD.",
@@ -2245,6 +2420,14 @@ function integrateWorkflowOwnedResult(
     };
   }
   if (!targetBranch) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: "Workflow-owned integration target is unresolved.",
+    });
     return {
       status: "blocked",
       reason: "Workflow-owned integration target is unresolved (`integration_target_missing`).",
@@ -2260,6 +2443,14 @@ function integrateWorkflowOwnedResult(
   }
   const targetHeadBefore = runGitReadOnly(sourceRepoRoot, ["rev-parse", targetBranch]);
   if (!targetHeadBefore) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: `Workflow-owned integration could not resolve target branch ${targetBranch}.`,
+    });
     return {
       status: "blocked",
       reason: `Workflow-owned integration could not resolve target branch ${targetBranch}.`,
@@ -2277,6 +2468,14 @@ function integrateWorkflowOwnedResult(
     runGitReadOnly(sourceRepoRoot, ["worktree", "list", "--porcelain"]),
   ).map((entry) => path.resolve(entry));
   if (existingWorktrees.includes(integrationWorktreePath)) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: `Workflow-owned integration worktree already exists: ${integrationWorktreePath}`,
+    });
     return {
       status: "blocked",
       reason: `Workflow-owned integration worktree already exists and was preserved for recovery: ${integrationWorktreePath}`,
@@ -2303,6 +2502,14 @@ function integrateWorkflowOwnedResult(
     targetBranch,
   ]);
   if (!addResult.ok) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: addResult.message,
+    });
     return {
       status: "blocked",
       reason: `Failed to create workflow-owned integration worktree ${integrationWorktreePath}: ${addResult.message}`,
@@ -2327,6 +2534,14 @@ function integrateWorkflowOwnedResult(
     workerHead,
   ]);
   if (!mergeResult.ok) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: mergeResult.message,
+    });
     return {
       status: "blocked",
       reason: `Workflow-owned integration merge into ${targetBranch} failed: ${mergeResult.message}`,
@@ -2346,6 +2561,14 @@ function integrateWorkflowOwnedResult(
   }
   const integratedHead = runGitReadOnly(integrationWorktreePath, ["rev-parse", "HEAD"]);
   if (!integratedHead) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      error: "Workflow-owned integration could not resolve the integrated HEAD.",
+    });
     return {
       status: "blocked",
       reason:
@@ -2367,6 +2590,15 @@ function integrateWorkflowOwnedResult(
     targetHeadBefore,
   ]);
   if (!updateRefResult.ok) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      integratedHead,
+      error: updateRefResult.message,
+    });
     return {
       status: "blocked",
       reason: `Workflow-owned integration could not advance ${targetBranch} atomically: ${updateRefResult.message}`,
@@ -2387,6 +2619,15 @@ function integrateWorkflowOwnedResult(
   }
   const mergeBase = runGitReadOnly(sourceRepoRoot, ["merge-base", workerHead, targetBranch]);
   if (mergeBase !== workerHead) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "active",
+      nowIso,
+      workerHead,
+      integratedHead,
+      error: "Workflow-owned integration verification failed.",
+    });
     return {
       status: "blocked",
       reason: `Workflow-owned integration updated ${targetBranch} but could not verify worker HEAD ${workerHead} as integrated.`,
@@ -2405,6 +2646,14 @@ function integrateWorkflowOwnedResult(
       integrationWorktreePath,
     };
   }
+  writeWorkflowOwnedWorktreeBinding({
+    runId,
+    input,
+    status: "integrated",
+    nowIso,
+    workerHead,
+    integratedHead,
+  });
   return {
     status: "passed",
     reason: `Workflow-owned integration merged ${workerHead} into ${targetBranch} and advanced the branch atomically.`,
@@ -2745,6 +2994,8 @@ function deleteOptionalRef(
 
 function cleanupWorkflowOwnedWorkspace(
   input: NormalizedCodexControllerInput,
+  runId: string,
+  nowIso: string,
 ): WorkspaceCleanupResult {
   if (input.workspaceOwnership !== "workflow_owned" || !input.workflowOwnedWorktree) {
     return {
@@ -2766,6 +3017,12 @@ function cleanupWorkflowOwnedWorkspace(
     `recovery_ref=${input.workflowOwnedWorktree.recoveryRef}`,
   ];
   const failures: string[] = [];
+  writeWorkflowOwnedWorktreeBinding({
+    runId,
+    input,
+    status: "cleanup_pending",
+    nowIso,
+  });
   const workerCleanup = removeManagedWorktree({
     sourceRepoRoot,
     managedRoot,
@@ -2810,12 +3067,26 @@ function cleanupWorkflowOwnedWorkspace(
     failures.push(`Failed to prune workflow-owned worktrees: ${pruneResult.message}`);
   }
   if (failures.length > 0) {
+    writeWorkflowOwnedWorktreeBinding({
+      runId,
+      input,
+      status: "cleanup_failed",
+      nowIso,
+      error: failures.join(" "),
+    });
     return {
       status: "blocked",
       reason: failures.join(" "),
       trace,
     };
   }
+  writeWorkflowOwnedWorktreeBinding({
+    runId,
+    input,
+    status: "cleaned",
+    nowIso,
+    cleanedAt: nowIso,
+  });
   return {
     status: "passed",
     reason: `Workflow-owned worktree state cleaned up after successful integration: ${worktreeRoot}.`,
@@ -2945,6 +3216,7 @@ function buildRecord(params: {
     currentTask: params.currentTask,
     ...(params.origin ? { origin: params.origin } : {}),
     ...(params.reporting ? { reporting: params.reporting } : {}),
+    ...(params.input.provenance ? { provenance: params.input.provenance } : {}),
     createdAt: params.createdAt,
     updatedAt: params.updatedAt,
   };
@@ -3286,6 +3558,9 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         runId: ctx.runId,
         requestedInput,
       });
+    if (request.provenance && !resolvedInput.provenance) {
+      resolvedInput.provenance = request.provenance;
+    }
     const runContract =
       persistedRunContract ??
       buildRunContract({
@@ -3296,6 +3571,17 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         contextWorkspaceDir: resolveContextWorkspaceDir(resolvedInput, loadConfig()),
       });
     const input = runContract.input;
+    writeWorkflowOwnedWorktreeBinding({
+      runId: ctx.runId,
+      input,
+      status: "active",
+      nowIso: createdAt,
+    });
+    writeWorkflowOwnedWorktreeSentinel({
+      runId: ctx.runId,
+      input,
+      createdAt,
+    });
     const contextWorkspaceDir = runContract.contextWorkspaceDir;
     const runContractArtifact =
       persistedRunContract === null
@@ -3767,9 +4053,11 @@ export const codexControllerWorkflowModule: WorkflowModule = {
         let closeoutArtifact: string | null =
           input.workspaceOwnership === "workflow_owned" ? null : localCloseoutArtifact;
         if (localCloseout.status === "pass" && input.workspaceOwnership === "workflow_owned") {
-          const recovery = ensureWorkflowOwnedRecoveryRef(input);
+          const recovery = ensureWorkflowOwnedRecoveryRef(input, ctx.runId, ctx.nowIso());
           integration =
-            recovery.status === "passed" ? integrateWorkflowOwnedResult(input, recovery) : recovery;
+            recovery.status === "passed"
+              ? integrateWorkflowOwnedResult(input, recovery, ctx.runId, ctx.nowIso())
+              : recovery;
           integrationArtifact = writeWorkflowArtifact(
             ctx.runId,
             "workflow-owned-integration.json",
@@ -3821,7 +4109,7 @@ export const codexControllerWorkflowModule: WorkflowModule = {
                         "Workspace cleanup skipped because final repo-integrated closeout did not pass.",
                       trace: [],
                     } satisfies WorkspaceCleanupResult)
-                  : cleanupWorkflowOwnedWorkspace(input)
+                  : cleanupWorkflowOwnedWorkspace(input, ctx.runId, ctx.nowIso())
             : ({
                 status: "not_applicable",
                 reason: "No workflow-owned workspace cleanup was required.",

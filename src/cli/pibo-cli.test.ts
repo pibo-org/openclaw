@@ -47,6 +47,9 @@ describe("pibo cli", () => {
     expect(pibo?.commands.some((command) => command.name() === "workflows")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "start-async")).toBe(true);
     expect(workflows?.commands.some((command) => command.name() === "wait")).toBe(true);
+    const worktrees = workflows?.commands.find((command) => command.name() === "worktrees");
+    expect(worktrees?.commands.some((command) => command.name() === "owner")).toBe(true);
+    expect(worktrees?.commands.some((command) => command.name() === "inspect")).toBe(true);
   });
 
   it("requires explicit trusted routing flags for workflow starts", async () => {

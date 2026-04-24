@@ -46,6 +46,11 @@ import type {
   WorkflowWaitResult,
 } from "./types.js";
 import { emitTracedWorkflowReportEvent } from "./workflow-reporting.js";
+import {
+  inspectWorkflowWorktreeByRunId,
+  inspectWorkflowWorktreeOwner,
+  listKnownWorkflowWorktrees,
+} from "./worktree-owner.js";
 
 const WORKFLOW_ABORT_POLL_MS = 250;
 const WORKFLOW_WAIT_POLL_MS = 250;
@@ -174,6 +179,21 @@ function buildWorkflowStartRequestFromCli(
     maxRounds: readPositiveNumberOption(params.maxRounds),
     origin: trustedContext.origin,
     reporting: trustedContext.reporting,
+    provenance: {
+      trigger: "session",
+      session: buildSessionProvenanceFromOrigin(trustedContext.origin),
+      source: "explicit-flags",
+    },
+  };
+}
+
+function buildSessionProvenanceFromOrigin(origin: NonNullable<WorkflowStartRequest["origin"]>) {
+  return {
+    sessionKey: origin.ownerSessionKey,
+    ...(origin.channel ? { channel: origin.channel } : {}),
+    ...(origin.accountId ? { accountId: origin.accountId } : {}),
+    ...(origin.to ? { to: origin.to } : {}),
+    ...(origin.threadId ? { threadId: origin.threadId } : {}),
   };
 }
 
@@ -490,6 +510,22 @@ function buildWorkflowRunStartRequestFromCli(params: {
       maxRounds: readPositiveNumberOption(opts.maxRounds),
       ...(trustedContext.origin ? { origin: trustedContext.origin } : {}),
       ...(trustedContext.reporting ? { reporting: trustedContext.reporting } : {}),
+      ...(trustedContext.origin
+        ? {
+            provenance: {
+              trigger: "session" as const,
+              session: buildSessionProvenanceFromOrigin(trustedContext.origin),
+              source: trustedContext.replyHereDefaultApplied
+                ? ("reply-here" as const)
+                : ("explicit-flags" as const),
+            },
+          }
+        : {
+            provenance: {
+              trigger: "manual" as const,
+              source: "unknown" as const,
+            },
+          }),
     },
     resolvedDefaults,
   };
@@ -597,6 +633,7 @@ function buildFailedWorkflowRunRecord(params: {
     currentTask: persisted.currentTask,
     ...(persisted.origin ? { origin: persisted.origin } : {}),
     ...(persisted.reporting ? { reporting: persisted.reporting } : {}),
+    ...(persisted.provenance ? { provenance: persisted.provenance } : {}),
     trace: params.tracer.getRef(updatedAt),
     createdAt: persisted.createdAt,
     updatedAt,
@@ -628,6 +665,7 @@ function buildAbortedWorkflowRunRecord(params: {
     currentTask: persisted.currentTask,
     ...(persisted.origin ? { origin: persisted.origin } : {}),
     ...(persisted.reporting ? { reporting: persisted.reporting } : {}),
+    ...(persisted.provenance ? { provenance: persisted.provenance } : {}),
     trace: params.tracer.getRef(updatedAt),
     createdAt: persisted.createdAt,
     updatedAt,
@@ -947,6 +985,7 @@ function buildInitialRunRecord(params: {
     currentTask: null,
     ...(params.request.origin ? { origin: params.request.origin } : {}),
     ...(params.request.reporting ? { reporting: params.request.reporting } : {}),
+    ...(params.request.provenance ? { provenance: params.request.provenance } : {}),
     trace: buildWorkflowTraceRef({
       runId: params.runId,
       level: 0,
@@ -964,6 +1003,7 @@ function buildStartRequestFromRunRecord(record: WorkflowRunRecord): WorkflowStar
     maxRounds: record.maxRounds,
     ...(record.origin ? { origin: record.origin } : {}),
     ...(record.reporting ? { reporting: record.reporting } : {}),
+    ...(record.provenance ? { provenance: record.provenance } : {}),
   };
 }
 
@@ -1083,7 +1123,11 @@ async function startWorkflowRunWithRunId(
         summary: `status changed to ${effectiveRecord.status}`,
       });
     }
-    const tracedRecord = tracer.attachToRunRecord(effectiveRecord);
+    const provenanceRecord =
+      request.provenance && !effectiveRecord.provenance
+        ? { ...effectiveRecord, provenance: request.provenance }
+        : effectiveRecord;
+    const tracedRecord = tracer.attachToRunRecord(provenanceRecord);
     persistedRecord = tracedRecord;
     writeRunRecord(tracedRecord);
   };
@@ -1101,7 +1145,11 @@ async function startWorkflowRunWithRunId(
   try {
     ctx.throwIfAbortRequested();
     const record = await module.start(request, ctx);
-    const tracedRecord = tracer.attachToRunRecord(record);
+    const provenanceRecord =
+      request.provenance && !record.provenance
+        ? { ...record, provenance: request.provenance }
+        : record;
+    const tracedRecord = tracer.attachToRunRecord(provenanceRecord);
     writeRunRecord(tracedRecord);
     return tracedRecord;
   } catch (error) {
@@ -1737,6 +1785,74 @@ export function workflowsRuns(opts: { json?: boolean; limit?: string }) {
   for (const run of runs) {
     console.log(`- ${run.runId} ${run.moduleId} ${run.status} ${run.updatedAt}`);
   }
+}
+
+export function workflowsWorktreesList(opts: {
+  status?: string;
+  module?: string;
+  repo?: string;
+  active?: boolean;
+  json?: boolean;
+}) {
+  const bindings = listKnownWorkflowWorktrees({
+    status: opts.status,
+    moduleId: opts.module,
+    repo: opts.repo,
+    active: opts.active,
+  });
+  if (opts.json) {
+    printJson({ worktrees: bindings });
+    return;
+  }
+  if (bindings.length === 0) {
+    console.log("No workflow worktree bindings found.");
+    return;
+  }
+  for (const binding of bindings) {
+    console.log(`- ${binding.runId} ${binding.moduleId} ${binding.status} ${binding.worktreePath}`);
+  }
+}
+
+export function workflowsWorktreesInspect(target: string, opts: { json?: boolean }) {
+  const looksLikePath =
+    target.includes(path.sep) ||
+    target === "." ||
+    target.startsWith(".") ||
+    fs.existsSync(path.resolve(target));
+  const inspection = looksLikePath
+    ? inspectWorkflowWorktreeOwner(target)
+    : inspectWorkflowWorktreeByRunId(target);
+  if (opts.json) {
+    printJson(inspection);
+    return;
+  }
+  console.log(`Classification: ${inspection.classification}`);
+  console.log(`Reason: ${inspection.reason}`);
+  if (inspection.binding) {
+    console.log(`Run: ${inspection.binding.runId}`);
+    console.log(`Module: ${inspection.binding.moduleId}`);
+    console.log(`Status: ${inspection.binding.status}`);
+    console.log(`Worktree: ${inspection.binding.worktreePath}`);
+  }
+  if (inspection.run) {
+    console.log(`Run status: ${inspection.run.status}`);
+  }
+  if (inspection.sentinelPath) {
+    console.log(`Sentinel: ${inspection.sentinelPath}`);
+  }
+}
+
+export function workflowsWorktreesOwner(
+  targetPath: string,
+  opts: { runId?: string; json?: boolean },
+) {
+  const inspection = inspectWorkflowWorktreeOwner(targetPath, { currentRunId: opts.runId });
+  if (opts.json) {
+    printJson(inspection);
+    return;
+  }
+  console.log(inspection.classification);
+  console.log(inspection.reason);
 }
 
 export function workflowsTraceSummary(runId: string, opts: { json?: boolean }) {

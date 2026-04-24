@@ -591,6 +591,46 @@ export function registerPiboCli(program: Command) {
       const { workflowsRuns } = await loadWorkflowModule();
       workflowsRuns({ limit: opts.limit, json: opts.json });
     });
+  const workflowWorktrees = workflows
+    .command("worktrees")
+    .description("Workflow-owned Worktrees inspizieren");
+  workflowWorktrees
+    .command("list")
+    .description("Bekannte Workflow-Worktree-Bindings anzeigen")
+    .option("--status <status>", "Binding-Status filtern")
+    .option("--module <moduleId>", "Workflow-Modul filtern")
+    .option("--repo <path>", "Source-Repo filtern")
+    .option("--active", "Nur aktive/integrating Bindings anzeigen")
+    .option("--json", "JSON-Ausgabe")
+    .action(
+      async (opts: {
+        status?: string;
+        module?: string;
+        repo?: string;
+        active?: boolean;
+        json?: boolean;
+      }) => {
+        const { workflowsWorktreesList } = await loadWorkflowModule();
+        workflowsWorktreesList(opts);
+      },
+    );
+  workflowWorktrees
+    .command("inspect <runIdOrPath>")
+    .description("Workflow-Worktree-Besitz per Run-ID oder Pfad aufloesen")
+    .option("--json", "JSON-Ausgabe")
+    .action(async (runIdOrPath: string, opts: { json?: boolean }) => {
+      const { workflowsWorktreesInspect } = await loadWorkflowModule();
+      workflowsWorktreesInspect(runIdOrPath, opts);
+    });
+  workflowWorktrees
+    .command("owner <path>")
+    .description("Schnellen Owner-Lookup fuer einen Worktree-Pfad ausgeben")
+    .option("--run-id <runId>", "Aktuellen Run fuer owned-by-current-run setzen")
+    .option("--json", "JSON-Ausgabe")
+    .action(async (targetPath: string, opts: { runId?: string; json?: boolean }) => {
+      const { workflowsWorktreesOwner } = await loadWorkflowModule();
+      workflowsWorktreesOwner(targetPath, opts);
+    });
   const workflowTrace = workflows.command("trace").description("Workflow-Trace inspizieren");
   workflowTrace
     .command("summary <runId>")
