@@ -53,13 +53,31 @@ Docs sync and workspace sync are both installed through the OpenClaw PIBO CLI.
 The workspace watcher source of truth is `src/cli/pibo/local-sync/`; install
 and repair regenerate the home-directory script/service from this repo.
 
+Docs sync assets are mirrored in two places on purpose:
+`docs/pibo-cli/assets/` for repo-near packaged assets and
+`src/cli/pibo/docs-sync/assets/` for bundled runtime assets. Keep them in sync
+when changing scripts or service templates.
+
 Docs watcher setup:
 
 ```bash
 openclaw pibo docs-sync info
 openclaw pibo docs-sync prereqs
 openclaw pibo docs-sync setup-wizard
+openclaw pibo docs-sync setup server
+openclaw pibo docs-sync setup pibo
+openclaw pibo docs-sync status
+openclaw pibo docs-sync test
 ```
+
+Current docs-sync runtime shape:
+
+- `pibo-docs-watcher.service` watches `~/docs` with per-directory `fs.watch` registrations, not Node recursive watch mode.
+- `.git`, `node_modules`, and PIBo dot-state paths are excluded before watch registration where possible.
+- `pibo-docs-reconcile.timer` runs `pibo-docs-reconcile.service` every minute as a missed-event fallback that invokes `~/docs-sync/pibo-push.sh`.
+- `pibo-docs-server-watcher.service` runs `/root/bin/pibo-docs-server-watcher.js` on the server and watches the WebApp docs tree with the same per-directory strategy.
+- The server cron job still runs `/root/bin/pibo-docs-sync.sh` as the server-side reconcile path.
+- Server sync treats tracked deletes as tombstones, so files deleted on either side should not be resurrected as stale copies during three-way reconciliation.
 
 Workspace watcher setup:
 
@@ -77,7 +95,8 @@ openclaw pibo local-sync workspace migrate-legacy
 
 The workspace watcher always ignores `.git` in code. Other ignored paths are
 loaded from the target workspace `.gitignore` when present, with the local-sync
-configured ignores as a fallback.
+configured ignores as a fallback. Each target also gets a reconcile fallback
+timer named `${serviceName}-reconcile.timer`.
 
 ## Browser pool
 
