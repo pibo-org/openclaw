@@ -576,7 +576,7 @@ export function resolveCodexWorkerDefaultOptions(params?: {
   return {
     model: params?.model?.trim() || configured.model,
     reasoningEffort: explicitReasoningEffort ?? normalizeReasoningEffort(configured.effort),
-    fastMode: explicitFastMode ?? configured.fastMode,
+    fastMode: explicitFastMode ?? configured.fastMode ?? true,
   };
 }
 

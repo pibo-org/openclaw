@@ -229,6 +229,14 @@ describe("codex-sdk-runtime", () => {
     });
   });
 
+  it("defaults the Codex worker to fast mode when no wrapper override is configured", async () => {
+    const { resolveCodexWorkerDefaultOptions } = await import("./codex-sdk-runtime.js");
+
+    expect(resolveCodexWorkerDefaultOptions()).toMatchObject({
+      fastMode: true,
+    });
+  });
+
   it("loads fast mode from the codex-cli-wrapper default config", async () => {
     existsSync.mockReturnValue(true);
     readFileSync.mockReturnValue(
