@@ -8,6 +8,7 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 const config = defineConfig({
   resolve: {
+    dedupe: ["react", "react-dom"],
     alias: [
       {
         find: /^openclaw\/(.*)$/,

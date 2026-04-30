@@ -19,6 +19,14 @@ export const PIBO_MODULES: PiboModule[] = [
     runtime: "ui-pibo",
   },
   {
+    id: "mermaid",
+    title: "Mermaid Editor",
+    href: "/mermaid",
+    description: "Browserbasierter Diagramm-Workspace mit Struktur-Editor, Preview und Export.",
+    status: "live",
+    runtime: "ui-pibo",
+  },
+  {
     id: "workflows",
     title: "Workflows Dashboard",
     href: "/workflows",
