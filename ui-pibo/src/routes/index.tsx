@@ -35,11 +35,12 @@ function ModuleMenuPage() {
             </div>
             <div className="space-y-4">
               <h1 className="display-title max-w-4xl text-4xl leading-[0.96] font-bold tracking-tight text-[var(--sea-ink)] sm:text-6xl">
-                Ein Einstiegspunkt fuer Editor und Chat auf derselben Hauptdomain.
+                Ein Einstiegspunkt fuer Editor, Diagramme und Chat auf derselben Hauptdomain.
               </h1>
               <p className="max-w-3xl text-base leading-7 text-[var(--sea-ink-soft)] sm:text-lg">
-                `ui-pibo` bleibt fuer Root und `/editor` verantwortlich, `apps/chat` laeuft weiter
-                als eigene Runtime unter `/chat`. Nginx verteilt nur ueber saubere Subpaths.
+                `ui-pibo` bleibt fuer Root, `/editor` und `/mermaid` verantwortlich, `apps/chat`
+                laeuft weiter als eigene Runtime unter `/chat`. Nginx verteilt nur ueber saubere
+                Subpaths.
               </p>
             </div>
           </div>
